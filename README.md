@@ -1,8 +1,34 @@
-# systemd 257 package families
+# Droidspaces package builds
 
-This repository builds package-manager-owned systemd 257 package families for
-ARM64 Android container root filesystems. It is a test repository for Ubuntu
-26.04, Fedora 43, Fedora 44, and Arch Linux ARM.
+This repository builds and publishes native package families used by
+Droidspaces ARM64 Android container root filesystems. Package builds live here
+instead of in the RootFS builder, so RootFS forks can consume one explicit
+package source without comparing Releases from unrelated repositories.
+
+Two rolling Releases are maintained independently:
+
+| Release tag | Contents | Targets |
+| --- | --- | --- |
+| `systemd257-packages` | Package-manager-owned systemd 257 families | Ubuntu 26.04, Fedora 43/44, Arch Linux ARM |
+| `anland-kde-packages` | Patched KWin/Xwayland packages for Anland Wayland | Debian 13, Ubuntu 26.04, Fedora 43/44, Arch Linux ARM |
+
+## Anland KDE Wayland packages
+
+Run **Build Anland KDE Wayland package families** from the Actions page to
+build all targets or replace one target in the fixed `anland-kde-packages`
+Release. The workflow pins the requested Anland source commit. Successful
+targets replace their previous assets, while unselected targets remain in the
+same rolling Release.
+
+The Release contains `anland-kde-manifest`, one archive per available target,
+and `install-anland-kde.sh`. RootFS builders use the manifest to select the
+matching archive. A fork can publish the same Release layout and be selected by
+setting the package repository to `owner/repository`.
+
+## systemd 257 package families
+
+The systemd build produces package-manager-owned systemd 257 package families
+for Ubuntu 26.04, Fedora 43, Fedora 44, and Arch Linux ARM.
 
 The build does not copy files directly over `/`. Each target reuses the native
 distribution packaging definition and produces the complete binary package
