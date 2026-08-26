@@ -68,7 +68,8 @@ done
 
 log "installing the core RPM family into a clean Fedora $FEDORA_VERSION root"
 dnf --installroot "$test_root" --releasever "$FEDORA_VERSION" install -y \
-  --setopt=install_weak_deps=False --setopt=keepcache=False "${core_packages[@]}"
+  --use-host-config --setopt=install_weak_deps=False --setopt=keepcache=False \
+  "${core_packages[@]}"
 rpm --root "$test_root" -q "${core_names[@]}"
 verify_systemd_257 "$test_root/usr/lib/systemd/systemd"
 
