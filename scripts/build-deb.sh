@@ -47,6 +47,7 @@ patch -p1 < "$PATCH_FILE"
 export DEBFULLNAME="Droidspaces Builder"
 export DEBEMAIL="noreply@github.com"
 export DEB_BUILD_OPTIONS="parallel=$(nproc) nocheck noautodbgsym"
+export DEB_BUILD_PROFILES="pkg.systemd.nobpf"
 dch --newversion "$PACKAGE_VERSION" --distribution unstable \
   "Rebuild the complete systemd 257 package family with Android old-kernel compatibility."
 

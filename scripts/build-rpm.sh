@@ -24,7 +24,8 @@ cp -a "$REPO_ROOT/vendor/fedora/." "$packaging_dir/"
 cp -a "$PATCH_FILE" "$packaging_dir/0003-droidspaces-old-kernel-compat.patch"
 
 log "installing Fedora source package build dependencies"
-dnf builddep -y --setopt=install_weak_deps=False "$packaging_dir/systemd.spec"
+dnf builddep -y --setopt=install_weak_deps=False \
+  --define "_sourcedir $packaging_dir" "$packaging_dir/systemd.spec"
 
 log "downloading systemd $SOURCE_VERSION source"
 curl -fL --retry 5 --retry-all-errors --connect-timeout 30 \

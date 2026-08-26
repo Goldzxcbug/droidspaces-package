@@ -18,6 +18,8 @@ work_dir="$(mktemp -d -t systemd257-arch.XXXXXXXX)"
 trap 'rm -rf "$work_dir"' EXIT
 cp -a "$REPO_ROOT/vendor/arch/." "$work_dir/"
 cp -a "$PATCH_FILE" "$work_dir/0002-droidspaces-old-kernel-compat.patch"
+cp -a "$REPO_ROOT/patches/0002-systemd-257.9-linux-7.0-errno-aliases.patch" \
+  "$work_dir/0003-systemd-257.9-linux-7.0-errno-aliases.patch"
 
 if ! id build >/dev/null 2>&1; then
   useradd -m build
