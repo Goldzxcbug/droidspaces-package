@@ -1093,7 +1093,7 @@ mv -v %{buildroot}/usr/sbin/* %{buildroot}%{_bindir}/
 # and https://src.fedoraproject.org/rpms/setup/pull-request/10.
 # We skip this on upstream builds so that new users and groups
 # can be added without breaking the build.
-%{python3} %{SOURCE4} /usr/lib/sysusers.d/20-setup-{users,groups}.conf %{buildroot}/usr/lib/sysusers.d/basic.conf
+%{python3} %{SOURCE4} /usr/lib/sysusers.d/setup.conf %{buildroot}/usr/lib/sysusers.d/basic.conf
 %endif
 rm %{buildroot}/usr/lib/sysusers.d/basic.conf
 %endif

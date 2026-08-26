@@ -21,12 +21,14 @@ def parse_sysusers_file(filename):
                 assert False
     return users, groups
 
-setup_users, setup_groups = parse_sysusers_file(sys.argv[1])
-setup_users2, setup_groups2 = parse_sysusers_file(sys.argv[2])
-setup_users |= setup_users2
-setup_groups |= setup_groups2
+setup_users, setup_groups = set(), set()
 
-basic_users, basic_groups = parse_sysusers_file(sys.argv[3])
+for arg in sys.argv[1:-1]:
+    users, groups = parse_sysusers_file(arg)
+    setup_users |= users
+    setup_groups |= groups
+
+basic_users, basic_groups = parse_sysusers_file(sys.argv[-1])
 
 if d := basic_users - setup_users:
     exit(f'We have new users: {d}')

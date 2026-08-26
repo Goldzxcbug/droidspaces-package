@@ -58,6 +58,11 @@ for package_name in "${core_names[@]}"; do
 done
 
 log "installing the core pacman package family for transaction and runtime validation"
+sed -Ei \
+  's/^[#[:space:]]*LocalFileSigLevel[[:space:]]*=.*/LocalFileSigLevel = Optional/' \
+  /etc/pacman.conf
+grep -q '^LocalFileSigLevel = Optional$' /etc/pacman.conf || \
+  die "could not allow unsigned locally built packages in pacman.conf"
 pacman -U --noconfirm "${core_packages[@]}"
 pacman -Q "${core_names[@]}"
 verify_systemd_257 /usr/lib/systemd/systemd

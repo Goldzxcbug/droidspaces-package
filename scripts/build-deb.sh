@@ -65,10 +65,8 @@ package_count="$(find "$OUTPUT_DIR" -maxdepth 1 -type f -name '*.deb' | wc -l)"
 [ "$package_count" -ge 20 ] || die "expected at least 20 DEB packages, got $package_count"
 
 log "installing the core DEB family for transaction and runtime validation"
-install -m0755 /dev/stdin /usr/sbin/policy-rc.d <<'EOF'
-#!/bin/sh
-exit 101
-EOF
+printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+chmod 0755 /usr/sbin/policy-rc.d
 
 core_names=(
   libsystemd0 libsystemd-shared libudev1 libpam-systemd libnss-systemd
