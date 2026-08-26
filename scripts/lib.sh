@@ -30,10 +30,10 @@ prepare_output() {
 }
 
 verify_systemd_257() {
-  local command_path="$1"
   local version_line
+  local -a command=("$@")
 
-  version_line="$($command_path --version | sed -n '1p')"
+  version_line="$("${command[@]}" --version | sed -n '1p')"
   printf '%s\n' "$version_line"
   case "$version_line" in
     'systemd 257'*) ;;

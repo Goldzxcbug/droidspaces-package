@@ -71,7 +71,7 @@ dnf --installroot "$test_root" --releasever "$FEDORA_VERSION" install -y \
   --use-host-config --setopt=install_weak_deps=False --setopt=keepcache=False \
   "${core_packages[@]}"
 rpm --root "$test_root" -q "${core_names[@]}"
-verify_systemd_257 "$test_root/usr/lib/systemd/systemd"
+verify_systemd_257 chroot "$test_root" /usr/lib/systemd/systemd
 
 write_manifest "$TARGET" "$SOURCE_VERSION" \
   "Fedora dist-git $PACKAGING_COMMIT rebuilt on Fedora $FEDORA_VERSION" '*.rpm'
