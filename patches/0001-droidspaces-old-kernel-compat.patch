@@ -1,0 +1,44 @@
+From: Droidspaces Builder <noreply@github.com>
+Subject: [PATCH] old-kernel: tolerate Android 4.14 network and cgroup behavior
+
+Android kernels older than 5.3 reject RTM_GETNEXTHOP with EINVAL even when
+systemd is built without SELinux support. Treat that result like
+EOPNOTSUPP so networkd can continue without nexthop objects.
+
+Containers cannot change the host kernel command line. When systemd can
+already identify that it runs in a container, allow it to use the existing
+cgroup v1 hierarchy without requiring SYSTEMD_CGROUP_ENABLE_LEGACY_FORCE.
+
+---
+ src/network/networkd-manager.c | 2 +-
+ src/shared/cgroup-setup.c       | 4 ++++
+ 2 files changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/network/networkd-manager.c b/src/network/networkd-manager.c
+index 6f1d73d..089bed0 100644
+--- a/src/network/networkd-manager.c
++++ b/src/network/networkd-manager.c
+@@ -1078,7 +1078,7 @@ static int manager_enumerate(Manager *m) {
+         /* NextHop support is added in kernel v5.3 (65ee00a9409f751188a8cdc0988167858eb4a536),
+          * and older kernels return -EOPNOTSUPP, or -EINVAL if SELinux is enabled. */
+         r = manager_enumerate_nexthop(m);
+-        if (r == -EOPNOTSUPP || (r == -EINVAL && mac_selinux_enforcing()))
++        if (IN_SET(r, -EOPNOTSUPP, -EINVAL))
+                 log_debug_errno(r, "Could not enumerate nexthops, ignoring: %m");
+         else if (r < 0)
+                 return log_error_errno(r, "Could not enumerate nexthops: %m");
+diff --git a/src/shared/cgroup-setup.c b/src/shared/cgroup-setup.c
+index 36493dd..5659d2a 100644
+--- a/src/shared/cgroup-setup.c
++++ b/src/shared/cgroup-setup.c
+@@ -164,6 +164,10 @@ bool cg_is_legacy_force_enabled(void) {
+         int r;
+         bool b;
+ 
++        /* A container cannot add flags to the host kernel command line. */
++        if (detect_container() > 0)
++                return true;
++
+         /* Require both systemd.unified_cgroup_hierarchy=0 and SYSTEMD_CGROUP_ENABLE_LEGACY_FORCE=1. */
+ 
+         if (!cg_is_legacy_enabled())

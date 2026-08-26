@@ -1,0 +1,16 @@
+summary: systemd upstream test suite
+discover:
+  how: fmf
+  dist-git-source: true
+  dist-git-install-builddeps: false
+prepare:
+  - name: systemd
+    how: install
+    exclude:
+      - systemd-standalone-.*
+execute:
+  how: tmt
+provision:
+  hardware:
+    virtualization:
+      is-supported: true

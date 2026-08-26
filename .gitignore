@@ -1,0 +1,5 @@
+/out/
+*.log
+*.pkg.tar.*
+*.deb
+*.rpm

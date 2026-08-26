@@ -1,0 +1,109 @@
+name: Build systemd 257 package families
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-packages.yml'
+      - 'patches/**'
+      - 'scripts/**'
+      - 'vendor/**'
+      - 'VERSION'
+  pull_request:
+    paths:
+      - '.github/workflows/build-packages.yml'
+      - 'patches/**'
+      - 'scripts/**'
+      - 'vendor/**'
+      - 'VERSION'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target }} ARM64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: ubuntu2604
+            image: ubuntu:26.04
+            script: scripts/build-deb.sh
+          - target: fedora43
+            image: fedora:43
+            script: scripts/build-rpm.sh
+            fedora_version: '43'
+          - target: fedora44
+            image: fedora:44
+            script: scripts/build-rpm.sh
+            fedora_version: '44'
+          - target: arch
+            image: ogarcia/archlinux:latest
+            script: scripts/build-arch.sh
+    container:
+      image: ${{ matrix.image }}
+    env:
+      TARGET: ${{ matrix.target }}
+      FEDORA_VERSION: ${{ matrix.fedora_version }}
+    steps:
+      - name: Install checkout prerequisites
+        shell: bash
+        run: |
+          set -eux
+          if command -v apt-get >/dev/null; then
+            apt-get update
+            apt-get install -y --no-install-recommends ca-certificates git
+          elif command -v dnf >/dev/null; then
+            dnf install -y --setopt=install_weak_deps=False ca-certificates git
+          else
+            pacman -Sy --needed --noconfirm ca-certificates git
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Build and verify package family
+        shell: bash
+        run: bash "${{ matrix.script }}"
+
+      - name: Upload package family
+        uses: actions/upload-artifact@v6
+        with:
+          name: systemd257-${{ matrix.target }}-arm64
+          path: out/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish rolling test release
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all package families
+        uses: actions/download-artifact@v7
+        with:
+          pattern: systemd257-*-arm64
+          path: release
+
+      - name: Publish test packages
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: systemd257-packages
+          name: systemd 257 package families
+          body: |
+            Rolling ARM64 test packages for Ubuntu 26.04, Fedora 43,
+            Fedora 44, and Arch Linux ARM. Every package family is built
+            from native distribution packaging and includes the Droidspaces
+            Android old-kernel compatibility patch.
+          prerelease: true
+          make_latest: false
+          fail_on_unmatched_files: true
+          files: |
+            release/**/*

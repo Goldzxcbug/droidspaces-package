@@ -1,0 +1,13 @@
+*~
+/.mail.list
+/systemd-*/
+/.build-*.log
+/x86_64/
+/systemd-*src.rpm
+/systemd-*.tar.xz
+/systemd-*.tar.gz
+/*.rpm
+/mkosi.output/
+/mkosi.cache/
+/mkosi.builddir/
+/mkosi.local.conf

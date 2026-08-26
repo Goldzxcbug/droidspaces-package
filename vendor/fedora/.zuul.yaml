@@ -1,0 +1,7 @@
+- project:
+    vars:
+      install_repo_exclude:
+        - systemd-standalone-repart
+        - systemd-standalone-shutdown
+        - systemd-standalone-sysusers
+        - systemd-standalone-tmpfiles
