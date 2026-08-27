@@ -86,6 +86,28 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Ensure rolling tag exists
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="systemd257-packages"
+          ref_endpoint="repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}"
+          if gh api "$ref_endpoint" >/dev/null 2>&1; then
+            echo "滚动标签 ${tag} 已存在。"
+          elif gh api --silent --method POST \
+              "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${tag}" \
+              -f sha="${GITHUB_SHA}"; then
+            echo "已创建滚动标签 ${tag}。"
+          elif gh api "$ref_endpoint" >/dev/null 2>&1; then
+            echo "滚动标签 ${tag} 已由并发任务创建。"
+          else
+            echo "无法确认或创建滚动标签 ${tag}。" >&2
+            exit 1
+          fi
+
       - name: Download all package families
         uses: actions/download-artifact@v7
         with:

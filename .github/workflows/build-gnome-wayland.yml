@@ -1,5 +1,5 @@
-name: Build Anland KDE Wayland package families
-run-name: Anland KDE 软件包 ${{ inputs.request_id || github.run_number }}
+name: Build Anland GNOME Wayland package families
+run-name: Anland GNOME 软件包 ${{ inputs.request_id || github.run_number }}
 
 on:
   workflow_dispatch:
@@ -13,9 +13,6 @@ on:
           - all
           - ubuntu2604
           - Debian13
-          - Fedora43
-          - Fedora44
-          - Arch
       anland_ref:
         description: 要构建的 Anland 分支、标签或提交
         required: true
@@ -37,7 +34,7 @@ permissions:
 
 concurrency:
   # 固定 Release 会被原地重写，必须串行更新。
-  group: anland-kde-package-release
+  group: anland-gnome-package-release
   cancel-in-progress: false
 
 jobs:
@@ -58,9 +55,9 @@ jobs:
 
           case "$BUILD_TARGET_INPUT" in
             all)
-              targets='["ubuntu2604","Debian13","Fedora43","Fedora44","Arch"]'
+              targets='["ubuntu2604","Debian13"]'
               ;;
-            ubuntu2604|Debian13|Fedora43|Fedora44|Arch)
+            ubuntu2604|Debian13)
               targets="[\"$BUILD_TARGET_INPUT\"]"
               ;;
             *)
@@ -125,44 +122,21 @@ jobs:
           case "$BUILD_TARGET" in
             ubuntu2604)
               image=ubuntu:26.04
-              script=producers/kde/ubuntu2604_v5/build.sh
+              script=producers/gnome/Ubuntu2604_v5/build.sh
+              xwayland_patch=producers/kde/ubuntu2604_v5/xwayland.patch
               package_pattern='*.deb'
-              asset_prefix=anland-kde-ubuntu2604-kwin-
+              asset_prefix=anland-gnome-ubuntu2604-mutter-
               asset_arch=arm64
               archive_target=ubuntu2604
               ;;
             Debian13)
               image=debian:trixie
-              script=producers/kde/Debian13_v5/build.sh
+              script=producers/gnome/Debian13_v5/build.sh
+              xwayland_patch=producers/kde/Debian13_v5/xwayland.patch
               package_pattern='*.deb'
-              asset_prefix=anland-kde-debian13-kwin-
+              asset_prefix=anland-gnome-debian13-mutter-
               asset_arch=arm64
               archive_target=debian13
-              ;;
-            Fedora43)
-              image=fedora:43
-              script=producers/kde/Fedora43_v5/build.sh
-              package_pattern='*.rpm'
-              asset_prefix=anland-kde-fedora43-kwin-
-              asset_arch=aarch64
-              archive_target=fedora43
-              ;;
-            Fedora44)
-              image=fedora:44
-              # Fedora 44 使用 Fedora 43 的构建脚本，配 Fedora 44 基础镜像。
-              script=producers/kde/Fedora43_v5/build.sh
-              package_pattern='*.rpm'
-              asset_prefix=anland-kde-fedora44-kwin-
-              asset_arch=aarch64
-              archive_target=fedora44
-              ;;
-            Arch)
-              image=ogarcia/archlinux:latest
-              script=producers/kde/Arch_v5/build.sh
-              package_pattern='*.pkg.tar.*'
-              asset_prefix=anland-kde-arch-kwin-
-              asset_arch=aarch64
-              archive_target=arch
               ;;
             *)
               echo "不支持的构建目标：$BUILD_TARGET" >&2
@@ -173,6 +147,7 @@ jobs:
           {
             echo "image=$image"
             echo "script=$script"
+            echo "xwayland_patch=$xwayland_patch"
             echo "package_pattern=$package_pattern"
             echo "asset_prefix=$asset_prefix"
             echo "asset_arch=$asset_arch"
@@ -183,8 +158,9 @@ jobs:
         env:
           DISTRO_IMAGE: ${{ steps.target.outputs.image }}
           BUILD_SCRIPT: ${{ steps.target.outputs.script }}
+          XWAYLAND_PATCH: ${{ steps.target.outputs.xwayland_patch }}
           PKG_PATTERN: ${{ steps.target.outputs.package_pattern }}
-          OUTPUT_DIR: .kde-package-build/${{ matrix.target }}
+          OUTPUT_DIR: .gnome-package-build/${{ matrix.target }}
         shell: bash
         run: |
           set -euo pipefail
@@ -198,39 +174,18 @@ jobs:
             -e ANLAND_COMMIT \
             -e BUILD_SCRIPT \
             -e BUILD_TARGET \
+            -e XWAYLAND_PATCH \
             -e PKG_PATTERN \
-            -v "$PWD/$OUTPUT_DIR:/root/kde-packages" \
-            -v "$PWD/$OUTPUT_DIR:/tmp/kde-packages" \
+            -v "$PWD/$OUTPUT_DIR:/root/gnome-packages" \
+            -v "$PWD/$OUTPUT_DIR:/tmp/gnome-packages" \
             "$DISTRO_IMAGE" \
             bash -s <<'ANLAND_BUILD'
               set -euo pipefail
 
-              case "$BUILD_TARGET" in
-                Debian13|ubuntu2604)
-                  apt-get update
-                  apt-get install -y --no-install-recommends \
-                    git ca-certificates sudo \
-                    build-essential devscripts dpkg-dev fakeroot patch
-                  ;;
-                Fedora43|Fedora44)
-                  dnf install -y --setopt=install_weak_deps=False \
-                    git ca-certificates sudo \
-                    dnf-plugins-core rpmdevtools rpm-build patch tar xz
-                  ;;
-                Arch)
-                  pacman -Syu --noconfirm
-                  pacman -S --noconfirm --needed base-devel git ca-certificates sudo
-                  useradd -m -s /bin/bash anland
-                  printf "anland ALL=(root) NOPASSWD: /usr/bin/pacman\n" > /etc/sudoers.d/anland-pacman
-                  chmod 0440 /etc/sudoers.d/anland-pacman
-                  if grep -q "^#PACMAN_AUTH=()" /etc/makepkg.conf; then
-                    sed -i "s/^#PACMAN_AUTH=().*/PACMAN_AUTH=(sudo)/" /etc/makepkg.conf
-                  else
-                    printf "\nPACMAN_AUTH=(sudo)\n" >> /etc/makepkg.conf
-                  fi
-                  chown -R anland:anland /tmp/kde-packages
-                  ;;
-              esac
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                git ca-certificates sudo \
+                build-essential devscripts dpkg-dev fakeroot patch
 
               git init --quiet /tmp/anland
               git -C /tmp/anland remote add origin "$ANLAND_REPO"
@@ -244,46 +199,29 @@ jobs:
               fi
 
               test -f "/tmp/anland/$BUILD_SCRIPT"
+              test -f "/tmp/anland/$XWAYLAND_PATCH"
               chmod +x "/tmp/anland/$BUILD_SCRIPT"
 
-              if [ "$BUILD_TARGET" = Arch ]; then
-                su -s /bin/bash anland -c "cd /tmp/anland/$(dirname "$BUILD_SCRIPT") && WORKDIR=/tmp/kde-packages ./$(basename "$BUILD_SCRIPT") --noconfirm"
-                chmod -R a+rwX /tmp/kde-packages
-              else
-                cd "/tmp/anland/$(dirname "$BUILD_SCRIPT")"
-                WORKDIR=/root/kde-packages sudo -E "./$(basename "$BUILD_SCRIPT")"
-              fi
+              cd "/tmp/anland/$(dirname "$BUILD_SCRIPT")"
+              XWAYLAND_PATCH="/tmp/anland/$XWAYLAND_PATCH" \
+                WORKDIR=/root/gnome-packages \
+                sudo -E "./$(basename "$BUILD_SCRIPT")"
 
-              # 从主 kwin 包读取上游版本；不要把发行版打包修订号放进资产名。
-              kwin_package=""
-              kwin_version=""
-              case "$BUILD_TARGET" in
-                Debian13|ubuntu2604)
-                  kwin_package="$(find /tmp/kde-packages -type f -name 'kwin-wayland_*.deb' -print | sort | head -n1)"
-                  if [ -z "$kwin_package" ]; then
-                    kwin_package="$(find /tmp/kde-packages -type f -name 'kwin-x11_*.deb' -print | sort | head -n1)"
-                  fi
-                  [ -n "$kwin_package" ] || { echo "未找到 kwin deb 包" >&2; exit 1; }
-                  kwin_version="$(dpkg-deb -f "$kwin_package" Version)"
-                  ;;
-                Fedora43|Fedora44)
-                  kwin_package="$(find /tmp/kde-packages -type f -name 'kwin-[0-9]*.rpm' -print | sort | head -n1)"
-                  [ -n "$kwin_package" ] || { echo "未找到 kwin rpm 包" >&2; exit 1; }
-                  kwin_version="$(rpm -qp --queryformat '%{VERSION}' "$kwin_package")"
-                  ;;
-                Arch)
-                  kwin_package="$(find /tmp/kde-packages -type f -name 'kwin-[0-9]*.pkg.tar.*' -print | sort | head -n1)"
-                  [ -n "$kwin_package" ] || { echo "未找到 kwin Arch 包" >&2; exit 1; }
-                  kwin_version="$(pacman -Qp "$kwin_package" | awk 'NR == 1 { print $2 }')"
-                  ;;
-              esac
-              # 去掉 epoch 和发行版/Arch 的 pkgrel，只保留 KWin 上游版本。
-              kwin_version="${kwin_version#*:}"
-              case "$BUILD_TARGET" in
-                Debian13|ubuntu2604|Arch) kwin_version="${kwin_version%-*}" ;;
-              esac
-              [ -n "$kwin_version" ] || { echo "无法解析 KWin 版本" >&2; exit 1; }
-              printf '%s\n' "$kwin_version" > /tmp/kde-packages/.kwin-version
+              # 从主 mutter 包读取上游版本；不要把发行版打包修订号放进资产名。
+              mutter_package=""
+              while IFS= read -r package; do
+                if [ "$(dpkg-deb -f "$package" Package)" = mutter ]; then
+                  mutter_package="$package"
+                  break
+                fi
+              done < <(find /tmp/gnome-packages/mutter -maxdepth 1 -type f -name '*.deb' -print | sort)
+              [ -n "$mutter_package" ] || { echo "未找到 mutter deb 包" >&2; exit 1; }
+              mutter_version="$(dpkg-deb -f "$mutter_package" Version)"
+              # 去掉 epoch 和 Debian/Ubuntu 打包修订号，只保留 Mutter 上游版本。
+              mutter_version="${mutter_version#*:}"
+              mutter_version="${mutter_version%-*}"
+              [ -n "$mutter_version" ] || { echo "无法解析 Mutter 版本" >&2; exit 1; }
+              printf '%s\n' "$mutter_version" > /tmp/gnome-packages/.mutter-version
           ANLAND_BUILD
 
       - name: 打包 Release 资产
@@ -293,12 +231,12 @@ jobs:
           ASSET_PREFIX: ${{ steps.target.outputs.asset_prefix }}
           ASSET_ARCH: ${{ steps.target.outputs.asset_arch }}
           ARCHIVE_TARGET: ${{ steps.target.outputs.archive_target }}
-          OUTPUT_DIR: .kde-package-build/${{ matrix.target }}
+          OUTPUT_DIR: .gnome-package-build/${{ matrix.target }}
         shell: bash
         run: |
           set -euo pipefail
 
-          package_dir="$RUNNER_TEMP/anland-kde-packages/$ARCHIVE_TARGET"
+          package_dir="$RUNNER_TEMP/anland-gnome-packages/$ARCHIVE_TARGET"
           asset_dir="$GITHUB_WORKSPACE/.release-assets/$BUILD_TARGET"
           rm -rf "$package_dir" "$asset_dir"
           mkdir -p "$package_dir" "$asset_dir"
@@ -308,17 +246,12 @@ jobs:
             [ -d "$source_dir" ] || return 0
             find "$source_dir" -type f -name "$PKG_PATTERN" \
               ! -name '*debug*' ! -name '*dbgsym*' ! -name '*.src.*' \
-              ! -name 'kwin-dev_*' ! -name 'kwin-devel-*' ! -name 'kwin-doc-*' \
-              ! -name 'xorg-x11-server-Xwayland-devel-*' -exec cp -v {} "$package_dir/" \;
+              ! -name 'libmutter-*-dev_*' ! -name 'mutter-doc_*' \
+              ! -name 'mutter-tests_*' -exec cp -v {} "$package_dir/" \;
           }
 
-          if [ "$BUILD_TARGET" = Arch ]; then
-            copy_packages "$OUTPUT_DIR"
-          else
-            copy_packages "$OUTPUT_DIR/kwin"
-            copy_packages "$OUTPUT_DIR/xwayland"
-            copy_packages "$OUTPUT_DIR/xorg-x11-server-Xwayland"
-          fi
+          copy_packages "$OUTPUT_DIR/mutter"
+          copy_packages "$OUTPUT_DIR/xwayland"
 
           package_count="$(find "$package_dir" -maxdepth 1 -type f -name "$PKG_PATTERN" | wc -l)"
           if [ "$package_count" -eq 0 ]; then
@@ -326,32 +259,32 @@ jobs:
             exit 1
           fi
 
-          kwin_version="$(tr -d '[:space:]' < "$OUTPUT_DIR/.kwin-version")"
-          case "$kwin_version" in
+          mutter_version="$(tr -d '[:space:]' < "$OUTPUT_DIR/.mutter-version")"
+          case "$mutter_version" in
             ''|*[!A-Za-z0-9.+~_-]*)
-              echo "KWin 版本包含不支持用于文件名的字符：$kwin_version" >&2
+              echo "Mutter 版本包含不支持用于文件名的字符：$mutter_version" >&2
               exit 1
               ;;
           esac
-          asset_name="${ASSET_PREFIX}${kwin_version}-${ASSET_ARCH}.tar.gz"
+          asset_name="${ASSET_PREFIX}${mutter_version}-${ASSET_ARCH}.tar.gz"
           asset_path="$asset_dir/$asset_name"
           build_time="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          printf 'target=%s\nkwin_version=%s\nbuild_time=%s\n' \
-            "$ARCHIVE_TARGET" "$kwin_version" "$build_time" > "$package_dir/.anland-kde-build-info"
-          tar -C "$RUNNER_TEMP" -czf "$asset_path" "anland-kde-packages/$ARCHIVE_TARGET"
+          printf 'target=%s\nmutter_version=%s\nbuild_time=%s\n' \
+            "$ARCHIVE_TARGET" "$mutter_version" "$build_time" > "$package_dir/.anland-gnome-build-info"
+          tar -C "$RUNNER_TEMP" -czf "$asset_path" "anland-gnome-packages/$ARCHIVE_TARGET"
           echo "asset_path=$asset_path" >> "$GITHUB_OUTPUT"
           echo "已将 $package_count 个文件打包进 $asset_name（构建时间：$build_time）"
 
       - name: 上传 Release 资产
         uses: actions/upload-artifact@v6
         with:
-          name: anland-kde-package-${{ matrix.target }}
+          name: anland-gnome-package-${{ matrix.target }}
           path: ${{ steps.package.outputs.asset_path }}
           if-no-files-found: error
           retention-days: 1
 
   release:
-    name: 更新 Anland KDE 滚动 Release
+    name: 更新 Anland GNOME 滚动 Release
     needs: [prepare, build]
     if: ${{ always() && !cancelled() && needs.prepare.result == 'success' }}
     runs-on: ubuntu-latest
@@ -367,7 +300,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="anland-kde-packages"
+          tag="anland-gnome-packages"
           ref_endpoint="repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}"
           if gh api "$ref_endpoint" >/dev/null 2>&1; then
             echo "滚动标签 ${tag} 已存在。"
@@ -387,7 +320,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/download-artifact@v7
         with:
-          pattern: anland-kde-package-*
+          pattern: anland-gnome-package-*
           path: release-assets
           merge-multiple: true
 
@@ -405,8 +338,8 @@ jobs:
 
           release_dir="$GITHUB_WORKSPACE/release-assets"
           mkdir -p "$release_dir"
-          rolling_release_tag="anland-kde-packages"
-          release_targets=(Arch Debian13 ubuntu2604 Fedora43 Fedora44)
+          rolling_release_tag="anland-gnome-packages"
+          release_targets=(Debian13 ubuntu2604)
           declare -A asset_by_target=()
           declare -A asset_time_by_target=()
           declare -A asset_source_by_target=()
@@ -416,29 +349,22 @@ jobs:
 
           asset_prefix_for_target() {
             case "$1" in
-              Arch) printf '%s\n' 'anland-kde-arch-kwin-' ;;
-              Debian13) printf '%s\n' 'anland-kde-debian13-kwin-' ;;
-              ubuntu2604) printf '%s\n' 'anland-kde-ubuntu2604-kwin-' ;;
-              Fedora43) printf '%s\n' 'anland-kde-fedora43-kwin-' ;;
-              Fedora44) printf '%s\n' 'anland-kde-fedora44-kwin-' ;;
+              Debian13) printf '%s\n' 'anland-gnome-debian13-mutter-' ;;
+              ubuntu2604) printf '%s\n' 'anland-gnome-ubuntu2604-mutter-' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
           }
 
           target_label() {
             case "$1" in
-              Arch) printf '%s\n' 'Arch Linux' ;;
               Debian13) printf '%s\n' 'Debian 13' ;;
               ubuntu2604) printf '%s\n' 'Ubuntu 26.04' ;;
-              Fedora43) printf '%s\n' 'Fedora 43' ;;
-              Fedora44) printf '%s\n' 'Fedora 44' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
           }
 
           asset_arch_for_target() {
             case "$1" in
-              Arch|Fedora43|Fedora44) printf '%s\n' 'aarch64' ;;
               Debian13|ubuntu2604) printf '%s\n' 'arm64' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
@@ -446,11 +372,8 @@ jobs:
 
           archive_target_for_target() {
             case "$1" in
-              Arch) printf '%s\n' 'arch' ;;
               Debian13) printf '%s\n' 'debian13' ;;
               ubuntu2604) printf '%s\n' 'ubuntu2604' ;;
-              Fedora43) printf '%s\n' 'fedora43' ;;
-              Fedora44) printf '%s\n' 'fedora44' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
           }
@@ -515,7 +438,7 @@ jobs:
             local target="$2"
             local archive_target metadata build_timestamp
             archive_target="$(archive_target_for_target "$target")"
-            if ! metadata="$(tar -xOzf "$archive" "anland-kde-packages/$archive_target/.anland-kde-build-info" 2>/dev/null)"; then
+            if ! metadata="$(tar -xOzf "$archive" "anland-gnome-packages/$archive_target/.anland-gnome-build-info" 2>/dev/null)"; then
               return 1
             fi
             build_timestamp="$(printf '%s\n' "$metadata" | sed -n 's/^build_time=//p' | sed -n '1p')"
@@ -551,15 +474,6 @@ jobs:
               ;;
             Debian13)
               selected_prefix="$(asset_prefix_for_target Debian13)"
-              ;;
-            Fedora43)
-              selected_prefix="$(asset_prefix_for_target Fedora43)"
-              ;;
-            Fedora44)
-              selected_prefix="$(asset_prefix_for_target Fedora44)"
-              ;;
-            Arch)
-              selected_prefix="$(asset_prefix_for_target Arch)"
               ;;
             *)
               echo "不支持的构建目标：$BUILD_TARGET_INPUT" >&2
@@ -602,10 +516,10 @@ jobs:
           fi
 
           # 固定 Release 里有的平台就沿用，没有的（例如第一次只构建单个平台）本次先缺着，
-          # 等后续构建补上，不再因为凑不齐五个平台就整体失败。
+          # 等后续构建补上，不再因为凑不齐两个平台就整体失败。
           unavailable_targets=()
           if [ "${#missing_targets[@]}" -gt 0 ]; then
-            previous_dir="$RUNNER_TEMP/anland-kde-previous-assets"
+            previous_dir="$RUNNER_TEMP/anland-gnome-previous-assets"
             rm -rf "$previous_dir"
             mkdir -p "$previous_dir"
             find_previous_release || echo "固定 Release 还不存在或不可读，本次只发布已构建的平台。"
@@ -667,8 +581,8 @@ jobs:
             test -f "$release_dir/$asset"
           done
 
-          cp scripts/install-anland-kde.sh "$release_dir/install-anland-kde.sh"
-          chmod +x "$release_dir/install-anland-kde.sh"
+          cp scripts/install-anland-gnome.sh "$release_dir/install-anland-gnome.sh"
+          chmod +x "$release_dir/install-anland-gnome.sh"
           {
             printf 'format=1\n'
             printf 'release_tag=%s\n' "$rolling_release_tag"
@@ -677,7 +591,7 @@ jobs:
             for target in "${present_targets[@]}"; do
               printf '%s=%s\n' "$(archive_target_for_target "$target")" "${asset_by_target[$target]}"
             done
-          } > "$release_dir/anland-kde-manifest"
+          } > "$release_dir/anland-gnome-manifest"
 
           format_target_list() {
             local target text=""
@@ -691,7 +605,7 @@ jobs:
           reused_target_list="$(format_target_list "${reused_targets[@]}")"
           unavailable_target_list="$(format_target_list "${unavailable_targets[@]}")"
           if [ "${#reused_targets[@]}" -eq 0 ] && [ "${#unavailable_targets[@]}" -eq 0 ]; then
-            replacement_note="本次构建重新生成全部五个平台的软件包。"
+            replacement_note="本次构建重新生成全部两个平台的软件包。"
           else
             replacement_note="本次替换：${updated_target_list}"
             if [ "${#reused_targets[@]}" -gt 0 ]; then
@@ -720,17 +634,17 @@ jobs:
             release_source_list="${release_source_list}"$'\n'"- $(target_label "$target")：本 Release 暂无软件包，等待后续构建补齐"
           done
           release_notes="$(printf '%s\n' \
-            '# Anland KDE Wayland 预编译包' \
+            '# Anland GNOME Wayland 预编译包' \
             '' \
-            '这是供 Droidspaces Wayland RootFS 使用的固定滚动 ARM64/aarch64 包 Release。每次更新只替换本次成功的平台，其他平台资产保持不变；尚未构建过的平台会在后续构建中补齐。' \
+            '这是供 Droidspaces Wayland RootFS 使用的固定滚动 ARM64 包 Release。每次更新只替换本次成功的平台，其他平台资产保持不变；尚未构建过的平台会在后续构建中补齐。' \
             '' \
             '## 发布资产' \
             '' \
             "$release_asset_table" \
             '' \
-            '压缩包文件名中的 `kwin-版本` 来自该发行版实际生成的 KWin 包；不同发行版的版本可以不同。' \
+            '压缩包文件名中的 `mutter-版本` 来自该发行版实际生成的 Mutter 包；不同发行版的版本可以不同。' \
             '' \
-            '每个压缩包只包含对应系统的 patched KWin/Xwayland 包；`anland-kde-manifest` 精确映射目标系统到资产。' \
+            '每个压缩包只包含对应系统的 patched Mutter/Xwayland 包；`anland-gnome-manifest` 精确映射目标系统到资产。' \
             '' \
             '## 构建详情' \
             '' \
@@ -742,13 +656,13 @@ jobs:
             "- 软件包工作流运行号：${GITHUB_RUN_ID}" \
             "- 本次构建源码（仅更新资产）：\`${ANLAND_REPO}\` @ \`${ANLAND_COMMIT}\`（请求：\`${ANLAND_REF}\`）" \
             "- 工作流提交：\`${GITHUB_SHA}\`" \
-            '- 架构：仅 ARM64/aarch64' \
+            '- 架构：仅 ARM64' \
             '' \
             '## 资产来源' \
             "$release_source_list" \
             '')"
           # 先备份当前滚动 Release；原地重写失败时恢复原资产，避免丢失可用包。
-          rollback_dir="$RUNNER_TEMP/anland-kde-rolling-backup"
+          rollback_dir="$RUNNER_TEMP/anland-gnome-rolling-backup"
           release_mutated=false
           release_exists=false
           rm -rf "$rollback_dir"
@@ -767,11 +681,8 @@ jobs:
             prefix="$(asset_prefix_for_target "$target")"
             arch="$(asset_arch_for_target "$target")"
             case "$target" in
-              Arch) legacy='anland-kde-arch-aarch64.tar.gz' ;;
-              Debian13) legacy='anland-kde-debian13-arm64.tar.gz' ;;
-              ubuntu2604) legacy='anland-kde-ubuntu2604-arm64.tar.gz' ;;
-              Fedora43) legacy='anland-kde-fedora43-aarch64.tar.gz' ;;
-              Fedora44) legacy='anland-kde-fedora44-aarch64.tar.gz' ;;
+              Debian13) legacy='anland-gnome-debian13-arm64.tar.gz' ;;
+              ubuntu2604) legacy='anland-gnome-ubuntu2604-arm64.tar.gz' ;;
               *) return 1 ;;
             esac
             case "$name" in
@@ -816,13 +727,13 @@ jobs:
             # last, so it never points at an asset that has not been restored yet.
             for rollback_asset in "$rollback_dir"/*; do
               rollback_name="${rollback_asset##*/}"
-              [ "$rollback_name" = 'anland-kde-manifest' ] && continue
+              [ "$rollback_name" = 'anland-gnome-manifest' ] && continue
               gh release upload "$release_tag" "$rollback_asset" \
                 --repo "$GITHUB_REPOSITORY" \
                 --clobber || echo "恢复资产失败：$rollback_name" >&2
             done
-            if [ -f "$rollback_dir/anland-kde-manifest" ]; then
-              gh release upload "$release_tag" "$rollback_dir/anland-kde-manifest" \
+            if [ -f "$rollback_dir/anland-gnome-manifest" ]; then
+              gh release upload "$release_tag" "$rollback_dir/anland-gnome-manifest" \
                 --repo "$GITHUB_REPOSITORY" \
                 --clobber || echo '恢复软件包清单失败。' >&2
             fi
@@ -854,7 +765,7 @@ jobs:
                   --draft \
                   --latest=false \
                   --target "$GITHUB_SHA" \
-                  --title 'Anland KDE Wayland 预编译包' \
+                  --title 'Anland GNOME Wayland 预编译包' \
                   --notes '自动恢复：本次滚动 Release 更新失败，已恢复上一份可用资产。'
                 gh release edit "$release_tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
               fi
@@ -874,11 +785,11 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             gh release upload "$release_tag" \
-              "$release_dir/install-anland-kde.sh" \
+              "$release_dir/install-anland-gnome.sh" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             gh release upload "$release_tag" \
-              "$release_dir/anland-kde-manifest" \
+              "$release_dir/anland-gnome-manifest" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             delete_release_asset_named 'SHA256SUMS'
@@ -887,7 +798,7 @@ jobs:
             done
             gh release edit "$release_tag" \
               --repo "$GITHUB_REPOSITORY" \
-              --title 'Anland KDE Wayland 预编译包' \
+              --title 'Anland GNOME Wayland 预编译包' \
               --notes "$release_notes" \
               --draft=false \
               --latest=false
@@ -896,7 +807,7 @@ jobs:
               --draft \
               --latest=false \
               --target "$GITHUB_SHA" \
-              --title 'Anland KDE Wayland 预编译包' \
+              --title 'Anland GNOME Wayland 预编译包' \
               --notes "$release_notes"
             gh release edit "$release_tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
           fi
