@@ -2,21 +2,6 @@ name: Build systemd 257 package families
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/build-packages.yml'
-      - 'patches/**'
-      - 'scripts/build-*.sh'
-      - 'scripts/lib.sh'
-      - 'vendor/**'
-  pull_request:
-    paths:
-      - '.github/workflows/build-packages.yml'
-      - 'patches/**'
-      - 'scripts/build-*.sh'
-      - 'scripts/lib.sh'
-      - 'vendor/**'
 
 permissions:
   contents: read
