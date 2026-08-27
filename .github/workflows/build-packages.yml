@@ -71,22 +71,22 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out release commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
       - name: Ensure rolling tag exists
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tag="systemd257-packages"
-          ref_endpoint="repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}"
-          if gh api "$ref_endpoint" >/dev/null 2>&1; then
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
             echo "滚动标签 ${tag} 已存在。"
-          elif gh api --silent --method POST \
-              "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/tags/${tag}" \
-              -f sha="${GITHUB_SHA}"; then
+          elif git tag "$tag" "$GITHUB_SHA" && \
+              git push origin "refs/tags/${tag}"; then
             echo "已创建滚动标签 ${tag}。"
-          elif gh api "$ref_endpoint" >/dev/null 2>&1; then
+          elif git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
             echo "滚动标签 ${tag} 已由并发任务创建。"
           else
             echo "无法确认或创建滚动标签 ${tag}。" >&2

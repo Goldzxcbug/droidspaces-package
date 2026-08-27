@@ -176,8 +176,7 @@ jobs:
             -e BUILD_TARGET \
             -e XWAYLAND_PATCH \
             -e PKG_PATTERN \
-            -v "$PWD/$OUTPUT_DIR:/root/gnome-packages" \
-            -v "$PWD/$OUTPUT_DIR:/tmp/gnome-packages" \
+            -v "$PWD/$OUTPUT_DIR:/packages" \
             "$DISTRO_IMAGE" \
             bash -s <<'ANLAND_BUILD'
               set -euo pipefail
@@ -204,7 +203,7 @@ jobs:
 
               cd "/tmp/anland/$(dirname "$BUILD_SCRIPT")"
               XWAYLAND_PATCH="/tmp/anland/$XWAYLAND_PATCH" \
-                WORKDIR=/root/gnome-packages \
+                WORKDIR=/packages \
                 sudo -E "./$(basename "$BUILD_SCRIPT")"
 
               # 从主 mutter 包读取上游版本；不要把发行版打包修订号放进资产名。
@@ -214,14 +213,15 @@ jobs:
                   mutter_package="$package"
                   break
                 fi
-              done < <(find /tmp/gnome-packages/mutter -maxdepth 1 -type f -name '*.deb' -print | sort)
+              done < <(find /packages/mutter -maxdepth 1 -type f -name '*.deb' -print | sort)
               [ -n "$mutter_package" ] || { echo "未找到 mutter deb 包" >&2; exit 1; }
               mutter_version="$(dpkg-deb -f "$mutter_package" Version)"
               # 去掉 epoch 和 Debian/Ubuntu 打包修订号，只保留 Mutter 上游版本。
               mutter_version="${mutter_version#*:}"
               mutter_version="${mutter_version%-*}"
               [ -n "$mutter_version" ] || { echo "无法解析 Mutter 版本" >&2; exit 1; }
-              printf '%s\n' "$mutter_version" > /tmp/gnome-packages/.mutter-version
+              printf '%s\n' "$mutter_version" > /packages/.mutter-version
+              chmod -R a+rX /packages
           ANLAND_BUILD
 
       - name: 打包 Release 资产
@@ -250,8 +250,14 @@ jobs:
               ! -name 'mutter-tests_*' -exec cp -v {} "$package_dir/" \;
           }
 
-          copy_packages "$OUTPUT_DIR/mutter"
-          copy_packages "$OUTPUT_DIR/xwayland"
+          if [ ! -r "$OUTPUT_DIR/.mutter-version" ]; then
+            echo "构建输出缺少可读的 .mutter-version；当前产物如下：" >&2
+            find "$OUTPUT_DIR" -maxdepth 3 -printf '%M %u:%g %p\n' >&2 || true
+            exit 1
+          fi
+
+          # 上游脚本可能调整子目录布局，直接从整个 WORKDIR 递归收集二进制包。
+          copy_packages "$OUTPUT_DIR"
 
           package_count="$(find "$package_dir" -maxdepth 1 -type f -name "$PKG_PATTERN" | wc -l)"
           if [ "$package_count" -eq 0 ]; then
@@ -296,20 +302,15 @@ jobs:
 
       - name: 确保滚动标签存在
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tag="anland-gnome-packages"
-          ref_endpoint="repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}"
-          if gh api "$ref_endpoint" >/dev/null 2>&1; then
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
             echo "滚动标签 ${tag} 已存在。"
-          elif gh api --silent --method POST \
-              "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/tags/${tag}" \
-              -f sha="${GITHUB_SHA}"; then
+          elif git tag "$tag" "$GITHUB_SHA" && \
+              git push origin "refs/tags/${tag}"; then
             echo "已创建滚动标签 ${tag}。"
-          elif gh api "$ref_endpoint" >/dev/null 2>&1; then
+          elif git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
             echo "滚动标签 ${tag} 已由并发任务创建。"
           else
             echo "无法确认或创建滚动标签 ${tag}。" >&2
