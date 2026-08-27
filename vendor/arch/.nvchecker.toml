@@ -1,5 +1,0 @@
-[systemd]
-source = "git"
-git = "https://github.com/systemd/systemd.git"
-prefix = "v"
-exclude_regex = ".*rc.*"

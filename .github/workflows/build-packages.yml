@@ -10,7 +10,6 @@ on:
       - 'scripts/build-*.sh'
       - 'scripts/lib.sh'
       - 'vendor/**'
-      - 'VERSION'
   pull_request:
     paths:
       - '.github/workflows/build-packages.yml'
@@ -18,7 +17,6 @@ on:
       - 'scripts/build-*.sh'
       - 'scripts/lib.sh'
       - 'vendor/**'
-      - 'VERSION'
 
 permissions:
   contents: read
