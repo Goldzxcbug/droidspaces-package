@@ -1,0 +1,776 @@
+name: Build Hangover Wine package families
+run-name: Hangover Wine packages ${{ inputs.request_id || github.run_number }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_target:
+        description: Build all targets or replace one target in the rolling Release
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - ubuntu2404
+          - ubuntu2510
+          - ubuntu2604
+          - debian13
+          - fedora43
+          - fedora44
+          - arch
+      hangover_ref:
+        description: Hangover branch, tag, or commit to build
+        required: true
+        type: string
+        default: main
+      hangover_repo:
+        description: Hangover Git repository URL
+        required: true
+        type: string
+        default: https://github.com/mikugirls/hangover.git
+      request_id:
+        description: Optional caller request ID
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  # The fixed rolling Release is updated in place and must be serialized.
+  group: hangover-wine-package-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Resolve Hangover source
+    runs-on: ubuntu-latest
+    outputs:
+      hangover_commit: ${{ steps.resolve.outputs.hangover_commit }}
+      hangover_version: ${{ steps.resolve.outputs.hangover_version }}
+      targets: ${{ steps.targets.outputs.targets }}
+    steps:
+      - name: Generate build matrix
+        id: targets
+        env:
+          BUILD_TARGET_INPUT: ${{ inputs.build_target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$BUILD_TARGET_INPUT" in
+            all)
+              targets='["ubuntu2404","ubuntu2510","ubuntu2604","debian13","fedora43","fedora44","arch"]'
+              ;;
+            ubuntu2404|ubuntu2510|ubuntu2604|debian13|fedora43|fedora44|arch)
+              targets="[\"$BUILD_TARGET_INPUT\"]"
+              ;;
+            *)
+              echo "Unsupported build target: $BUILD_TARGET_INPUT" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "Build targets: $targets"
+
+      - name: Require dispatch from main
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_NAME" != main ]; then
+            echo "This workflow must be dispatched from the main branch." >&2
+            exit 1
+          fi
+
+      - name: Resolve source to one commit
+        id: resolve
+        env:
+          HANGOVER_REPO: ${{ inputs.hangover_repo }}
+          HANGOVER_REF: ${{ inputs.hangover_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source_root="$(mktemp -d)"
+          source_dir="$source_root/hangover"
+          trap 'rm -rf "$source_root"' EXIT
+          git init --quiet "$source_dir"
+          git -C "$source_dir" remote add origin "$HANGOVER_REPO"
+          git -C "$source_dir" fetch --quiet --tags origin
+          git -C "$source_dir" fetch --quiet origin "$HANGOVER_REF"
+          hangover_commit="$(git -C "$source_dir" rev-parse FETCH_HEAD)"
+          git -C "$source_dir" cat-file -e "${hangover_commit}^{commit}"
+
+          # Ignore the rolling package tag; only release-style Hangover tags
+          # such as hangover-11.16 are valid package version anchors.
+          version="$(git -C "$source_dir" describe --tags --match 'hangover-[0-9]*' \
+            "$hangover_commit" 2>/dev/null || true)"
+          version="${version#hangover-}"
+          if [ -z "$version" ]; then
+            version="0~git${hangover_commit:0:12}"
+          fi
+          case "$version" in
+            *[!A-Za-z0-9.+~_-]*)
+              echo "Resolved version contains unsupported filename characters: $version" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "hangover_commit=$hangover_commit" >> "$GITHUB_OUTPUT"
+          echo "hangover_version=$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved $HANGOVER_REPO @ $HANGOVER_REF to $hangover_commit ($version)"
+
+  runtime-foundation:
+    name: Build shared runtime foundation
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restore runtime foundation
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: foundationubuntu2204.tgz
+          key: hangover-runtime-foundation-${{ needs.prepare.outputs.hangover_commit }}
+
+      - name: Check out exact source
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        env:
+          HANGOVER_REPO: ${{ inputs.hangover_repo }}
+          HANGOVER_COMMIT: ${{ needs.prepare.outputs.hangover_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init --quiet source
+          git -C source remote add origin "$HANGOVER_REPO"
+          git -C source fetch --quiet --depth=1 origin "$HANGOVER_COMMIT"
+          git -C source checkout --quiet --detach FETCH_HEAD
+
+      - name: Build and export foundation
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp source/.packaging/ubuntu2204/Dockerfile "$RUNNER_TEMP/runtime-foundation.Dockerfile"
+          docker build -f "$RUNNER_TEMP/runtime-foundation.Dockerfile" \
+            -t foundationubuntu2204 "$RUNNER_TEMP"
+          docker image save foundationubuntu2204 | gzip -1 > foundationubuntu2204.tgz
+
+  runtime:
+    name: Build ${{ matrix.component }} runtime
+    needs: [prepare, runtime-foundation]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [libwow64fex, libarm64ecfex, wowbox64]
+    steps:
+      - name: Free disk space
+        shell: bash
+        run: |
+          sudo swapoff -a || true
+          sudo rm -f /swapfile
+          sudo apt-get clean
+          docker system prune -af || true
+
+      - name: Restore runtime foundation
+        uses: actions/cache@v6
+        with:
+          path: foundationubuntu2204.tgz
+          key: hangover-runtime-foundation-${{ needs.prepare.outputs.hangover_commit }}
+
+      - name: Import runtime foundation
+        shell: bash
+        run: docker image load -i foundationubuntu2204.tgz
+
+      - name: Check out exact source and submodule
+        env:
+          HANGOVER_REPO: ${{ inputs.hangover_repo }}
+          HANGOVER_COMMIT: ${{ needs.prepare.outputs.hangover_commit }}
+          COMPONENT: ${{ matrix.component }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init --quiet source
+          git -C source remote add origin "$HANGOVER_REPO"
+          git -C source fetch --quiet --depth=1 origin "$HANGOVER_COMMIT"
+          git -C source checkout --quiet --detach FETCH_HEAD
+          case "$COMPONENT" in
+            libwow64fex|libarm64ecfex) submodule=fex ;;
+            wowbox64) submodule=box64 ;;
+          esac
+          git -C source submodule update --init --recursive --depth=1 "$submodule"
+
+      - name: Build runtime package and DLL
+        env:
+          COMPONENT: ${{ matrix.component }}
+          HOVERSION: ${{ needs.prepare.outputs.hangover_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$GITHUB_WORKSPACE/runtime-output"
+          mkdir -p "$output"
+
+          case "$COMPONENT" in
+            libwow64fex)
+              package_dir=fexpe
+              source_dir=source/fex
+              image=hangover-libwow64fex
+              package_name="hangover-libwow64fex_${HOVERSION}_arm64.deb"
+              dll_source=/opt/fex/build/Bin/libwow64fex.dll
+              dll_name=libwow64fex.dll
+              ;;
+            libarm64ecfex)
+              package_dir=fexpeec
+              source_dir=source/fex
+              image=hangover-libarm64ecfex
+              package_name="hangover-libarm64ecfex_${HOVERSION}_arm64.deb"
+              dll_source=/opt/fex/build/Bin/libarm64ecfex.dll
+              dll_name=libarm64ecfex.dll
+              ;;
+            wowbox64)
+              package_dir=boxpe
+              source_dir=source/box64
+              image=hangover-wowbox64
+              package_name="hangover-wowbox64_${HOVERSION}_arm64.deb"
+              dll_source=/opt/box64/build/wowbox64-prefix/src/wowbox64-build/wowbox64.dll
+              dll_name=wowbox64.dll
+              rm -rf "$source_dir/debian"
+              ;;
+          esac
+
+          cp -r "source/.packaging/ubuntu2204/$package_dir/." "$source_dir/"
+          cp "$source_dir/LICENSE" "$source_dir/DEBIAN/copyright"
+          sed -i "s/HOVERSION/${HOVERSION}/g" \
+            "$source_dir/Dockerfile" "$source_dir/DEBIAN/control"
+          docker build -t "$image" "$source_dir"
+          docker run --rm "$image" cat "/opt/deb/$package_name" > "$output/$package_name"
+          docker run --rm "$image" cat "$dll_source" > "$output/$dll_name"
+          test -s "$output/$package_name"
+          test -s "$output/$dll_name"
+
+      - name: Upload runtime artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: hangover-runtime-${{ matrix.component }}
+          path: runtime-output/*
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    name: Build ${{ matrix.target }} packages
+    needs: [prepare, runtime]
+    # Ubuntu 24.04 and Debian 13 use the repository's x86_64 cross-build
+    # definitions; the remaining definitions build natively on ARM64.
+    runs-on: ${{ (matrix.target == 'ubuntu2404' || matrix.target == 'debian13') && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.prepare.outputs.targets) }}
+    env:
+      BUILD_TARGET: ${{ matrix.target }}
+      HANGOVER_REPO: ${{ inputs.hangover_repo }}
+      HANGOVER_COMMIT: ${{ needs.prepare.outputs.hangover_commit }}
+      HOVERSION: ${{ needs.prepare.outputs.hangover_version }}
+    steps:
+      - name: Free disk space
+        shell: bash
+        run: |
+          sudo swapoff -a || true
+          sudo rm -f /swapfile
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+          docker system prune -af || true
+          df -h
+
+      - name: Resolve build target
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$BUILD_TARGET" in
+            ubuntu2404)
+              packaging=ubuntu2404; codename=noble; package_type=deb; asset_arch=arm64 ;;
+            ubuntu2510)
+              packaging=ubuntu2510; codename=questing; package_type=deb; asset_arch=arm64 ;;
+            ubuntu2604)
+              packaging=ubuntu2604; codename=resolute; package_type=deb; asset_arch=arm64 ;;
+            debian13)
+              packaging=debian13; codename=trixie; package_type=deb; asset_arch=arm64 ;;
+            fedora43)
+              packaging=fedora43; codename=fc43; package_type=rpm; asset_arch=aarch64 ;;
+            fedora44)
+              packaging=fedora43; codename=fc44; package_type=rpm; asset_arch=aarch64 ;;
+            arch)
+              packaging=arch; codename=arch; package_type=arch; asset_arch=aarch64 ;;
+            *)
+              echo "Unsupported build target: $BUILD_TARGET" >&2
+              exit 1
+              ;;
+          esac
+          {
+            echo "packaging=$packaging"
+            echo "codename=$codename"
+            echo "package_type=$package_type"
+            echo "asset_arch=$asset_arch"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out exact source and Wine
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init --quiet source
+          git -C source remote add origin "$HANGOVER_REPO"
+          git -C source fetch --quiet --depth=1 origin "$HANGOVER_COMMIT"
+          git -C source checkout --quiet --detach FETCH_HEAD
+          git -C source submodule update --init --recursive --depth=1 wine
+
+      - name: Download shared runtimes
+        uses: actions/download-artifact@v7
+        with:
+          pattern: hangover-runtime-*
+          path: runtime
+          merge-multiple: true
+
+      - name: Build Wine in target distribution
+        env:
+          PACKAGING: ${{ steps.target.outputs.packaging }}
+          PACKAGE_TYPE: ${{ steps.target.outputs.package_type }}
+          CODENAME: ${{ steps.target.outputs.codename }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          foundation_dockerfile="$RUNNER_TEMP/foundation-${BUILD_TARGET}.Dockerfile"
+          cp "source/.packaging/$PACKAGING/Dockerfile" "$foundation_dockerfile"
+          if [ "$BUILD_TARGET" = fedora44 ]; then
+            sed -i 's/FROM fedora:43/FROM fedora:44/' "$foundation_dockerfile"
+          elif [ "$BUILD_TARGET" = ubuntu2510 ]; then
+            # Ubuntu 25.10 is EOL; its ARM64 repositories live on old-releases.
+            sed -i '1a RUN sed -i -e "s|http://ports.ubuntu.com/ubuntu-ports/|http://old-releases.ubuntu.com/ubuntu/|g" -e "s|http://archive.ubuntu.com/ubuntu/|http://old-releases.ubuntu.com/ubuntu/|g" /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true' \
+              "$foundation_dockerfile"
+          fi
+          empty_context="$RUNNER_TEMP/foundation-context"
+          mkdir -p "$empty_context"
+          docker build -f "$foundation_dockerfile" -t "foundation${BUILD_TARGET}" "$empty_context"
+
+          cp -r "source/.packaging/$PACKAGING/wine/." source/wine/
+          sed -i "s/HOVERSION/${HOVERSION}/g" source/wine/Dockerfile
+          if [ "$BUILD_TARGET" = fedora44 ]; then
+            sed -i \
+              -e 's/foundationfedora43/foundationfedora44/' \
+              -e 's/_fedora43_/_fedora44_/' \
+              source/wine/Dockerfile
+          fi
+
+          if [ "$PACKAGE_TYPE" = deb ]; then
+            package_version="${HOVERSION}~${CODENAME}"
+            old_changelog="$RUNNER_TEMP/changelog.old"
+            cp source/wine/debian/changelog "$old_changelog"
+            {
+              echo "hangover-wine (${package_version}) UNRELEASED; urgency=low"
+              echo
+              echo "  * Automated build of ${HANGOVER_COMMIT} for ${BUILD_TARGET}."
+              echo
+              echo " -- Hangover package workflow <noreply@github.com>  $(date -R)"
+              echo
+              cat "$old_changelog"
+            } > source/wine/debian/changelog
+          fi
+
+          docker build -t "hangover-wine-${BUILD_TARGET}" source/wine
+
+      - name: Create package-manager package family
+        id: package
+        env:
+          PACKAGE_TYPE: ${{ steps.target.outputs.package_type }}
+          CODENAME: ${{ steps.target.outputs.codename }}
+          ASSET_ARCH: ${{ steps.target.outputs.asset_arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          output_root="$RUNNER_TEMP/hangover-wine-packages"
+          package_dir="$output_root/$BUILD_TARGET"
+          asset_dir="$GITHUB_WORKSPACE/release-assets"
+          rm -rf "$output_root" "$asset_dir"
+          mkdir -p "$package_dir" "$asset_dir"
+
+          if [ "$PACKAGE_TYPE" = deb ]; then
+            wine_name="hangover-wine_${HOVERSION}~${CODENAME}_arm64.deb"
+            docker run --rm "hangover-wine-${BUILD_TARGET}" \
+              cat "/opt/$wine_name" > "$package_dir/$wine_name"
+            cp runtime/*.deb "$package_dir/"
+
+            mapfile -t package_names < <(
+              for package in "$package_dir"/*.deb; do
+                dpkg-deb -f "$package" Package
+              done | sort -u
+            )
+            expected=(hangover-libarm64ecfex hangover-libwow64fex hangover-wine hangover-wowbox64)
+            if [ "${package_names[*]}" != "${expected[*]}" ]; then
+              echo "Incomplete deb package family: ${package_names[*]}" >&2
+              exit 1
+            fi
+          else
+            native_root="$RUNNER_TEMP/native-package-$BUILD_TARGET"
+            payload="$native_root/payload"
+            rm -rf "$native_root"
+            mkdir -p "$payload/usr/lib/wine/aarch64-windows"
+            raw_name="hangover-wine_${HOVERSION}_${BUILD_TARGET}_aarch64.tar.zst"
+            docker run --rm "hangover-wine-${BUILD_TARGET}" \
+              cat "/opt/artifacts/$raw_name" > "$native_root/$raw_name"
+            tar --zstd -xf "$native_root/$raw_name" -C "$payload"
+            install -m 0644 runtime/libarm64ecfex.dll runtime/libwow64fex.dll runtime/wowbox64.dll \
+              "$payload/usr/lib/wine/aarch64-windows/"
+
+            native_version="${HOVERSION//-/.}"
+            if [ "$PACKAGE_TYPE" = rpm ]; then
+              mkdir -p "$native_root/rpmbuild"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
+              cat > "$native_root/hangover-wine.spec" <<'RPM_SPEC'
+          Name:           hangover-wine
+          Version:        NATIVE_VERSION
+          Release:        1.DISTRO_RELEASE
+          Summary:        Wine for running Windows ARM64, x86-64, and x86 applications on ARM64
+          License:        LGPL-2.1-or-later
+          URL:            https://github.com/mikugirls/hangover
+          BuildArch:      aarch64
+          Provides:       wine
+          Conflicts:      wine-core
+
+          %description
+          Hangover Wine with FEX and Box64 PE runtime libraries for ARM64 Linux.
+
+          %prep
+
+          %build
+
+          %install
+          rm -rf %{buildroot}
+          mkdir -p %{buildroot}
+          cp -a /work/payload/. %{buildroot}/
+
+          %files
+          /usr/*
+
+          %changelog
+          * Thu Jan 01 1970 Hangover package workflow <noreply@github.com> - NATIVE_VERSION-1
+          - Automated package build
+          RPM_SPEC
+              sed -i \
+                -e "s/NATIVE_VERSION/$native_version/g" \
+                -e "s/DISTRO_RELEASE/$CODENAME/g" \
+                "$native_root/hangover-wine.spec"
+              docker run --rm \
+                -e NATIVE_VERSION="$native_version" \
+                -v "$native_root:/work" \
+                "foundation${BUILD_TARGET}" bash -s <<'RPM_BUILD'
+          set -euo pipefail
+          dnf install -y --setopt=install_weak_deps=False rpm-build
+          rpmbuild --define '_topdir /work/rpmbuild' -bb /work/hangover-wine.spec
+          RPM_BUILD
+              find "$native_root/rpmbuild/RPMS" -type f -name '*.rpm' -exec cp {} "$package_dir/" \;
+              rpm_file="$(find "$package_dir" -maxdepth 1 -type f -name '*.rpm' -print -quit)"
+              [ -n "$rpm_file" ]
+              docker run --rm -v "$package_dir:/packages:ro" "foundation${BUILD_TARGET}" \
+                rpm -qp --queryformat '%{NAME} %{ARCH}\n' "/packages/${rpm_file##*/}" | grep -qx 'hangover-wine aarch64'
+            else
+              cat > "$native_root/PKGBUILD" <<'ARCH_PKGBUILD'
+          pkgname=hangover-wine
+          pkgver=NATIVE_VERSION
+          pkgrel=1
+          pkgdesc='Wine for running Windows ARM64, x86-64, and x86 applications on ARM64'
+          arch=('aarch64')
+          url='https://github.com/mikugirls/hangover'
+          license=('LGPL-2.1-or-later')
+          depends=('alsa-lib' 'fontconfig' 'freetype2' 'gcc-libs' 'glibc' 'gnutls' 'krb5' 'libcups' 'libpulse' 'libx11' 'libxcomposite' 'libxcursor' 'libxi' 'libxinerama' 'libxrandr' 'libxrender' 'libxxf86vm' 'ncurses' 'sdl2-compat' 'vulkan-icd-loader' 'wayland')
+          provides=('wine')
+          conflicts=('wine')
+          options=('!strip' '!debug')
+
+          package() {
+            cp -a "$startdir/payload/." "$pkgdir/"
+          }
+          ARCH_PKGBUILD
+              sed -i "s/NATIVE_VERSION/$native_version/g" "$native_root/PKGBUILD"
+              docker run --rm -v "$native_root:/work" foundationarch bash -s <<'ARCH_BUILD'
+          set -euo pipefail
+          useradd -m -s /bin/bash packagebuild
+          chown -R packagebuild:packagebuild /work
+          su -s /bin/bash packagebuild -c 'cd /work && makepkg --noconfirm --nodeps --force'
+          ARCH_BUILD
+              find "$native_root" -maxdepth 1 -type f -name '*.pkg.tar.*' -exec cp {} "$package_dir/" \;
+              arch_file="$(find "$package_dir" -maxdepth 1 -type f -name '*.pkg.tar.*' -print -quit)"
+              [ -n "$arch_file" ]
+              docker run --rm -v "$package_dir:/packages:ro" foundationarch \
+                pacman -Qp "/packages/${arch_file##*/}" | grep -q '^hangover-wine '
+            fi
+          fi
+
+          build_time="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          printf 'target=%s\nhangover_version=%s\nsource_commit=%s\nbuild_time=%s\n' \
+            "$BUILD_TARGET" "$HOVERSION" "$HANGOVER_COMMIT" "$build_time" \
+            > "$package_dir/.hangover-wine-build-info"
+          asset_name="hangover-wine-${BUILD_TARGET}-${HOVERSION}-${ASSET_ARCH}.tar.gz"
+          tar -C "$RUNNER_TEMP" -czf "$asset_dir/$asset_name" \
+            "hangover-wine-packages/$BUILD_TARGET"
+          test -s "$asset_dir/$asset_name"
+          echo "asset_path=$asset_dir/$asset_name" >> "$GITHUB_OUTPUT"
+          echo "Created $asset_name at $build_time"
+
+      - name: Upload target package archive
+        uses: actions/upload-artifact@v6
+        with:
+          name: hangover-wine-package-${{ matrix.target }}
+          path: ${{ steps.package.outputs.asset_path }}
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Update rolling Hangover Wine Release
+    needs: [prepare, build]
+    if: ${{ always() && !cancelled() && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out installer
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Ensure rolling tag exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=hangover-wine-packages
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Rolling tag $tag already exists."
+          elif git tag "$tag" "$GITHUB_SHA" && git push origin "refs/tags/$tag"; then
+            echo "Created rolling tag $tag."
+          elif git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Rolling tag $tag was created concurrently."
+          else
+            echo "Could not create rolling tag $tag." >&2
+            exit 1
+          fi
+
+      - name: Download newly built package assets
+        uses: actions/download-artifact@v7
+        with:
+          pattern: hangover-wine-package-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create manifest and update Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HANGOVER_REPO: ${{ inputs.hangover_repo }}
+          HANGOVER_REF: ${{ inputs.hangover_ref }}
+          HANGOVER_COMMIT: ${{ needs.prepare.outputs.hangover_commit }}
+          HANGOVER_VERSION: ${{ needs.prepare.outputs.hangover_version }}
+          BUILD_TARGET_INPUT: ${{ inputs.build_target }}
+          REQUEST_ID: ${{ inputs.request_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_tag=hangover-wine-packages
+          release_dir="$GITHUB_WORKSPACE/release-assets"
+          manifest="$release_dir/hangover-wine-manifest"
+          installer="$release_dir/install-hangover-wine.sh"
+          targets=(ubuntu2404 ubuntu2510 ubuntu2604 debian13 fedora43 fedora44 arch)
+          declare -A assets=()
+          declare -A sources=()
+          declare -A build_times=()
+          updated_targets=()
+          reused_targets=()
+          unavailable_targets=()
+          mkdir -p "$release_dir"
+
+          asset_suffix() {
+            case "$1" in
+              ubuntu2404|ubuntu2510|ubuntu2604|debian13) printf '%s\n' '-arm64.tar.gz' ;;
+              fedora43|fedora44|arch) printf '%s\n' '-aarch64.tar.gz' ;;
+              *) return 1 ;;
+            esac
+          }
+
+          target_label() {
+            case "$1" in
+              ubuntu2404) printf '%s\n' 'Ubuntu 24.04' ;;
+              ubuntu2510) printf '%s\n' 'Ubuntu 25.10' ;;
+              ubuntu2604) printf '%s\n' 'Ubuntu 26.04' ;;
+              debian13) printf '%s\n' 'Debian 13' ;;
+              fedora43) printf '%s\n' 'Fedora 43' ;;
+              fedora44) printf '%s\n' 'Fedora 44' ;;
+              arch) printf '%s\n' 'Arch Linux' ;;
+              *) return 1 ;;
+            esac
+          }
+
+          local_asset() {
+            local target="$1" suffix path
+            local -a matches=()
+            suffix="$(asset_suffix "$target")"
+            while IFS= read -r path; do
+              matches+=("${path##*/}")
+            done < <(find "$release_dir" -maxdepth 1 -type f \
+              -name "hangover-wine-${target}-*${suffix}" -print | sort)
+            if [ "${#matches[@]}" -gt 1 ]; then
+              echo "More than one local asset matched $target." >&2
+              return 2
+            fi
+            [ "${#matches[@]}" -eq 1 ] || return 1
+            printf '%s\n' "${matches[0]}"
+          }
+
+          archive_build_time() {
+            local archive="$1" target="$2" metadata
+            metadata="$(tar -xOzf "$archive" \
+              "hangover-wine-packages/$target/.hangover-wine-build-info" 2>/dev/null)" || return 1
+            printf '%s\n' "$metadata" | sed -n 's/^build_time=//p' | sed -n '1p'
+          }
+
+          release_exists=false
+          release_rows=''
+          previous_release_time=''
+          if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            release_exists=true
+            release_rows="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$release_tag" \
+              --jq '.assets[] | [.name, .id] | @tsv')"
+            previous_release_time="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$release_tag" \
+              --jq '.published_at // empty')"
+          fi
+
+          release_asset() {
+            local target="$1" suffix name id
+            local -a matches=()
+            suffix="$(asset_suffix "$target")"
+            while IFS=$'\t' read -r name id; do
+              case "$name" in
+                "hangover-wine-${target}-"*"${suffix}") matches+=("$name") ;;
+              esac
+            done <<< "$release_rows"
+            if [ "${#matches[@]}" -gt 1 ]; then
+              echo "More than one rolling Release asset matched $target." >&2
+              return 2
+            fi
+            [ "${#matches[@]}" -eq 1 ] || return 1
+            printf '%s\n' "${matches[0]}"
+          }
+
+          for target in "${targets[@]}"; do
+            if asset="$(local_asset "$target")"; then
+              assets["$target"]="$asset"
+              sources["$target"]='new'
+              build_times["$target"]="$(archive_build_time "$release_dir/$asset" "$target")"
+              updated_targets+=("$target")
+            else
+              status=$?
+              [ "$status" -eq 1 ] || exit "$status"
+              if [ "$release_exists" = true ] && asset="$(release_asset "$target")"; then
+                assets["$target"]="$asset"
+                sources["$target"]='reused'
+                build_times["$target"]="${previous_release_time:-unknown}"
+                reused_targets+=("$target")
+              else
+                status=$?
+                [ "$status" -eq 1 ] || exit "$status"
+                unavailable_targets+=("$target")
+              fi
+            fi
+          done
+
+          if [ "$BUILD_TARGET_INPUT" != all ] && [ "${sources[$BUILD_TARGET_INPUT]:-}" != new ]; then
+            echo "Selected target $BUILD_TARGET_INPUT did not produce a new asset; Release is unchanged." >&2
+            exit 1
+          fi
+
+          cp scripts/install-hangover-wine.sh "$installer"
+          chmod +x "$installer"
+          {
+            echo 'format=1'
+            echo "release_tag=$release_tag"
+            echo "revision=run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "hangover_repo=$HANGOVER_REPO"
+            echo "hangover_ref=$HANGOVER_REF"
+            echo "hangover_commit=$HANGOVER_COMMIT"
+            echo "hangover_version=$HANGOVER_VERSION"
+            for target in "${targets[@]}"; do
+              [ -n "${assets[$target]:-}" ] || continue
+              echo "$target=${assets[$target]}"
+              echo "${target}_build_time=${build_times[$target]}"
+              echo "${target}_source=${sources[$target]}"
+            done
+          } > "$manifest"
+
+          join_labels() {
+            local target result=''
+            for target in "$@"; do
+              [ -n "$result" ] && result+=', '
+              result+="$(target_label "$target")"
+            done
+            printf '%s' "${result:-none}"
+          }
+
+          release_notes="$(cat <<EOF
+          Automated ARM64 Hangover Wine package families.
+
+          - Hangover version: \`$HANGOVER_VERSION\`
+          - Hangover commit: \`$HANGOVER_COMMIT\`
+          - Newly built: $(join_labels "${updated_targets[@]}")
+          - Reused from previous Release: $(join_labels "${reused_targets[@]}")
+          - Currently unavailable: $(join_labels "${unavailable_targets[@]}")
+          - Request ID: ${REQUEST_ID:-manual-${GITHUB_RUN_ID}}
+
+          Each archive contains packages for exactly one distribution. Use \`install-hangover-wine.sh\` to select, verify, and install the matching package through APT, DNF, or Pacman.
+          EOF
+          )"
+
+          delete_stale_target_assets() {
+            local target="$1" keep="$2" suffix name id
+            suffix="$(asset_suffix "$target")"
+            release_rows="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$release_tag" \
+              --jq '.assets[] | [.name, .id] | @tsv')"
+            while IFS=$'\t' read -r name id; do
+              case "$name" in
+                "hangover-wine-${target}-"*"${suffix}")
+                  if [ "$name" != "$keep" ]; then
+                    gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"
+                  fi
+                  ;;
+              esac
+            done <<< "$release_rows"
+          }
+
+          if [ "$release_exists" = true ]; then
+            if [ "${#updated_targets[@]}" -gt 0 ]; then
+              uploads=()
+              for target in "${updated_targets[@]}"; do
+                uploads+=("$release_dir/${assets[$target]}")
+              done
+              gh release upload "$release_tag" "${uploads[@]}" \
+                --repo "$GITHUB_REPOSITORY" --clobber
+            fi
+            gh release upload "$release_tag" "$installer" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            # Upload the manifest last so it never references a missing package asset.
+            gh release upload "$release_tag" "$manifest" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            for target in "${updated_targets[@]}"; do
+              delete_stale_target_assets "$target" "${assets[$target]}"
+            done
+            gh release edit "$release_tag" --repo "$GITHUB_REPOSITORY" \
+              --title 'Hangover Wine ARM64 packages' \
+              --notes "$release_notes" --draft=false --latest=false
+          else
+            gh release create "$release_tag" "$release_dir"/* \
+              --repo "$GITHUB_REPOSITORY" --draft --latest=false \
+              --target "$GITHUB_SHA" \
+              --title 'Hangover Wine ARM64 packages' \
+              --notes "$release_notes"
+            gh release edit "$release_tag" --repo "$GITHUB_REPOSITORY" \
+              --draft=false --latest=false
+          fi
+
+          echo "Updated $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$release_tag"
