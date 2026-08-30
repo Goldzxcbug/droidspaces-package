@@ -37,11 +37,6 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  # The fixed rolling Release is updated in place and must be serialized.
-  group: hangover-wine-package-release
-  cancel-in-progress: false
-
 jobs:
   prepare:
     name: Resolve Hangover source
@@ -391,6 +386,7 @@ jobs:
             if [ "$PACKAGE_TYPE" = rpm ]; then
               cat > "$package_context/hangover-wine.spec" <<'RPM_SPEC'
           %global debug_package %{nil}
+          %global __os_install_post %{nil}
 
           Name:           hangover-wine
           Version:        NATIVE_VERSION
@@ -418,12 +414,13 @@ jobs:
           /usr/*
 
           %changelog
-          * Thu Jan 01 1970 Hangover package workflow <noreply@github.com> - NATIVE_VERSION-1
+          * PACKAGE_DATE Hangover package workflow <noreply@github.com> - NATIVE_VERSION-1
           - Automated package build
           RPM_SPEC
               sed -i \
                 -e "s/NATIVE_VERSION/$native_version/g" \
                 -e "s/DISTRO_RELEASE/$CODENAME/g" \
+                -e "s/PACKAGE_DATE/$(LC_ALL=C date '+%a %b %d %Y')/g" \
                 "$package_context/hangover-wine.spec"
               cat >> source/wine/Dockerfile <<'RPM_PACKAGE_DOCKERFILE'
           COPY .hangover-package/runtime/ /opt/hangover-runtime/
@@ -550,6 +547,10 @@ jobs:
     name: Update rolling Hangover Wine Release
     needs: [prepare, build]
     if: ${{ always() && !cancelled() && needs.prepare.result == 'success' }}
+    concurrency:
+      # Builds may run in parallel, but the fixed rolling Release is updated in place.
+      group: hangover-wine-package-release
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - name: Check out installer
