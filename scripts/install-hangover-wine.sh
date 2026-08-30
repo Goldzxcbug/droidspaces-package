@@ -29,6 +29,7 @@ detect_language() {
     local locale_name="${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}"
     locale_name="${locale_name,,}"
     [[ "$locale_name" == zh* ]] && UI_LANG=zh
+    return 0
 }
 
 msg() {
@@ -538,6 +539,8 @@ download_and_extract() {
 
 install_packages() {
     local -a files=()
+    local pacman_conf
+
     case "$PACKAGE_KIND" in
         deb)
             mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.deb' -print | sort)
@@ -553,7 +556,23 @@ install_packages() {
         arch)
             mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.pkg.tar.*' -print | sort)
             log "正在通过 Pacman 安装 Hangover Wine..." "Installing Hangover Wine through Pacman..."
-            pacman -U --noconfirm "${files[@]}"
+            log "软件包已通过 GitHub Release SHA-256 校验；将仅对本次安装允许未签名的本地包。" \
+                "Packages passed GitHub Release SHA-256 verification; unsigned local packages are allowed only for this transaction."
+
+            pacman_conf="$WORK_DIR/pacman.conf"
+            [[ -r /etc/pacman.conf ]] || die "无法读取 /etc/pacman.conf。" "Cannot read /etc/pacman.conf."
+            cp /etc/pacman.conf "$pacman_conf"
+            if grep -Eq '^[[:space:]]*#?[[:space:]]*LocalFileSigLevel[[:space:]]*=' "$pacman_conf"; then
+                sed -i -E 's/^[[:space:]]*#?[[:space:]]*LocalFileSigLevel[[:space:]]*=.*/LocalFileSigLevel = Optional/' "$pacman_conf"
+            elif grep -qE '^\[options\][[:space:]]*$' "$pacman_conf"; then
+                sed -i '/^\[options\][[:space:]]*$/a LocalFileSigLevel = Optional' "$pacman_conf"
+            else
+                die "pacman.conf 缺少 [options] 段。" "pacman.conf has no [options] section."
+            fi
+
+            if ! pacman --config "$pacman_conf" -U --noconfirm "${files[@]}"; then
+                die "Arch 软件包安装失败。" "Arch package installation failed."
+            fi
             ;;
     esac
 }
