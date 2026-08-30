@@ -179,10 +179,12 @@ bootstrap_dependencies() {
     log "正在准备下载和校验工具..." "Preparing download and verification tools..."
     case "$PACKAGE_KIND" in
         deb)
-            if [[ "$TARGET" == ubuntu2510 ]]; then
+            if ! apt-get update; then
+                [[ "$TARGET" == ubuntu2510 ]] || \
+                    die "APT 软件源更新失败。" "Failed to update the APT repositories."
                 local source_file
-                log "正在把 Ubuntu 25.10 官方源切换到 old-releases..." \
-                    "Switching the Ubuntu 25.10 official repositories to old-releases..."
+                log "Ubuntu 25.10 当前软件源不可用，正在回退到 old-releases..." \
+                    "The current Ubuntu 25.10 repositories are unavailable; falling back to old-releases..."
                 for source_file in \
                     /etc/apt/sources.list \
                     /etc/apt/sources.list.d/*.list \
@@ -194,8 +196,8 @@ bootstrap_dependencies() {
                         -e 's|http://security.ubuntu.com/ubuntu|http://old-releases.ubuntu.com/ubuntu|g' \
                         "$source_file"
                 done
+                apt-get update
             fi
-            apt-get update
             apt-get install -y --no-install-recommends ca-certificates curl jq coreutils tar gzip
             ;;
         rpm)

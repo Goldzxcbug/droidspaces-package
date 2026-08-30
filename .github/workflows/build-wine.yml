@@ -346,10 +346,6 @@ jobs:
           cp "source/.packaging/$PACKAGING/Dockerfile" "$foundation_dockerfile"
           if [ "$BUILD_TARGET" = fedora44 ]; then
             sed -i 's/FROM fedora:43/FROM fedora:44/' "$foundation_dockerfile"
-          elif [ "$BUILD_TARGET" = ubuntu2510 ]; then
-            # Ubuntu 25.10 is EOL; its ARM64 repositories live on old-releases.
-            sed -i '1a RUN sed -i -e "s|http://ports.ubuntu.com/ubuntu-ports/|http://old-releases.ubuntu.com/ubuntu/|g" -e "s|http://archive.ubuntu.com/ubuntu/|http://old-releases.ubuntu.com/ubuntu/|g" /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true' \
-              "$foundation_dockerfile"
           fi
           empty_context="$RUNNER_TEMP/foundation-context"
           mkdir -p "$empty_context"
