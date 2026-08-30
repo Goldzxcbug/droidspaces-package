@@ -763,7 +763,6 @@ jobs:
           else
             gh release create "$release_tag" "$release_dir"/* \
               --repo "$GITHUB_REPOSITORY" --draft --latest=false \
-              --target "$GITHUB_SHA" \
               --title 'Hangover Wine ARM64 packages' \
               --notes "$release_notes"
             gh release edit "$release_tag" --repo "$GITHUB_REPOSITORY" \
