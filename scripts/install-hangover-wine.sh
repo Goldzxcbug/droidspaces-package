@@ -12,6 +12,7 @@ readonly GH_PROXY_URL="https://gh-proxy.com/https://github.com"
 readonly GHPROXY_NET_URL="https://ghproxy.net/https://github.com"
 readonly MAX_ARCHIVE_BYTES=$((2 * 1024 * 1024 * 1024))
 readonly MAX_EXTRACTED_BYTES=$((6 * 1024 * 1024 * 1024))
+readonly DOWNLOAD_CACHE_DIR="/var/cache/hangover-wine"
 
 UI_LANG=en
 DOWNLOAD_SOURCE=""
@@ -332,6 +333,19 @@ release_download_base() {
 download_file() {
     local url="$1"
     local destination="$2"
+
+    if [[ -s "$destination" ]]; then
+        log "检测到未完成下载，正在续传：$(basename "$destination")" \
+            "Found an incomplete download; resuming: $(basename "$destination")"
+        if curl -fL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 1800 \
+            --continue-at - "$url" -o "$destination"; then
+            return 0
+        fi
+        log "服务器不支持续传或现有文件无效，准备重新下载：$(basename "$destination")" \
+            "The server rejected resume or the existing file is invalid; restarting: $(basename "$destination")"
+        rm -f -- "$destination"
+    fi
+
     curl -fL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 1800 \
         "$url" -o "$destination"
 }
@@ -494,15 +508,14 @@ validate_packages() {
 }
 
 download_and_extract() {
-    local base manifest archive attempt attempt_dir
+    local base manifest archive attempt
     WORK_DIR="$(mktemp -d -t hangover-wine.XXXXXXXX)"
+    install -d -m 0700 "$DOWNLOAD_CACHE_DIR"
+    chmod 0700 "$DOWNLOAD_CACHE_DIR"
     base="$(release_download_base)"
+    manifest="$DOWNLOAD_CACHE_DIR/$MANIFEST_NAME"
 
     for attempt in 1 2 3; do
-        attempt_dir="$WORK_DIR/attempt-$attempt"
-        mkdir -m 0700 "$attempt_dir"
-        manifest="$attempt_dir/$MANIFEST_NAME"
-
         log "正在从 $(download_source_name "$DOWNLOAD_SOURCE") 下载 Release 清单..." \
             "Downloading the Release manifest from $(download_source_name "$DOWNLOAD_SOURCE")..."
         if ! download_file "$base/$MANIFEST_NAME" "$manifest" || \
@@ -514,7 +527,7 @@ download_and_extract() {
         fi
         resolve_archive_name "$manifest"
 
-        archive="$attempt_dir/$ARCHIVE_NAME"
+        archive="$DOWNLOAD_CACHE_DIR/$ARCHIVE_NAME"
         log "正在下载 $TARGET_LABEL 软件包：$ARCHIVE_NAME" \
             "Downloading $TARGET_LABEL packages: $ARCHIVE_NAME"
         if ! download_file "$base/$ARCHIVE_NAME" "$archive" || \
@@ -526,8 +539,8 @@ download_and_extract() {
         fi
 
         validate_archive "$archive"
-        tar --no-same-owner --no-same-permissions -xzf "$archive" -C "$attempt_dir"
-        PACKAGE_DIR="$attempt_dir/hangover-wine-packages/$TARGET"
+        tar --no-same-owner --no-same-permissions -xzf "$archive" -C "$WORK_DIR"
+        PACKAGE_DIR="$WORK_DIR/hangover-wine-packages/$TARGET"
         [[ -d "$PACKAGE_DIR" ]] || die "解压后没有软件包目录。" "No package directory was extracted."
         validate_packages
         return
