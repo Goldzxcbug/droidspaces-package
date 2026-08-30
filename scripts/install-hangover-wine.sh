@@ -5,6 +5,7 @@ readonly DEFAULT_REPOSITORY="Goldzxcbug/droidspaces-package"
 readonly RELEASE_REPOSITORY="${HANGOVER_WINE_RELEASE_REPOSITORY:-$DEFAULT_REPOSITORY}"
 readonly RELEASE_TAG="${HANGOVER_WINE_RELEASE_TAG:-hangover-wine-packages}"
 readonly MANIFEST_NAME="hangover-wine-manifest"
+readonly SOURCE_PROBE_TIMEOUT_SECONDS=2
 readonly GITHUB_URL="https://github.com"
 readonly GITHUB_API_URL="https://api.github.com"
 readonly GH_PROXY_URL="https://gh-proxy.com/https://github.com"
@@ -13,7 +14,8 @@ readonly MAX_ARCHIVE_BYTES=$((2 * 1024 * 1024 * 1024))
 readonly MAX_EXTRACTED_BYTES=$((6 * 1024 * 1024 * 1024))
 
 UI_LANG=en
-DOWNLOAD_SOURCE=1
+DOWNLOAD_SOURCE=""
+SKIP_SOURCE_PROBE=false
 TARGET=""
 TARGET_LABEL=""
 PACKAGE_KIND=""
@@ -50,6 +52,7 @@ usage() {
     cat <<EOF
 $(msg '用法' 'Usage'): $0 [--1|--2|--3]
 
+  $(msg '不带参数：测试三个下载源的延迟后交互选择' 'No option: test all three sources, then choose interactively')
   --1, -1  GitHub
   --2, -2  gh-proxy.com
   --3, -3  ghproxy.net
@@ -60,9 +63,18 @@ parse_arguments() {
     local argument
     for argument in "$@"; do
         case "$argument" in
-            -1|--1) DOWNLOAD_SOURCE=1 ;;
-            -2|--2) DOWNLOAD_SOURCE=2 ;;
-            -3|--3) DOWNLOAD_SOURCE=3 ;;
+            -1|--1)
+                DOWNLOAD_SOURCE=1
+                SKIP_SOURCE_PROBE=true
+                ;;
+            -2|--2)
+                DOWNLOAD_SOURCE=2
+                SKIP_SOURCE_PROBE=true
+                ;;
+            -3|--3)
+                DOWNLOAD_SOURCE=3
+                SKIP_SOURCE_PROBE=true
+                ;;
             -h|--help)
                 usage
                 exit 0
@@ -216,12 +228,93 @@ bootstrap_dependencies() {
 }
 
 download_source_name() {
-    case "$DOWNLOAD_SOURCE" in
+    case "$1" in
         1) printf 'GitHub' ;;
         2) printf 'gh-proxy.com' ;;
         3) printf 'ghproxy.net' ;;
         *) return 1 ;;
     esac
+}
+
+download_source_probe_url() {
+    local source="$1"
+    local prefix
+
+    case "$source" in
+        1) prefix="$GITHUB_URL" ;;
+        2) prefix="$GH_PROXY_URL" ;;
+        3) prefix="$GHPROXY_NET_URL" ;;
+        *) return 1 ;;
+    esac
+    printf '%s/%s/releases/download/%s/%s' \
+        "$prefix" "$RELEASE_REPOSITORY" "$RELEASE_TAG" "$MANIFEST_NAME"
+}
+
+format_latency() {
+    local seconds="$1"
+
+    awk -v seconds="$seconds" 'BEGIN { printf "%d ms", (seconds * 1000) + 0.5 }'
+}
+
+probe_download_source() {
+    local source="$1"
+    local probe_url latency status=0
+
+    probe_url="$(download_source_probe_url "$source")" || return 1
+    if latency="$(curl -fsSL --connect-timeout "$SOURCE_PROBE_TIMEOUT_SECONDS" \
+        --max-time "$SOURCE_PROBE_TIMEOUT_SECONDS" --output /dev/null \
+        --write-out '%{time_total}' "$probe_url" 2>/dev/null)"; then
+        if awk -v seconds="$latency" -v limit="$SOURCE_PROBE_TIMEOUT_SECONDS" \
+            'BEGIN { exit (seconds < limit ? 0 : 1) }'; then
+            format_latency "$latency"
+            return
+        fi
+        printf '%s' "$(msg '超时' 'timeout')"
+        return
+    else
+        status=$?
+    fi
+
+    if (( status == 28 )); then
+        printf '%s' "$(msg '超时' 'timeout')"
+    else
+        printf '%s' "$(msg '不可用' 'unavailable')"
+    fi
+}
+
+select_download_source() {
+    local source latency choice
+
+    if [[ "$SKIP_SOURCE_PROBE" == true ]]; then
+        log "已按参数选择 $(download_source_name "$DOWNLOAD_SOURCE")，跳过延迟测试。" \
+            "Selected $(download_source_name "$DOWNLOAD_SOURCE") from the command line; skipping latency checks."
+        return
+    fi
+
+    log "正在测试下载源延迟（达到 ${SOURCE_PROBE_TIMEOUT_SECONDS} 秒视为超时）..." \
+        "Testing download-source latency (timeouts at ${SOURCE_PROBE_TIMEOUT_SECONDS} seconds)..."
+    for source in 1 2 3; do
+        latency="$(probe_download_source "$source")"
+        printf '%s. %s %s: %s\n' "$source" "$(download_source_name "$source")" \
+            "$(msg '延迟' 'latency')" "$latency"
+    done
+
+    while :; do
+        printf '%s' "$(msg '请输入下载源编号 [1-3]: ' 'Choose a download source [1-3]: ')"
+        if ! IFS= read -r choice; then
+            die "无法读取下载源选择。请使用 -1/--1、-2/--2 或 -3/--3 指定下载源。" \
+                "Unable to read a download-source choice. Specify -1/--1, -2/--2, or -3/--3."
+        fi
+        case "$choice" in
+            1|2|3)
+                DOWNLOAD_SOURCE="$choice"
+                return
+                ;;
+            *)
+                log "请输入 1、2 或 3。" "Enter 1, 2, or 3."
+                ;;
+        esac
+    done
 }
 
 release_download_base() {
@@ -409,8 +502,8 @@ download_and_extract() {
         mkdir -m 0700 "$attempt_dir"
         manifest="$attempt_dir/$MANIFEST_NAME"
 
-        log "正在从 $(download_source_name) 下载 Release 清单..." \
-            "Downloading the Release manifest from $(download_source_name)..."
+        log "正在从 $(download_source_name "$DOWNLOAD_SOURCE") 下载 Release 清单..." \
+            "Downloading the Release manifest from $(download_source_name "$DOWNLOAD_SOURCE")..."
         if ! download_file "$base/$MANIFEST_NAME" "$manifest" || \
             ! fetch_release_metadata || \
             ! verify_asset "$manifest" "$MANIFEST_NAME" $((1024 * 1024)); then
@@ -472,7 +565,9 @@ main() {
     detect_target
     require_root "$@"
     bootstrap_dependencies
-    log "下载源：$(download_source_name)" "Download source: $(download_source_name)"
+    select_download_source
+    log "下载源：$(download_source_name "$DOWNLOAD_SOURCE")" \
+        "Download source: $(download_source_name "$DOWNLOAD_SOURCE")"
     download_and_extract
     install_packages
 
