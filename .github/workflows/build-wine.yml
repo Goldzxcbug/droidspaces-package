@@ -411,15 +411,8 @@ jobs:
             fi
           else
             native_root="$RUNNER_TEMP/native-package-$BUILD_TARGET"
-            payload="$native_root/payload"
             rm -rf "$native_root"
-            mkdir -p "$payload/usr/lib/wine/aarch64-windows"
-            raw_name="hangover-wine_${HOVERSION}_${BUILD_TARGET}_aarch64.tar.zst"
-            docker run --rm "hangover-wine-${BUILD_TARGET}" \
-              cat "/opt/artifacts/$raw_name" > "$native_root/$raw_name"
-            tar --zstd -xf "$native_root/$raw_name" -C "$payload"
-            install -m 0644 runtime/libarm64ecfex.dll runtime/libwow64fex.dll runtime/wowbox64.dll \
-              "$payload/usr/lib/wine/aarch64-windows/"
+            mkdir -p "$native_root"
 
             native_version="${HOVERSION//-/.}"
             if [ "$PACKAGE_TYPE" = rpm ]; then
@@ -445,7 +438,7 @@ jobs:
           %install
           rm -rf %{buildroot}
           mkdir -p %{buildroot}
-          cp -a /work/payload/. %{buildroot}/
+          cp -a /opt/package/. %{buildroot}/
 
           %files
           /usr/*
@@ -461,8 +454,11 @@ jobs:
               docker run --rm \
                 -e NATIVE_VERSION="$native_version" \
                 -v "$native_root:/work" \
-                "foundation${BUILD_TARGET}" bash -s <<'RPM_BUILD'
+                -v "$GITHUB_WORKSPACE/runtime:/runtime:ro" \
+                "hangover-wine-${BUILD_TARGET}" bash -s <<'RPM_BUILD'
           set -euo pipefail
+          install -m 0644 /runtime/libarm64ecfex.dll /runtime/libwow64fex.dll /runtime/wowbox64.dll \
+            /opt/package/usr/lib/wine/aarch64-windows/
           dnf install -y --setopt=install_weak_deps=False rpm-build
           rpmbuild --define '_topdir /work/rpmbuild' -bb /work/hangover-wine.spec
           RPM_BUILD
@@ -486,12 +482,17 @@ jobs:
           options=('!strip' '!debug')
 
           package() {
-            cp -a "$startdir/payload/." "$pkgdir/"
+            cp -a /opt/package/. "$pkgdir/"
           }
           ARCH_PKGBUILD
               sed -i "s/NATIVE_VERSION/$native_version/g" "$native_root/PKGBUILD"
-              docker run --rm -v "$native_root:/work" foundationarch bash -s <<'ARCH_BUILD'
+              docker run --rm \
+                -v "$native_root:/work" \
+                -v "$GITHUB_WORKSPACE/runtime:/runtime:ro" \
+                hangover-wine-arch bash -s <<'ARCH_BUILD'
           set -euo pipefail
+          install -m 0644 /runtime/libarm64ecfex.dll /runtime/libwow64fex.dll /runtime/wowbox64.dll \
+            /opt/package/usr/lib/wine/aarch64-windows/
           useradd -m -s /bin/bash packagebuild
           chown -R packagebuild:packagebuild /work
           su -s /bin/bash packagebuild -c 'cd /work && makepkg --noconfirm --nodeps --force'
