@@ -373,9 +373,113 @@ jobs:
               echo
               cat "$old_changelog"
             } > source/wine/debian/changelog
-          fi
+            docker build -t "hangover-wine-${BUILD_TARGET}" source/wine
+          else
+            package_context="source/wine/.hangover-package"
+            native_output="$RUNNER_TEMP/native-package-output/$BUILD_TARGET"
+            native_version="${HOVERSION//-/.}"
+            rm -rf "$package_context" "$native_output"
+            mkdir -p "$package_context/runtime" "$native_output"
+            install -m 0644 runtime/libarm64ecfex.dll runtime/libwow64fex.dll runtime/wowbox64.dll \
+              "$package_context/runtime/"
 
-          docker build -t "hangover-wine-${BUILD_TARGET}" source/wine
+            # The upstream final RUN creates a second compressed payload. Native
+            # packages replace it and are exported without loading the large image.
+            sed -i '/^RUN tar -C \/opt\/package --zstd -cf \/opt\/artifacts\//d' \
+              source/wine/Dockerfile
+
+            if [ "$PACKAGE_TYPE" = rpm ]; then
+              cat > "$package_context/hangover-wine.spec" <<'RPM_SPEC'
+          %global debug_package %{nil}
+
+          Name:           hangover-wine
+          Version:        NATIVE_VERSION
+          Release:        1.DISTRO_RELEASE
+          Summary:        Wine for running Windows ARM64, x86-64, and x86 applications on ARM64
+          License:        LGPL-2.1-or-later
+          URL:            https://github.com/mikugirls/hangover
+          BuildArch:      aarch64
+          Provides:       wine
+          Conflicts:      wine-core
+
+          %description
+          Hangover Wine with FEX and Box64 PE runtime libraries for ARM64 Linux.
+
+          %prep
+
+          %build
+
+          %install
+          rm -rf %{buildroot}
+          mkdir -p %{buildroot}
+          cp -a /opt/package/. %{buildroot}/
+
+          %files
+          /usr/*
+
+          %changelog
+          * Thu Jan 01 1970 Hangover package workflow <noreply@github.com> - NATIVE_VERSION-1
+          - Automated package build
+          RPM_SPEC
+              sed -i \
+                -e "s/NATIVE_VERSION/$native_version/g" \
+                -e "s/DISTRO_RELEASE/$CODENAME/g" \
+                "$package_context/hangover-wine.spec"
+              cat >> source/wine/Dockerfile <<'RPM_PACKAGE_DOCKERFILE'
+          COPY .hangover-package/runtime/ /opt/hangover-runtime/
+          COPY .hangover-package/hangover-wine.spec /opt/hangover-package/hangover-wine.spec
+          RUN install -m 0644 /opt/hangover-runtime/libarm64ecfex.dll /opt/hangover-runtime/libwow64fex.dll /opt/hangover-runtime/wowbox64.dll /opt/package/usr/lib/wine/aarch64-windows/ && \
+              dnf install -y --setopt=install_weak_deps=False rpm-build && \
+              mkdir -p /opt/rpmbuild/BUILD /opt/rpmbuild/BUILDROOT /opt/rpmbuild/RPMS /opt/rpmbuild/SOURCES /opt/rpmbuild/SPECS /opt/rpmbuild/SRPMS /opt/package-output && \
+              rpmbuild --define '_topdir /opt/rpmbuild' -bb /opt/hangover-package/hangover-wine.spec && \
+              rpm_file="$(find /opt/rpmbuild/RPMS -type f -name '*.rpm' -print -quit)" && \
+              test -n "$rpm_file" && \
+              rpm -qp --queryformat '%{NAME} %{ARCH}\n' "$rpm_file" | grep -qx 'hangover-wine aarch64' && \
+              cp "$rpm_file" /opt/package-output/
+          FROM scratch AS package-output
+          COPY --from=0 /opt/package-output/ /
+          RPM_PACKAGE_DOCKERFILE
+            else
+              cat > "$package_context/PKGBUILD" <<'ARCH_PKGBUILD'
+          pkgname=hangover-wine
+          pkgver=NATIVE_VERSION
+          pkgrel=1
+          pkgdesc='Wine for running Windows ARM64, x86-64, and x86 applications on ARM64'
+          arch=('aarch64')
+          url='https://github.com/mikugirls/hangover'
+          license=('LGPL-2.1-or-later')
+          depends=('alsa-lib' 'fontconfig' 'freetype2' 'gcc-libs' 'glibc' 'gnutls' 'krb5' 'libcups' 'libpulse' 'libx11' 'libxcomposite' 'libxcursor' 'libxi' 'libxinerama' 'libxrandr' 'libxrender' 'libxxf86vm' 'ncurses' 'sdl2-compat' 'vulkan-icd-loader' 'wayland')
+          provides=('wine')
+          conflicts=('wine')
+          options=('!strip' '!debug')
+
+          package() {
+            cp -a /opt/package/. "$pkgdir/"
+          }
+          ARCH_PKGBUILD
+              sed -i "s/NATIVE_VERSION/$native_version/g" "$package_context/PKGBUILD"
+              cat >> source/wine/Dockerfile <<'ARCH_PACKAGE_DOCKERFILE'
+          COPY .hangover-package/runtime/ /opt/hangover-runtime/
+          COPY .hangover-package/PKGBUILD /opt/hangover-package/PKGBUILD
+          RUN install -m 0644 /opt/hangover-runtime/libarm64ecfex.dll /opt/hangover-runtime/libwow64fex.dll /opt/hangover-runtime/wowbox64.dll /opt/package/usr/lib/wine/aarch64-windows/ && \
+              useradd -m -s /bin/bash packagebuild && \
+              chown -R packagebuild:packagebuild /opt/hangover-package && \
+              su -s /bin/bash packagebuild -c 'cd /opt/hangover-package && makepkg --noconfirm --nodeps --force' && \
+              mkdir -p /opt/package-output && \
+              package_file="$(find /opt/hangover-package -maxdepth 1 -type f -name '*.pkg.tar.*' -print -quit)" && \
+              test -n "$package_file" && \
+              pacman -Qp "$package_file" | grep -q '^hangover-wine ' && \
+              cp "$package_file" /opt/package-output/
+          FROM scratch AS package-output
+          COPY --from=0 /opt/package-output/ /
+          ARCH_PACKAGE_DOCKERFILE
+            fi
+
+            DOCKER_BUILDKIT=1 docker build \
+              --target package-output \
+              --output "type=local,dest=$native_output" \
+              source/wine
+          fi
 
       - name: Create package-manager package family
         id: package
@@ -410,99 +514,17 @@ jobs:
               exit 1
             fi
           else
-            native_root="$RUNNER_TEMP/native-package-$BUILD_TARGET"
-            rm -rf "$native_root"
-            mkdir -p "$native_root"
-
-            native_version="${HOVERSION//-/.}"
+            native_output="$RUNNER_TEMP/native-package-output/$BUILD_TARGET"
             if [ "$PACKAGE_TYPE" = rpm ]; then
-              mkdir -p "$native_root/rpmbuild"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
-              cat > "$native_root/hangover-wine.spec" <<'RPM_SPEC'
-          Name:           hangover-wine
-          Version:        NATIVE_VERSION
-          Release:        1.DISTRO_RELEASE
-          Summary:        Wine for running Windows ARM64, x86-64, and x86 applications on ARM64
-          License:        LGPL-2.1-or-later
-          URL:            https://github.com/mikugirls/hangover
-          BuildArch:      aarch64
-          Provides:       wine
-          Conflicts:      wine-core
-
-          %description
-          Hangover Wine with FEX and Box64 PE runtime libraries for ARM64 Linux.
-
-          %prep
-
-          %build
-
-          %install
-          rm -rf %{buildroot}
-          mkdir -p %{buildroot}
-          cp -a /opt/package/. %{buildroot}/
-
-          %files
-          /usr/*
-
-          %changelog
-          * Thu Jan 01 1970 Hangover package workflow <noreply@github.com> - NATIVE_VERSION-1
-          - Automated package build
-          RPM_SPEC
-              sed -i \
-                -e "s/NATIVE_VERSION/$native_version/g" \
-                -e "s/DISTRO_RELEASE/$CODENAME/g" \
-                "$native_root/hangover-wine.spec"
-              docker run --rm \
-                -e NATIVE_VERSION="$native_version" \
-                -v "$native_root:/work" \
-                -v "$GITHUB_WORKSPACE/runtime:/runtime:ro" \
-                "hangover-wine-${BUILD_TARGET}" bash -s <<'RPM_BUILD'
-          set -euo pipefail
-          install -m 0644 /runtime/libarm64ecfex.dll /runtime/libwow64fex.dll /runtime/wowbox64.dll \
-            /opt/package/usr/lib/wine/aarch64-windows/
-          dnf install -y --setopt=install_weak_deps=False rpm-build
-          rpmbuild --define '_topdir /work/rpmbuild' -bb /work/hangover-wine.spec
-          RPM_BUILD
-              find "$native_root/rpmbuild/RPMS" -type f -name '*.rpm' -exec cp {} "$package_dir/" \;
-              rpm_file="$(find "$package_dir" -maxdepth 1 -type f -name '*.rpm' -print -quit)"
-              [ -n "$rpm_file" ]
-              docker run --rm -v "$package_dir:/packages:ro" "foundation${BUILD_TARGET}" \
-                rpm -qp --queryformat '%{NAME} %{ARCH}\n' "/packages/${rpm_file##*/}" | grep -qx 'hangover-wine aarch64'
+              mapfile -t native_files < <(find "$native_output" -type f -name '*.rpm' -print)
             else
-              cat > "$native_root/PKGBUILD" <<'ARCH_PKGBUILD'
-          pkgname=hangover-wine
-          pkgver=NATIVE_VERSION
-          pkgrel=1
-          pkgdesc='Wine for running Windows ARM64, x86-64, and x86 applications on ARM64'
-          arch=('aarch64')
-          url='https://github.com/mikugirls/hangover'
-          license=('LGPL-2.1-or-later')
-          depends=('alsa-lib' 'fontconfig' 'freetype2' 'gcc-libs' 'glibc' 'gnutls' 'krb5' 'libcups' 'libpulse' 'libx11' 'libxcomposite' 'libxcursor' 'libxi' 'libxinerama' 'libxrandr' 'libxrender' 'libxxf86vm' 'ncurses' 'sdl2-compat' 'vulkan-icd-loader' 'wayland')
-          provides=('wine')
-          conflicts=('wine')
-          options=('!strip' '!debug')
-
-          package() {
-            cp -a /opt/package/. "$pkgdir/"
-          }
-          ARCH_PKGBUILD
-              sed -i "s/NATIVE_VERSION/$native_version/g" "$native_root/PKGBUILD"
-              docker run --rm \
-                -v "$native_root:/work" \
-                -v "$GITHUB_WORKSPACE/runtime:/runtime:ro" \
-                hangover-wine-arch bash -s <<'ARCH_BUILD'
-          set -euo pipefail
-          install -m 0644 /runtime/libarm64ecfex.dll /runtime/libwow64fex.dll /runtime/wowbox64.dll \
-            /opt/package/usr/lib/wine/aarch64-windows/
-          useradd -m -s /bin/bash packagebuild
-          chown -R packagebuild:packagebuild /work
-          su -s /bin/bash packagebuild -c 'cd /work && makepkg --noconfirm --nodeps --force'
-          ARCH_BUILD
-              find "$native_root" -maxdepth 1 -type f -name '*.pkg.tar.*' -exec cp {} "$package_dir/" \;
-              arch_file="$(find "$package_dir" -maxdepth 1 -type f -name '*.pkg.tar.*' -print -quit)"
-              [ -n "$arch_file" ]
-              docker run --rm -v "$package_dir:/packages:ro" foundationarch \
-                pacman -Qp "/packages/${arch_file##*/}" | grep -q '^hangover-wine '
+              mapfile -t native_files < <(find "$native_output" -type f -name '*.pkg.tar.*' -print)
             fi
+            if [ "${#native_files[@]}" -ne 1 ]; then
+              echo "Expected exactly one native package, found ${#native_files[@]}." >&2
+              exit 1
+            fi
+            cp "${native_files[0]}" "$package_dir/"
           fi
 
           build_time="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
