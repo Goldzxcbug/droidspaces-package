@@ -1,11 +1,14 @@
-name: Build Anland KDE Wayland package families
+name: 构建 Anland KDE Wayland 软件包
 run-name: Anland KDE 软件包 ${{ inputs.request_id || github.run_number }}
 
 on:
+  schedule:
+    # 每天北京时间 08:00（UTC 00:00）构建全部平台。
+    - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
       build_target:
-        description: 选择构建目标；all 中失败的平台沿用上一份完整 Release，单个平台只替换选中的包
+        description: 选择构建目标；all 中失败的平台沿用上一份完整发布，单个平台只替换选中的包
         required: true
         type: choice
         default: all
@@ -36,7 +39,7 @@ permissions:
   contents: write
 
 concurrency:
-  # 固定 Release 会被原地重写，必须串行更新。
+  # 固定发布会被原地重写，必须串行更新。
   group: anland-kde-package-release
   cancel-in-progress: false
 
@@ -51,7 +54,7 @@ jobs:
       - name: 生成构建矩阵
         id: targets
         env:
-          BUILD_TARGET_INPUT: ${{ inputs.build_target }}
+          BUILD_TARGET_INPUT: ${{ inputs.build_target || 'all' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -83,8 +86,8 @@ jobs:
       - name: 将请求的源解析为单个提交
         id: resolve
         env:
-          ANLAND_REPO: ${{ inputs.anland_repo }}
-          ANLAND_REF: ${{ inputs.anland_ref }}
+          ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/superturtlee/anland.git' }}
+          ANLAND_REF: ${{ inputs.anland_ref || 'main' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -103,7 +106,7 @@ jobs:
     name: 构建 ${{ matrix.target }} 软件包
     needs: prepare
     runs-on: ubuntu-24.04-arm
-    # 单个平台失败不阻止其余包和 Release 合并；Release 阶段会复用上一版该平台资产。
+    # 单个平台失败不阻止其余软件包和发布合并；发布阶段会复用上一版该平台资产。
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -111,7 +114,7 @@ jobs:
         target: ${{ fromJson(needs.prepare.outputs.targets) }}
 
     env:
-      ANLAND_REPO: ${{ inputs.anland_repo }}
+      ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/superturtlee/anland.git' }}
       ANLAND_COMMIT: ${{ needs.prepare.outputs.anland_commit }}
       BUILD_TARGET: ${{ matrix.target }}
 
@@ -286,7 +289,7 @@ jobs:
               printf '%s\n' "$kwin_version" > /tmp/kde-packages/.kwin-version
           ANLAND_BUILD
 
-      - name: 打包 Release 资产
+      - name: 打包发布资产
         id: package
         env:
           PKG_PATTERN: ${{ steps.target.outputs.package_pattern }}
@@ -342,7 +345,7 @@ jobs:
           echo "asset_path=$asset_path" >> "$GITHUB_OUTPUT"
           echo "已将 $package_count 个文件打包进 $asset_name（构建时间：$build_time）"
 
-      - name: 上传 Release 资产
+      - name: 上传发布资产
         uses: actions/upload-artifact@v6
         with:
           name: anland-kde-package-${{ matrix.target }}
@@ -351,7 +354,7 @@ jobs:
           retention-days: 1
 
   release:
-    name: 更新 Anland KDE 滚动 Release
+    name: 更新 Anland KDE 滚动发布
     needs: [prepare, build]
     if: ${{ always() && !cancelled() && needs.prepare.result == 'success' }}
     runs-on: ubuntu-latest
@@ -386,14 +389,14 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: 创建固定 Release 与软件包清单
+      - name: 创建固定发布与软件包清单
         env:
           GH_TOKEN: ${{ github.token }}
-          ANLAND_REPO: ${{ inputs.anland_repo }}
-          ANLAND_REF: ${{ inputs.anland_ref }}
+          ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/superturtlee/anland.git' }}
+          ANLAND_REF: ${{ inputs.anland_ref || 'main' }}
           ANLAND_COMMIT: ${{ needs.prepare.outputs.anland_commit }}
-          REQUEST_ID: ${{ inputs.request_id }}
-          BUILD_TARGET_INPUT: ${{ inputs.build_target }}
+          REQUEST_ID: ${{ inputs.request_id || format('自动-{0}', github.run_id) }}
+          BUILD_TARGET_INPUT: ${{ inputs.build_target || 'all' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -496,7 +499,7 @@ jobs:
               esac
             done <<< "$release_assets"
             if [ "${#candidates[@]}" -gt 1 ]; then
-              echo "Release ${tag} 中资产前缀 ${prefix} 应匹配一个文件，实际为 ${#candidates[@]} 个。" >&2
+              echo "发布 ${tag} 中资产前缀 ${prefix} 应匹配一个文件，实际为 ${#candidates[@]} 个。" >&2
               return 2
             elif [ "${#candidates[@]}" -eq 1 ]; then
               printf '%s\n' "${candidates[0]}"
@@ -520,7 +523,7 @@ jobs:
 
           previous_tag=""
           previous_release_time=""
-          # 固定 Release 有几个平台就能沿用几个；第一次构建时它还不存在，返回 1 即可。
+          # 固定发布有几个平台就能沿用几个；第一次构建时它还不存在，返回 1 即可。
           find_previous_release() {
             local stable_candidate
 
@@ -580,7 +583,7 @@ jobs:
             fi
           done
 
-          # 单平台选择失败时不更新滚动 Release；其他平台始终从固定 Release 补齐。
+          # 单平台选择失败时不更新滚动发布；其他平台始终从固定发布补齐。
           if [ -n "$selected_prefix" ]; then
             selected_target="$BUILD_TARGET_INPUT"
             selected_missing=false
@@ -591,19 +594,19 @@ jobs:
               fi
             done
             if [ "$selected_missing" = true ]; then
-              echo "选择的 ${selected_target} 构建没有生成新资产，本次不更新滚动 Release。" >&2
+              echo "选择的 ${selected_target} 构建没有生成新资产，本次不更新滚动发布。" >&2
               exit 1
             fi
           fi
 
-          # 固定 Release 里有的平台就沿用，没有的（例如第一次只构建单个平台）本次先缺着，
+          # 固定发布里有的平台就沿用，没有的（例如第一次只构建单个平台）本次先缺着，
           # 等后续构建补上，不再因为凑不齐五个平台就整体失败。
           unavailable_targets=()
           if [ "${#missing_targets[@]}" -gt 0 ]; then
             previous_dir="$RUNNER_TEMP/anland-kde-previous-assets"
             rm -rf "$previous_dir"
             mkdir -p "$previous_dir"
-            find_previous_release || echo "固定 Release 还不存在或不可读，本次只发布已构建的平台。"
+            find_previous_release || echo "固定发布还不存在或不可读，本次只发布已构建的平台。"
 
             for target in "${missing_targets[@]}"; do
               asset=""
@@ -642,12 +645,12 @@ jobs:
           fi
 
           if [ "${#updated_targets[@]}" -eq 0 ]; then
-            echo "本次没有任何平台生成新资产，不更新滚动 Release。" >&2
+            echo "本次没有任何平台生成新资产，不更新滚动发布。" >&2
             exit 1
           fi
 
           if [ "${#unavailable_targets[@]}" -gt 0 ]; then
-            echo "以下平台本次 Release 暂无软件包，等待后续构建补齐：${unavailable_targets[*]}"
+            echo "以下平台本次发布暂无软件包，等待后续构建补齐：${unavailable_targets[*]}"
           fi
 
           present_targets=()
@@ -693,7 +696,7 @@ jobs:
               replacement_note="${replacement_note}；沿用 ${previous_tag}：${reused_target_list}"
             fi
             if [ "${#unavailable_targets[@]}" -gt 0 ]; then
-              replacement_note="${replacement_note}；本 Release 暂无：${unavailable_target_list}"
+              replacement_note="${replacement_note}；本次发布暂无：${unavailable_target_list}"
             fi
             replacement_note="${replacement_note}。"
           fi
@@ -712,12 +715,12 @@ jobs:
             release_source_list="${release_source_list}"$'\n'"- $(target_label "$target")：${asset_source_by_target[$target]}"
           done
           for target in "${unavailable_targets[@]}"; do
-            release_source_list="${release_source_list}"$'\n'"- $(target_label "$target")：本 Release 暂无软件包，等待后续构建补齐"
+            release_source_list="${release_source_list}"$'\n'"- $(target_label "$target")：本次发布暂无软件包，等待后续构建补齐"
           done
           release_notes="$(printf '%s\n' \
             '# Anland KDE Wayland 预编译包' \
             '' \
-            '这是供 Droidspaces Wayland RootFS 使用的固定滚动 ARM64/aarch64 包 Release。每次更新只替换本次成功的平台，其他平台资产保持不变；尚未构建过的平台会在后续构建中补齐。' \
+            '这是供 Droidspaces Wayland RootFS 使用的固定滚动 ARM64/aarch64 软件包发布。每次更新只替换本次成功的平台，其他平台资产保持不变；尚未构建过的平台会在后续构建中补齐。' \
             '' \
             '## 发布资产' \
             '' \
@@ -725,15 +728,15 @@ jobs:
             '' \
             '压缩包文件名中的 `kwin-版本` 来自该发行版实际生成的 KWin 包；不同发行版的版本可以不同。' \
             '' \
-            '每个压缩包只包含对应系统的 patched KWin/Xwayland 包；`anland-kde-manifest` 精确映射目标系统到资产。' \
+            '每个压缩包只包含对应系统中已修补的 KWin/Xwayland 软件包；`anland-kde-manifest` 精确映射目标系统到资产。' \
             '' \
             '## 构建详情' \
             '' \
             "- 构建目标：${BUILD_TARGET_INPUT}" \
             "- ${replacement_note}" \
-            "- Release 生成时间：${build_time}" \
-            '- 构建时间取自压缩包内的构建元数据；缺失时显示固定 Release 的发布时间。' \
-            "- 软件包请求 ID / Package request ID: ${REQUEST_ID:-manual-${GITHUB_RUN_ID}}" \
+            "- 发布生成时间：${build_time}" \
+            '- 构建时间取自压缩包内的构建元数据；缺失时显示固定发布的时间。' \
+            "- 软件包请求 ID：${REQUEST_ID:-自动-${GITHUB_RUN_ID}}" \
             "- 软件包工作流运行号：${GITHUB_RUN_ID}" \
             "- 本次构建源码（仅更新资产）：\`${ANLAND_REPO}\` @ \`${ANLAND_COMMIT}\`（请求：\`${ANLAND_REF}\`）" \
             "- 工作流提交：\`${GITHUB_SHA}\`" \
@@ -742,7 +745,7 @@ jobs:
             '## 资产来源' \
             "$release_source_list" \
             '')"
-          # 先备份当前滚动 Release；原地重写失败时恢复原资产，避免丢失可用包。
+          # 先备份当前滚动发布；原地重写失败时恢复原资产，避免丢失可用软件包。
           rollback_dir="$RUNNER_TEMP/anland-kde-rolling-backup"
           release_mutated=false
           release_exists=false
@@ -807,8 +810,7 @@ jobs:
           restore_rollback_assets() {
             local rollback_asset rollback_name current_rows current_id current_name
 
-            # Restore packages and the installer first. The old manifest is uploaded
-            # last, so it never points at an asset that has not been restored yet.
+            # 先恢复软件包和安装脚本，最后上传旧清单，确保它不会指向尚未恢复的资产。
             for rollback_asset in "$rollback_dir"/*; do
               rollback_name="${rollback_asset##*/}"
               [ "$rollback_name" = 'anland-kde-manifest' ] && continue
@@ -822,8 +824,7 @@ jobs:
                 --clobber || echo '恢复软件包清单失败。' >&2
             fi
 
-            # Removing extras is best effort. A failed deletion only leaves an
-            # unreferenced asset; it must never make the prior Release unavailable.
+            # 尽力删除多余资产；删除失败最多留下未引用资产，不能影响上一版发布的可用性。
             current_rows="$(gh api \
               "repos/$GITHUB_REPOSITORY/releases/tags/$release_tag" \
               --jq '.assets[] | [.id, .name] | @tsv')" || return 0
@@ -840,7 +841,7 @@ jobs:
           restore_previous_release() {
             local status=$?
             if [ "$status" -ne 0 ] && [ "$release_mutated" = true ] && [ -d "$rollback_dir" ]; then
-              echo "滚动 Release 原地更新失败，尝试恢复旧资产..." >&2
+              echo "滚动发布原地更新失败，尝试恢复旧资产..." >&2
               set +e
               if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
                 restore_rollback_assets
@@ -850,7 +851,7 @@ jobs:
                   --latest=false \
                   --target "$GITHUB_SHA" \
                   --title 'Anland KDE Wayland 预编译包' \
-                  --notes '自动恢复：本次滚动 Release 更新失败，已恢复上一份可用资产。'
+                  --notes '自动恢复：本次滚动发布更新失败，已恢复上一份可用资产。'
                 gh release edit "$release_tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
               fi
               set -e

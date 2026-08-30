@@ -1,11 +1,14 @@
-name: Build Hangover Wine package families
-run-name: Hangover Wine packages ${{ inputs.request_id || github.run_number }}
+name: 构建 Hangover Wine 软件包
+run-name: Hangover Wine 软件包 ${{ inputs.request_id || github.run_number }}
 
 on:
+  schedule:
+    # 每周日北京时间 10:00（UTC 02:00）构建全部平台。
+    - cron: '0 2 * * 0'
   workflow_dispatch:
     inputs:
       build_target:
-        description: Build all targets or replace one target in the rolling Release
+        description: 构建全部目标，或只替换滚动发布中的一个目标
         required: true
         type: choice
         default: all
@@ -19,17 +22,17 @@ on:
           - fedora44
           - arch
       hangover_ref:
-        description: Hangover branch, tag, or commit to build
+        description: 要构建的 Hangover 分支、标签或提交
         required: true
         type: string
         default: main
       hangover_repo:
-        description: Hangover Git repository URL
+        description: Hangover Git 仓库地址
         required: true
         type: string
         default: https://github.com/mikugirls/hangover.git
       request_id:
-        description: Optional caller request ID
+        description: 可选的调用方请求 ID
         required: false
         type: string
         default: ''
@@ -39,17 +42,17 @@ permissions:
 
 jobs:
   prepare:
-    name: Resolve Hangover source
+    name: 解析 Hangover 源码
     runs-on: ubuntu-latest
     outputs:
       hangover_commit: ${{ steps.resolve.outputs.hangover_commit }}
       hangover_version: ${{ steps.resolve.outputs.hangover_version }}
       targets: ${{ steps.targets.outputs.targets }}
     steps:
-      - name: Generate build matrix
+      - name: 生成构建矩阵
         id: targets
         env:
-          BUILD_TARGET_INPUT: ${{ inputs.build_target }}
+          BUILD_TARGET_INPUT: ${{ inputs.build_target || 'all' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -62,27 +65,27 @@ jobs:
               targets="[\"$BUILD_TARGET_INPUT\"]"
               ;;
             *)
-              echo "Unsupported build target: $BUILD_TARGET_INPUT" >&2
+              echo "不支持的构建目标：$BUILD_TARGET_INPUT" >&2
               exit 1
               ;;
           esac
 
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
-          echo "Build targets: $targets"
+          echo "构建目标：$targets"
 
-      - name: Require dispatch from main
+      - name: 要求从 main 分支触发
         shell: bash
         run: |
           if [ "$GITHUB_REF_NAME" != main ]; then
-            echo "This workflow must be dispatched from the main branch." >&2
+            echo "此工作流必须从 main 分支触发。" >&2
             exit 1
           fi
 
-      - name: Resolve source to one commit
+      - name: 将源码解析为单个提交
         id: resolve
         env:
-          HANGOVER_REPO: ${{ inputs.hangover_repo }}
-          HANGOVER_REF: ${{ inputs.hangover_ref }}
+          HANGOVER_REPO: ${{ inputs.hangover_repo || 'https://github.com/mikugirls/hangover.git' }}
+          HANGOVER_REF: ${{ inputs.hangover_ref || 'main' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -97,8 +100,8 @@ jobs:
           hangover_commit="$(git -C "$source_dir" rev-parse FETCH_HEAD)"
           git -C "$source_dir" cat-file -e "${hangover_commit}^{commit}"
 
-          # Ignore the rolling package tag; only release-style Hangover tags
-          # such as hangover-11.16 are valid package version anchors.
+          # 忽略滚动软件包标签；只有 hangover-11.16 这类发布标签
+          # 才能作为有效的软件包版本基准。
           version="$(git -C "$source_dir" describe --tags --match 'hangover-[0-9]*' \
             "$hangover_commit" 2>/dev/null || true)"
           version="${version#hangover-}"
@@ -107,31 +110,31 @@ jobs:
           fi
           case "$version" in
             *[!A-Za-z0-9.+~_-]*)
-              echo "Resolved version contains unsupported filename characters: $version" >&2
+              echo "解析出的版本包含不支持用于文件名的字符：$version" >&2
               exit 1
               ;;
           esac
 
           echo "hangover_commit=$hangover_commit" >> "$GITHUB_OUTPUT"
           echo "hangover_version=$version" >> "$GITHUB_OUTPUT"
-          echo "Resolved $HANGOVER_REPO @ $HANGOVER_REF to $hangover_commit ($version)"
+          echo "已将 $HANGOVER_REPO @ $HANGOVER_REF 解析为 $hangover_commit（$version）"
 
   runtime-foundation:
-    name: Build shared runtime foundation
+    name: 构建共享运行库基础镜像
     needs: prepare
     runs-on: ubuntu-latest
     steps:
-      - name: Restore runtime foundation
+      - name: 恢复运行库基础镜像缓存
         id: cache
         uses: actions/cache@v6
         with:
           path: foundationubuntu2204.tgz
           key: hangover-runtime-foundation-${{ needs.prepare.outputs.hangover_commit }}
 
-      - name: Check out exact source
+      - name: 检出指定源码
         if: ${{ steps.cache.outputs.cache-hit != 'true' }}
         env:
-          HANGOVER_REPO: ${{ inputs.hangover_repo }}
+          HANGOVER_REPO: ${{ inputs.hangover_repo || 'https://github.com/mikugirls/hangover.git' }}
           HANGOVER_COMMIT: ${{ needs.prepare.outputs.hangover_commit }}
         shell: bash
         run: |
@@ -141,7 +144,7 @@ jobs:
           git -C source fetch --quiet --depth=1 origin "$HANGOVER_COMMIT"
           git -C source checkout --quiet --detach FETCH_HEAD
 
-      - name: Build and export foundation
+      - name: 构建并导出基础镜像
         if: ${{ steps.cache.outputs.cache-hit != 'true' }}
         shell: bash
         run: |
@@ -152,7 +155,7 @@ jobs:
           docker image save foundationubuntu2204 | gzip -1 > foundationubuntu2204.tgz
 
   runtime:
-    name: Build ${{ matrix.component }} runtime
+    name: 构建 ${{ matrix.component }} 运行库
     needs: [prepare, runtime-foundation]
     runs-on: ubuntu-latest
     strategy:
@@ -160,7 +163,7 @@ jobs:
       matrix:
         component: [libwow64fex, libarm64ecfex, wowbox64]
     steps:
-      - name: Free disk space
+      - name: 释放磁盘空间
         shell: bash
         run: |
           sudo swapoff -a || true
@@ -168,19 +171,19 @@ jobs:
           sudo apt-get clean
           docker system prune -af || true
 
-      - name: Restore runtime foundation
+      - name: 恢复运行库基础镜像缓存
         uses: actions/cache@v6
         with:
           path: foundationubuntu2204.tgz
           key: hangover-runtime-foundation-${{ needs.prepare.outputs.hangover_commit }}
 
-      - name: Import runtime foundation
+      - name: 导入运行库基础镜像
         shell: bash
         run: docker image load -i foundationubuntu2204.tgz
 
-      - name: Check out exact source and submodule
+      - name: 检出指定源码和子模块
         env:
-          HANGOVER_REPO: ${{ inputs.hangover_repo }}
+          HANGOVER_REPO: ${{ inputs.hangover_repo || 'https://github.com/mikugirls/hangover.git' }}
           HANGOVER_COMMIT: ${{ needs.prepare.outputs.hangover_commit }}
           COMPONENT: ${{ matrix.component }}
         shell: bash
@@ -196,7 +199,7 @@ jobs:
           esac
           git -C source submodule update --init --recursive --depth=1 "$submodule"
 
-      - name: Build runtime package and DLL
+      - name: 构建运行库软件包和 DLL
         env:
           COMPONENT: ${{ matrix.component }}
           HOVERSION: ${{ needs.prepare.outputs.hangover_version }}
@@ -244,7 +247,7 @@ jobs:
           test -s "$output/$package_name"
           test -s "$output/$dll_name"
 
-      - name: Upload runtime artifact
+      - name: 上传运行库资产
         uses: actions/upload-artifact@v6
         with:
           name: hangover-runtime-${{ matrix.component }}
@@ -253,10 +256,10 @@ jobs:
           retention-days: 1
 
   build:
-    name: Build ${{ matrix.target }} packages
+    name: 构建 ${{ matrix.target }} 软件包
     needs: [prepare, runtime]
-    # Ubuntu 24.04 and Debian 13 use the repository's x86_64 cross-build
-    # definitions; the remaining definitions build natively on ARM64.
+    # Ubuntu 24.04 和 Debian 13 使用仓库中的 x86_64 交叉构建定义；
+    # 其余目标在 ARM64 运行器上原生构建。
     runs-on: ${{ (matrix.target == 'ubuntu2404' || matrix.target == 'debian13') && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
     continue-on-error: true
     strategy:
@@ -265,11 +268,11 @@ jobs:
         target: ${{ fromJson(needs.prepare.outputs.targets) }}
     env:
       BUILD_TARGET: ${{ matrix.target }}
-      HANGOVER_REPO: ${{ inputs.hangover_repo }}
+      HANGOVER_REPO: ${{ inputs.hangover_repo || 'https://github.com/mikugirls/hangover.git' }}
       HANGOVER_COMMIT: ${{ needs.prepare.outputs.hangover_commit }}
       HOVERSION: ${{ needs.prepare.outputs.hangover_version }}
     steps:
-      - name: Free disk space
+      - name: 释放磁盘空间
         shell: bash
         run: |
           sudo swapoff -a || true
@@ -279,7 +282,7 @@ jobs:
           docker system prune -af || true
           df -h
 
-      - name: Resolve build target
+      - name: 解析构建目标
         id: target
         shell: bash
         run: |
@@ -300,7 +303,7 @@ jobs:
             arch)
               packaging=arch; codename=arch; package_type=arch; asset_arch=aarch64 ;;
             *)
-              echo "Unsupported build target: $BUILD_TARGET" >&2
+              echo "不支持的构建目标：$BUILD_TARGET" >&2
               exit 1
               ;;
           esac
@@ -311,7 +314,7 @@ jobs:
             echo "asset_arch=$asset_arch"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Check out exact source and Wine
+      - name: 检出指定源码和 Wine
         shell: bash
         run: |
           set -euo pipefail
@@ -321,14 +324,14 @@ jobs:
           git -C source checkout --quiet --detach FETCH_HEAD
           git -C source submodule update --init --recursive --depth=1 wine
 
-      - name: Download shared runtimes
+      - name: 下载共享运行库
         uses: actions/download-artifact@v7
         with:
           pattern: hangover-runtime-*
           path: runtime
           merge-multiple: true
 
-      - name: Build Wine in target distribution
+      - name: 在目标发行版中构建 Wine
         env:
           PACKAGING: ${{ steps.target.outputs.packaging }}
           PACKAGE_TYPE: ${{ steps.target.outputs.package_type }}
@@ -362,7 +365,7 @@ jobs:
             {
               echo "hangover-wine (${package_version}) UNRELEASED; urgency=low"
               echo
-              echo "  * Automated build of ${HANGOVER_COMMIT} for ${BUILD_TARGET}."
+              echo "  * 为 ${BUILD_TARGET} 自动构建 ${HANGOVER_COMMIT}。"
               echo
               echo " -- Hangover package workflow <noreply@github.com>  $(date -R)"
               echo
@@ -378,8 +381,8 @@ jobs:
             install -m 0644 runtime/libarm64ecfex.dll runtime/libwow64fex.dll runtime/wowbox64.dll \
               "$package_context/runtime/"
 
-            # The upstream final RUN creates a second compressed payload. Native
-            # packages replace it and are exported without loading the large image.
+            # 上游最后一个 RUN 会额外生成压缩负载。这里改为直接生成原生软件包，
+            # 并在不加载大型镜像的情况下导出结果。
             sed -i '/^RUN tar -C \/opt\/package --zstd -cf \/opt\/artifacts\//d' \
               source/wine/Dockerfile
 
@@ -415,7 +418,7 @@ jobs:
 
           %changelog
           * PACKAGE_DATE Hangover package workflow <noreply@github.com> - NATIVE_VERSION-1
-          - Automated package build
+          - 自动构建软件包
           RPM_SPEC
               sed -i \
                 -e "s/NATIVE_VERSION/$native_version/g" \
@@ -478,7 +481,7 @@ jobs:
               source/wine
           fi
 
-      - name: Create package-manager package family
+      - name: 创建包管理器软件包
         id: package
         env:
           PACKAGE_TYPE: ${{ steps.target.outputs.package_type }}
@@ -507,7 +510,7 @@ jobs:
             )
             expected=(hangover-libarm64ecfex hangover-libwow64fex hangover-wine hangover-wowbox64)
             if [ "${package_names[*]}" != "${expected[*]}" ]; then
-              echo "Incomplete deb package family: ${package_names[*]}" >&2
+              echo "DEB 软件包集合不完整：${package_names[*]}" >&2
               exit 1
             fi
           else
@@ -518,7 +521,7 @@ jobs:
               mapfile -t native_files < <(find "$native_output" -type f -name '*.pkg.tar.*' -print)
             fi
             if [ "${#native_files[@]}" -ne 1 ]; then
-              echo "Expected exactly one native package, found ${#native_files[@]}." >&2
+              echo "应当只生成一个原生软件包，实际找到 ${#native_files[@]} 个。" >&2
               exit 1
             fi
             cp "${native_files[0]}" "$package_dir/"
@@ -533,9 +536,9 @@ jobs:
             "hangover-wine-packages/$BUILD_TARGET"
           test -s "$asset_dir/$asset_name"
           echo "asset_path=$asset_dir/$asset_name" >> "$GITHUB_OUTPUT"
-          echo "Created $asset_name at $build_time"
+          echo "已在 $build_time 创建 $asset_name"
 
-      - name: Upload target package archive
+      - name: 上传目标软件包归档
         uses: actions/upload-artifact@v6
         with:
           name: hangover-wine-package-${{ matrix.target }}
@@ -544,52 +547,52 @@ jobs:
           retention-days: 1
 
   release:
-    name: Update rolling Hangover Wine Release
+    name: 更新 Hangover Wine 滚动发布
     needs: [prepare, build]
     if: ${{ always() && !cancelled() && needs.prepare.result == 'success' }}
     concurrency:
-      # Builds may run in parallel, but the fixed rolling Release is updated in place.
+      # 构建可以并行执行，但固定滚动发布必须原地串行更新。
       group: hangover-wine-package-release
       cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
-      - name: Check out installer
+      - name: 检出安装脚本
         uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
 
-      - name: Ensure rolling tag exists
+      - name: 确保滚动标签存在
         shell: bash
         run: |
           set -euo pipefail
           tag=hangover-wine-packages
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "Rolling tag $tag already exists."
+            echo "滚动标签 $tag 已存在。"
           elif git tag "$tag" "$GITHUB_SHA" && git push origin "refs/tags/$tag"; then
-            echo "Created rolling tag $tag."
+            echo "已创建滚动标签 $tag。"
           elif git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "Rolling tag $tag was created concurrently."
+            echo "滚动标签 $tag 已由并发任务创建。"
           else
-            echo "Could not create rolling tag $tag." >&2
+            echo "无法创建滚动标签 $tag。" >&2
             exit 1
           fi
 
-      - name: Download newly built package assets
+      - name: 下载新构建的软件包资产
         uses: actions/download-artifact@v7
         with:
           pattern: hangover-wine-package-*
           path: release-assets
           merge-multiple: true
 
-      - name: Create manifest and update Release
+      - name: 创建清单并更新滚动发布
         env:
           GH_TOKEN: ${{ github.token }}
-          HANGOVER_REPO: ${{ inputs.hangover_repo }}
-          HANGOVER_REF: ${{ inputs.hangover_ref }}
+          HANGOVER_REPO: ${{ inputs.hangover_repo || 'https://github.com/mikugirls/hangover.git' }}
+          HANGOVER_REF: ${{ inputs.hangover_ref || 'main' }}
           HANGOVER_COMMIT: ${{ needs.prepare.outputs.hangover_commit }}
           HANGOVER_VERSION: ${{ needs.prepare.outputs.hangover_version }}
-          BUILD_TARGET_INPUT: ${{ inputs.build_target }}
-          REQUEST_ID: ${{ inputs.request_id }}
+          BUILD_TARGET_INPUT: ${{ inputs.build_target || 'all' }}
+          REQUEST_ID: ${{ inputs.request_id || format('自动-{0}', github.run_id) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -637,7 +640,7 @@ jobs:
             done < <(find "$release_dir" -maxdepth 1 -type f \
               -name "hangover-wine-${target}-*${suffix}" -print | sort)
             if [ "${#matches[@]}" -gt 1 ]; then
-              echo "More than one local asset matched $target." >&2
+              echo "本地有多个资产匹配目标 $target。" >&2
               return 2
             fi
             [ "${#matches[@]}" -eq 1 ] || return 1
@@ -672,7 +675,7 @@ jobs:
               esac
             done <<< "$release_rows"
             if [ "${#matches[@]}" -gt 1 ]; then
-              echo "More than one rolling Release asset matched $target." >&2
+              echo "滚动发布中有多个资产匹配目标 $target。" >&2
               return 2
             fi
             [ "${#matches[@]}" -eq 1 ] || return 1
@@ -702,7 +705,7 @@ jobs:
           done
 
           if [ "$BUILD_TARGET_INPUT" != all ] && [ "${sources[$BUILD_TARGET_INPUT]:-}" != new ]; then
-            echo "Selected target $BUILD_TARGET_INPUT did not produce a new asset; Release is unchanged." >&2
+            echo "所选目标 $BUILD_TARGET_INPUT 没有生成新资产，本次不更新滚动发布。" >&2
             exit 1
           fi
 
@@ -730,20 +733,20 @@ jobs:
               [ -n "$result" ] && result+=', '
               result+="$(target_label "$target")"
             done
-            printf '%s' "${result:-none}"
+            printf '%s' "${result:-无}"
           }
 
           release_notes="$(cat <<EOF
-          Automated ARM64 Hangover Wine package families.
+          自动构建的 ARM64 Hangover Wine 软件包。
 
-          - Hangover version: \`$HANGOVER_VERSION\`
-          - Hangover commit: \`$HANGOVER_COMMIT\`
-          - Newly built: $(join_labels "${updated_targets[@]}")
-          - Reused from previous Release: $(join_labels "${reused_targets[@]}")
-          - Currently unavailable: $(join_labels "${unavailable_targets[@]}")
-          - Request ID: ${REQUEST_ID:-manual-${GITHUB_RUN_ID}}
+          - Hangover 版本：\`$HANGOVER_VERSION\`
+          - Hangover 提交：\`$HANGOVER_COMMIT\`
+          - 本次新构建：$(join_labels "${updated_targets[@]}")
+          - 沿用上一版发布：$(join_labels "${reused_targets[@]}")
+          - 当前尚未提供：$(join_labels "${unavailable_targets[@]}")
+          - 请求 ID：${REQUEST_ID:-自动-${GITHUB_RUN_ID}}
 
-          Each archive contains packages for exactly one distribution. Use \`install-hangover-wine.sh\` to select, verify, and install the matching package through APT, DNF, or Pacman.
+          每个压缩包只包含一个发行版的软件包。使用 \`install-hangover-wine.sh\` 自动选择、校验，并通过 APT、DNF 或 Pacman 安装匹配的软件包。
           EOF
           )"
 
@@ -774,22 +777,22 @@ jobs:
             fi
             gh release upload "$release_tag" "$installer" \
               --repo "$GITHUB_REPOSITORY" --clobber
-            # Upload the manifest last so it never references a missing package asset.
+            # 最后上传清单，确保它不会引用尚未上传的软件包资产。
             gh release upload "$release_tag" "$manifest" \
               --repo "$GITHUB_REPOSITORY" --clobber
             for target in "${updated_targets[@]}"; do
               delete_stale_target_assets "$target" "${assets[$target]}"
             done
             gh release edit "$release_tag" --repo "$GITHUB_REPOSITORY" \
-              --title 'Hangover Wine ARM64 packages' \
+              --title 'Hangover Wine ARM64 预编译包' \
               --notes "$release_notes" --draft=false --latest=false
           else
             gh release create "$release_tag" "$release_dir"/* \
               --repo "$GITHUB_REPOSITORY" --draft --latest=false \
-              --title 'Hangover Wine ARM64 packages' \
+              --title 'Hangover Wine ARM64 预编译包' \
               --notes "$release_notes"
             gh release edit "$release_tag" --repo "$GITHUB_REPOSITORY" \
               --draft=false --latest=false
           fi
 
-          echo "Updated $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$release_tag"
+          echo "已更新 $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$release_tag"

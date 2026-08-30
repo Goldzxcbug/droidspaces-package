@@ -1,4 +1,5 @@
-name: Build systemd 257 package families
+name: 构建 systemd 257 软件包
+run-name: systemd 257 软件包 ${{ github.run_number }}
 
 on:
   workflow_dispatch:
@@ -35,7 +36,7 @@ jobs:
       TARGET: ${{ matrix.target }}
       FEDORA_VERSION: ${{ matrix.fedora_version }}
     steps:
-      - name: Install checkout prerequisites
+      - name: 安装检出源码所需工具
         shell: bash
         run: |
           set -eux
@@ -48,14 +49,14 @@ jobs:
             pacman -Sy --needed --noconfirm ca-certificates git
           fi
 
-      - name: Check out repository
+      - name: 检出仓库
         uses: actions/checkout@v5
 
-      - name: Build and verify package family
+      - name: 构建并校验软件包
         shell: bash
         run: bash "${{ matrix.script }}"
 
-      - name: Upload package family
+      - name: 上传软件包
         uses: actions/upload-artifact@v6
         with:
           name: systemd257-${{ matrix.target }}-arm64
@@ -64,19 +65,19 @@ jobs:
           retention-days: 14
 
   release:
-    name: Publish rolling test release
+    name: 发布滚动测试版本
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Check out release commit
+      - name: 检出发布提交
         uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}
 
-      - name: Ensure rolling tag exists
+      - name: 确保滚动标签存在
         shell: bash
         run: |
           set -euo pipefail
@@ -93,13 +94,13 @@ jobs:
             exit 1
           fi
 
-      - name: Download all package families
+      - name: 下载全部软件包
         uses: actions/download-artifact@v7
         with:
           pattern: systemd257-*-arm64
           path: release
 
-      - name: Create per-platform release archives
+      - name: 创建各平台发布归档
         shell: bash
         run: |
           set -euo pipefail
@@ -114,7 +115,7 @@ jobs:
             sha256sum ./*.tar.gz > SHA256SUMS
           )
 
-      - name: Remove previous rolling release assets
+      - name: 删除上一版滚动发布资产
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -135,24 +136,23 @@ jobs:
             )
           fi
 
-      - name: Publish test packages
+      - name: 发布测试软件包
         uses: softprops/action-gh-release@v2
         with:
           tag_name: systemd257-packages
-          name: systemd 257 package families
+          name: systemd 257 ARM64 预编译包
           body: |
-            Rolling ARM64 test packages for Ubuntu 26.04, Fedora 43,
-            Fedora 44, and Arch Linux ARM. Every package family is built
-            from native distribution packaging and includes the Droidspaces
-            Android old-kernel compatibility patch. Each platform archive
-            contains its native package family, manifest, and checksums.
+            这是面向 Ubuntu 26.04、Fedora 43、Fedora 44 和 Arch Linux ARM
+            的滚动 ARM64 测试软件包。所有软件包都使用对应发行版的原生格式构建，
+            并包含 Droidspaces Android 旧内核兼容补丁。每个平台归档均包含
+            对应的原生软件包、构建清单和校验和。
           prerelease: true
           make_latest: false
           fail_on_unmatched_files: true
           files: |
             release-archives/*
 
-      - name: Move rolling tag to this build
+      - name: 将滚动标签移动到本次构建
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
