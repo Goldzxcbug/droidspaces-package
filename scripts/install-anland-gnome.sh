@@ -401,10 +401,7 @@ probe_download_source() {
 }
 
 select_download_source() {
-    local source latency choice recommendation latency_ms
-    local recommended_source=""
-    local best_latency_ms=""
-    local -a source_latencies=()
+    local source latency choice recommendation
 
     if [[ "$SKIP_SOURCE_PROBE" == true ]]; then
         log "已按参数选择 $(download_source_name "$DOWNLOAD_SOURCE")，跳过延迟测试。" \
@@ -416,32 +413,12 @@ select_download_source() {
         "Testing download-source latency (timeouts at ${SOURCE_PROBE_TIMEOUT_SECONDS} seconds)..."
     for source in 1 2 3; do
         latency="$(probe_download_source "$source")"
-        source_latencies[$source]="$latency"
-        if [[ "$latency" =~ ^([0-9]+)[[:space:]]ms$ ]]; then
-            latency_ms="${BASH_REMATCH[1]}"
-            if [[ -z "$best_latency_ms" ]] || (( latency_ms < best_latency_ms )); then
-                best_latency_ms="$latency_ms"
-                recommended_source="$source"
-            fi
-        fi
-    done
-    if [[ -z "$recommended_source" ]]; then
-        for source in 1 2 3; do
-            latency="${source_latencies[$source]}"
-            if [[ "$latency" != "$(msg '超时' 'timeout')" && \
-                  "$latency" != "$(msg '不可用' 'unavailable')" ]]; then
-                recommended_source="$source"
-                break
-            fi
-        done
-    fi
-    for source in 1 2 3; do
         recommendation=""
-        if [[ "$source" == "$recommended_source" ]]; then
+        if [[ "$source" == "3" ]]; then
             recommendation="$(msg '（推荐）' ' (recommended)')"
         fi
-        printf '%s. %s %s: %s%s\n' "$source" "$(download_source_name "$source")" \
-            "$(msg '延迟' 'latency')" "${source_latencies[$source]}" "$recommendation"
+        printf '%s. %s%s %s: %s\n' "$source" "$(download_source_name "$source")" \
+            "$recommendation" "$(msg '延迟' 'latency')" "$latency"
     done
 
     while :; do
