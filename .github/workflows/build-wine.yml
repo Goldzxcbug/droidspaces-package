@@ -119,6 +119,92 @@ jobs:
           echo "hangover_version=$version" >> "$GITHUB_OUTPUT"
           echo "已将 $HANGOVER_REPO @ $HANGOVER_REF 解析为 $hangover_commit（$version）"
 
+  dxvk:
+    name: 构建并校验 ARM64EC DXVK
+    needs: [prepare, runtime-foundation]
+    runs-on: ubuntu-latest
+    steps:
+      - name: 恢复运行库基础镜像缓存
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: foundationubuntu2204.tgz
+          key: hangover-runtime-foundation-${{ needs.prepare.outputs.hangover_commit }}
+
+      - name: 导入运行库基础镜像
+        shell: bash
+        run: docker image load -i foundationubuntu2204.tgz
+
+      - name: 检出 Hangover 使用的 DXVK fork
+        uses: actions/checkout@v6
+        with:
+          repository: mikugirls/dxvk
+          ref: main
+          fetch-tags: true
+          submodules: recursive
+          fetch-depth: 16
+          path: dxvk-source
+
+      - name: 构建 ARM64EC 和 x32 DXVK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          work_dir="$RUNNER_TEMP/dxvk"
+          archive="$RUNNER_TEMP/dxvk.tar.gz"
+          mkdir -p "$work_dir"
+          version="$(sed -n '1p' dxvk-source/RELEASE 2>/dev/null || true)"
+          version="${version#v}"
+          if [ -z "$version" ]; then
+            version=3.1
+          fi
+          case "$version" in
+            *[!A-Za-z0-9.+~_-]*)
+              echo "DXVK 版本包含不支持用于文件名的字符：$version" >&2
+              exit 1
+              ;;
+          esac
+
+          context="$RUNNER_TEMP/dxvk-context"
+          rm -rf "$context"
+          mkdir -p "$context"
+          cp -a dxvk-source "$context/dxvk"
+          rm -rf "$context/dxvk/.git"
+          cat > "$context/Dockerfile" <<'DXVK_DOCKERFILE'
+          FROM foundationubuntu2204
+
+          RUN apt-get update && apt-get install -y --no-install-recommends python3-pip && \
+              pip3 install --upgrade meson && \
+              rm -rf /var/lib/apt/lists/*
+
+          RUN mkdir -p /opt/dxvk/output
+          COPY dxvk/ /opt/dxvk/
+          ENV PATH="/opt/bylaws-llvm-mingw-20240929-ucrt-ubuntu-20.04-x86_64/bin:$PATH"
+          ARG DXVK_VERSION
+          RUN cd /opt/dxvk && ./package-release.sh "$DXVK_VERSION" /opt/dxvk/output
+          DXVK_DOCKERFILE
+
+          docker build --build-arg DXVK_VERSION="$version" \
+            -f "$context/Dockerfile" -t hangover-dxvk "$context"
+          docker run --rm hangover-dxvk \
+            cat "/opt/dxvk/output/dxvk-${version}.tar.gz" > "$archive"
+          tar -tzf "$archive" >/dev/null
+          tar -xzf "$archive" --wildcards --strip-components=1 -C "$work_dir" \
+            'dxvk-*/arm64ec/*.dll' 'dxvk-*/x32/*.dll'
+          install -m 0644 dxvk-source/LICENSE "$work_dir/LICENSE"
+          test "$(find "$work_dir/arm64ec" -type f -name '*.dll' | wc -l)" -gt 0
+          test "$(find "$work_dir/x32" -type f -name '*.dll' | wc -l)" -gt 0
+          printf '%s\n' "$version" > "$work_dir/version"
+          echo "ARM64EC DXVK 版本：$version"
+
+      - name: 上传 DXVK 构建资产
+        uses: actions/upload-artifact@v6
+        with:
+          name: hangover-dxvk
+          path: ${{ runner.temp }}/dxvk
+          if-no-files-found: error
+          retention-days: 1
+
   runtime-foundation:
     name: 构建共享运行库基础镜像
     needs: prepare
@@ -257,7 +343,7 @@ jobs:
 
   build:
     name: 构建 ${{ matrix.target }} 软件包
-    needs: [prepare, runtime]
+    needs: [prepare, runtime, dxvk]
     # Ubuntu 24.04 和 Debian 13 使用仓库中的 x86_64 交叉构建定义；
     # 其余目标在 ARM64 运行器上原生构建。
     runs-on: ${{ (matrix.target == 'ubuntu2404' || matrix.target == 'debian13') && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
@@ -331,6 +417,12 @@ jobs:
           path: runtime
           merge-multiple: true
 
+      - name: 下载 DXVK
+        uses: actions/download-artifact@v7
+        with:
+          name: hangover-dxvk
+          path: dxvk
+
       - name: 在目标发行版中构建 Wine
         env:
           PACKAGING: ${{ steps.target.outputs.packaging }}
@@ -358,6 +450,77 @@ jobs:
               source/wine/Dockerfile
           fi
 
+          package_context="source/wine/.hangover-package"
+          rm -rf "$package_context"
+          mkdir -p "$package_context/dxvk"
+          cp -a dxvk/. "$package_context/dxvk/"
+          cat > "$package_context/wine-dxvk-wrapper" <<'DXVK_WRAPPER'
+          #!/usr/bin/env bash
+          set -u
+
+          real_wine=/usr/lib/hangover-wine/wine.real
+          dxvk_root=/usr/share/hangover/dxvk
+          prefix="${WINEPREFIX:-${HOME:-/tmp}/.wine}"
+
+          if [[ -r "$dxvk_root/version" ]]; then
+            version="$(<"$dxvk_root/version")"
+            stamp="$prefix/.hangover-dxvk-version"
+            installed_version=''
+            [[ -r "$stamp" ]] && installed_version="$(<"$stamp")"
+            if [[ "$installed_version" != "$version" ]]; then
+              system32="$prefix/drive_c/windows/system32"
+              syswow64="$prefix/drive_c/windows/syswow64"
+              if mkdir -p "$system32" "$syswow64" 2>/dev/null; then
+                copy_ok=true
+                # Hangover 的 x86_64 应用优先使用 ARM64EC DXVK。
+                for dll in "$dxvk_root/arm64ec/"*.dll; do
+                  [[ -f "$dll" ]] || continue
+                  cp -f "$dll" "$system32/" || copy_ok=false
+                done
+                for dll in "$dxvk_root/x32/"*.dll; do
+                  [[ -f "$dll" ]] || continue
+                  cp -f "$dll" "$syswow64/" || copy_ok=false
+                done
+                if [[ "$copy_ok" == true ]]; then
+                  printf '%s\n' "$version" > "$stamp" 2>/dev/null || true
+                fi
+              else
+                printf 'hangover-wine: cannot write DXVK files to %s\n' "$prefix" >&2
+              fi
+            fi
+          fi
+
+          if [[ -z "${WINEDLLOVERRIDES:-}" ]]; then
+            export WINEDLLOVERRIDES='d3d8,d3d9,d3d10core,d3d11,dxgi=n,b'
+          fi
+          exec -a "$0" "$real_wine" "$@"
+          DXVK_WRAPPER
+          cat > "$package_context/install-dxvk.sh" <<'DXVK_INSTALL'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          package_root="$1"
+          install -d "$package_root/usr/share/hangover/dxvk/arm64ec" \
+            "$package_root/usr/share/hangover/dxvk/x32" \
+            "$package_root/usr/share/licenses/hangover-wine/dxvk" \
+            "$package_root/usr/lib/hangover-wine"
+          cp -a /opt/hangover-dxvk/arm64ec/. "$package_root/usr/share/hangover/dxvk/arm64ec/"
+          cp -a /opt/hangover-dxvk/x32/. "$package_root/usr/share/hangover/dxvk/x32/"
+          install -m 0644 /opt/hangover-dxvk/version \
+            "$package_root/usr/share/hangover/dxvk/version"
+          install -m 0644 /opt/hangover-dxvk/LICENSE \
+            "$package_root/usr/share/licenses/hangover-wine/dxvk/LICENSE"
+          if [[ -f "$package_root/usr/bin/wine" ]]; then
+            rm -f "$package_root/usr/lib/hangover-wine/wine.real"
+            mv "$package_root/usr/bin/wine" "$package_root/usr/lib/hangover-wine/wine.real"
+            install -m 0755 /opt/hangover-wine-dxvk-wrapper "$package_root/usr/bin/wine"
+          else
+            echo 'wine executable was not found in the package staging directory' >&2
+            exit 1
+          fi
+          DXVK_INSTALL
+          chmod 0755 "$package_context/wine-dxvk-wrapper" "$package_context/install-dxvk.sh"
+
           if [ "$PACKAGE_TYPE" = deb ]; then
             package_version="${HOVERSION}~${CODENAME}"
             old_changelog="$RUNNER_TEMP/changelog.old"
@@ -371,12 +534,28 @@ jobs:
               echo
               cat "$old_changelog"
             } > source/wine/debian/changelog
+            {
+              printf '\noverride_dh_auto_install:\n'
+              printf '\tdh_auto_install\n'
+              printf '\tif [ -x debian/hangover-wine/usr/bin/wine ]; then \\\n'
+              printf '\t  /opt/hangover-dxvk-install.sh debian/hangover-wine; \\\n'
+              printf '\telif [ -x debian/tmp/usr/bin/wine ]; then \\\n'
+              printf '\t  /opt/hangover-dxvk-install.sh debian/tmp; \\\n'
+              printf '\telse \\\n'
+              printf '\t  echo "wine executable was not found in Debian staging" >&2; exit 1; \\\n'
+              printf '\tfi\n'
+            } >> source/wine/debian/rules
+            sed -i '/^RUN cd \/opt\/wine; dpkg-buildpackage/i COPY .hangover-package/dxvk \/opt\/hangover-dxvk' \
+              source/wine/Dockerfile
+            sed -i '/^RUN cd \/opt\/wine; dpkg-buildpackage/i COPY .hangover-package/wine-dxvk-wrapper \/opt\/hangover-wine-dxvk-wrapper' \
+              source/wine/Dockerfile
+            sed -i '/^RUN cd \/opt\/wine; dpkg-buildpackage/i COPY .hangover-package/install-dxvk.sh \/opt\/hangover-dxvk-install.sh' \
+              source/wine/Dockerfile
             docker build -t "hangover-wine-${BUILD_TARGET}" source/wine
           else
-            package_context="source/wine/.hangover-package"
             native_output="$RUNNER_TEMP/native-package-output/$BUILD_TARGET"
             native_version="${HOVERSION//-/.}"
-            rm -rf "$package_context" "$native_output"
+            rm -rf "$native_output"
             mkdir -p "$package_context/runtime" "$native_output"
             install -m 0644 runtime/libarm64ecfex.dll runtime/libwow64fex.dll runtime/wowbox64.dll \
               "$package_context/runtime/"
@@ -426,6 +605,10 @@ jobs:
                 -e "s/PACKAGE_DATE/$(LC_ALL=C date '+%a %b %d %Y')/g" \
                 "$package_context/hangover-wine.spec"
               cat >> source/wine/Dockerfile <<'RPM_PACKAGE_DOCKERFILE'
+          COPY .hangover-package/dxvk /opt/hangover-dxvk
+          COPY .hangover-package/wine-dxvk-wrapper /opt/hangover-wine-dxvk-wrapper
+          COPY .hangover-package/install-dxvk.sh /opt/hangover-dxvk-install.sh
+          RUN /opt/hangover-dxvk-install.sh /opt/package
           COPY .hangover-package/runtime/ /opt/hangover-runtime/
           COPY .hangover-package/hangover-wine.spec /opt/hangover-package/hangover-wine.spec
           RUN install -m 0644 /opt/hangover-runtime/libarm64ecfex.dll /opt/hangover-runtime/libwow64fex.dll /opt/hangover-runtime/wowbox64.dll /opt/package/usr/lib/wine/aarch64-windows/ && \
@@ -459,6 +642,10 @@ jobs:
           ARCH_PKGBUILD
               sed -i "s/NATIVE_VERSION/$native_version/g" "$package_context/PKGBUILD"
               cat >> source/wine/Dockerfile <<'ARCH_PACKAGE_DOCKERFILE'
+          COPY .hangover-package/dxvk /opt/hangover-dxvk
+          COPY .hangover-package/wine-dxvk-wrapper /opt/hangover-wine-dxvk-wrapper
+          COPY .hangover-package/install-dxvk.sh /opt/hangover-dxvk-install.sh
+          RUN /opt/hangover-dxvk-install.sh /opt/package
           COPY .hangover-package/runtime/ /opt/hangover-runtime/
           COPY .hangover-package/PKGBUILD /opt/hangover-package/PKGBUILD
           RUN install -m 0644 /opt/hangover-runtime/libarm64ecfex.dll /opt/hangover-runtime/libwow64fex.dll /opt/hangover-runtime/wowbox64.dll /opt/package/usr/lib/wine/aarch64-windows/ && \
@@ -746,6 +933,7 @@ jobs:
           - 当前尚未提供：$(join_labels "${unavailable_targets[@]}")
           - 请求 ID：${REQUEST_ID:-自动-${GITHUB_RUN_ID}}
 
+          内置 DXVK：ARM64EC DLL 自动安装到 Wine 前缀的 system32，x32 DLL 自动安装到 syswow64，并默认启用 native 覆盖。
           每个压缩包只包含一个发行版的软件包。使用 \`install-hangover-wine.sh\` 自动选择、校验，并通过 APT、DNF 或 Pacman 安装匹配的软件包。
           EOF
           )"
