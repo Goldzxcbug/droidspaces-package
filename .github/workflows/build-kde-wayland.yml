@@ -255,7 +255,9 @@ jobs:
               chmod +x "/tmp/anland/$BUILD_SCRIPT"
 
               if [ "$BUILD_TARGET" = Arch ]; then
-                su -s /bin/bash anland -c "cd /tmp/anland/$(dirname "$BUILD_SCRIPT") && WORKDIR=/tmp/kde-packages ./$(basename "$BUILD_SCRIPT") --noconfirm"
+                # CI 只收集软件包，不需要把产物安装进一次性构建容器。
+                # INSTALL=0 也会跳过上游脚本中写 /etc/environment 的安装后配置。
+                su -s /bin/bash anland -c "cd /tmp/anland/$(dirname "$BUILD_SCRIPT") && INSTALL=0 WORKDIR=/tmp/kde-packages ./$(basename "$BUILD_SCRIPT") --noconfirm"
                 chmod -R a+rwX /tmp/kde-packages
               else
                 cd "/tmp/anland/$(dirname "$BUILD_SCRIPT")"
