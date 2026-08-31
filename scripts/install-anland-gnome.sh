@@ -14,7 +14,7 @@ readonly SOURCE_PROBE_TIMEOUT_SECONDS=2
 readonly GITHUB_RELEASE_URL="https://github.com"
 readonly GITHUB_API_URL="https://api.github.com"
 readonly GH_PROXY_RELEASE_URL="https://gh-proxy.com/https://github.com"
-readonly GHPROXY_NET_RELEASE_URL="https://ghproxy.net/https://github.com"
+readonly CNB_RELEASE_URL="https://cnb.cool"
 readonly APT_HOLD_STATE="/var/lib/anland-gnome/apt-holds"
 
 WORK_DIR=""
@@ -304,38 +304,41 @@ resolve_official_archive_sha256() {
 }
 
 release_download_base() {
-    local source_url
-
     case "$DOWNLOAD_SOURCE" in
-        1) source_url="$GITHUB_RELEASE_URL" ;;
-        2) source_url="$GH_PROXY_RELEASE_URL" ;;
-        3) source_url="$GHPROXY_NET_RELEASE_URL" ;;
+        1) printf '%s/%s/releases/download/%s' "$GITHUB_RELEASE_URL" "$RELEASE_REPOSITORY" "$RELEASE_TAG" ;;
+        2) printf '%s/%s/releases/download/%s' "$GH_PROXY_RELEASE_URL" "$RELEASE_REPOSITORY" "$RELEASE_TAG" ;;
+        3) printf '%s/%s/-/releases/download/%s' "$CNB_RELEASE_URL" "$RELEASE_REPOSITORY" "$RELEASE_TAG" ;;
         *) die "下载源选择无效。" "The selected download source is invalid." ;;
     esac
-    printf '%s/%s/releases/download/%s' "$source_url" "$RELEASE_REPOSITORY" "$RELEASE_TAG"
 }
 
 download_source_name() {
     case "$1" in
         1) printf 'GitHub' ;;
         2) printf 'gh-proxy.com' ;;
-        3) printf 'ghproxy.net' ;;
+        3) printf 'CNB' ;;
         *) return 1 ;;
     esac
 }
 
 download_source_probe_url() {
     local source="$1"
-    local source_url
 
     case "$source" in
-        1) source_url="$GITHUB_RELEASE_URL" ;;
-        2) source_url="$GH_PROXY_RELEASE_URL" ;;
-        3) source_url="$GHPROXY_NET_RELEASE_URL" ;;
+        1)
+            printf '%s/%s/releases/download/%s/%s' \
+                "$GITHUB_RELEASE_URL" "$RELEASE_REPOSITORY" "$RELEASE_TAG" "$MANIFEST_NAME"
+            ;;
+        2)
+            printf '%s/%s/releases/download/%s/%s' \
+                "$GH_PROXY_RELEASE_URL" "$RELEASE_REPOSITORY" "$RELEASE_TAG" "$MANIFEST_NAME"
+            ;;
+        3)
+            printf '%s/%s/-/releases/download/%s/%s' \
+                "$CNB_RELEASE_URL" "$RELEASE_REPOSITORY" "$RELEASE_TAG" "$MANIFEST_NAME"
+            ;;
         *) return 1 ;;
     esac
-    printf '%s/%s/releases/download/%s/%s' \
-        "$source_url" "$RELEASE_REPOSITORY" "$RELEASE_TAG" "$MANIFEST_NAME"
 }
 
 format_latency() {
@@ -398,7 +401,10 @@ probe_download_source() {
 }
 
 select_download_source() {
-    local source latency choice
+    local source latency choice recommendation latency_ms
+    local recommended_source=""
+    local best_latency_ms=""
+    local -a source_latencies=()
 
     if [[ "$SKIP_SOURCE_PROBE" == true ]]; then
         log "已按参数选择 $(download_source_name "$DOWNLOAD_SOURCE")，跳过延迟测试。" \
@@ -410,8 +416,32 @@ select_download_source() {
         "Testing download-source latency (timeouts at ${SOURCE_PROBE_TIMEOUT_SECONDS} seconds)..."
     for source in 1 2 3; do
         latency="$(probe_download_source "$source")"
-        printf '%s. %s %s: %s\n' "$source" "$(download_source_name "$source")" \
-            "$(msg '延迟' 'latency')" "$latency"
+        source_latencies[$source]="$latency"
+        if [[ "$latency" =~ ^([0-9]+)[[:space:]]ms$ ]]; then
+            latency_ms="${BASH_REMATCH[1]}"
+            if [[ -z "$best_latency_ms" ]] || (( latency_ms < best_latency_ms )); then
+                best_latency_ms="$latency_ms"
+                recommended_source="$source"
+            fi
+        fi
+    done
+    if [[ -z "$recommended_source" ]]; then
+        for source in 1 2 3; do
+            latency="${source_latencies[$source]}"
+            if [[ "$latency" != "$(msg '超时' 'timeout')" && \
+                  "$latency" != "$(msg '不可用' 'unavailable')" ]]; then
+                recommended_source="$source"
+                break
+            fi
+        done
+    fi
+    for source in 1 2 3; do
+        recommendation=""
+        if [[ "$source" == "$recommended_source" ]]; then
+            recommendation="$(msg '（推荐）' ' (recommended)')"
+        fi
+        printf '%s. %s %s: %s%s\n' "$source" "$(download_source_name "$source")" \
+            "$(msg '延迟' 'latency')" "${source_latencies[$source]}" "$recommendation"
     done
 
     while :; do

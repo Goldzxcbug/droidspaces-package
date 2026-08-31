@@ -31,6 +31,11 @@ on:
         required: false
         type: string
         default: ''
+      publish_cnb:
+        description: 同步发布到 CNB 国内镜像
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -817,3 +822,12 @@ jobs:
           trap - EXIT
 
           echo "已更新 $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$release_tag"
+
+      - name: 同步到 CNB 国内镜像
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_cnb }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_REPO: ${{ vars.CNB_REPO }}
+        run: bash scripts/publish-cnb-release.sh anland-gnome-packages
