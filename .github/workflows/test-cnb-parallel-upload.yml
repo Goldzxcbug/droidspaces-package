@@ -8,7 +8,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: cnb-parallel-upload-test
+  # 与正式 Wine 发布共用互斥锁，避免速度测试争抢生产同步带宽。
+  group: hangover-wine-package-release
   cancel-in-progress: false
 
 jobs:
