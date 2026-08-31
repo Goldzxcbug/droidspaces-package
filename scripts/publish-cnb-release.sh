@@ -64,6 +64,127 @@ cnb_request() {
     esac
 }
 
+prepare_cnb_uploads() {
+    local index payload upload_url verify_url
+
+    for index in "$@"; do
+        payload="$work_dir/upload-request-$index.json"
+        jq -n \
+            --arg asset_name "${upload_asset_names[$index]}" \
+            --argjson size "${upload_asset_sizes[$index]}" \
+            '{asset_name:$asset_name,size:$size,overwrite:true,ttl:0}' \
+            > "$payload"
+        cnb_request POST \
+            "$api_repo/-/releases/$release_id/asset-upload-url" \
+            201 \
+            "$payload"
+        upload_url="$(jq -er '.upload_url' "$response_file")"
+        verify_url="$(jq -er '.verify_url' "$response_file")"
+        if [[ "$verify_url" != http://* && "$verify_url" != https://* ]]; then
+            verify_url="$CNB_API_URL$verify_url"
+        fi
+        if [[ "$verify_url" == *\?* ]]; then
+            verify_url="${verify_url}&ttl=0"
+        else
+            verify_url="${verify_url}?ttl=0"
+        fi
+        upload_urls[$index]="$upload_url"
+        verify_urls[$index]="$verify_url"
+    done
+}
+
+upload_cnb_asset() {
+    local index="$1"
+    local asset_name="${upload_asset_names[$index]}"
+    local asset_path="${upload_asset_paths[$index]}"
+    local asset_size="${upload_asset_sizes[$index]}"
+    local upload_url="${upload_urls[$index]}"
+    local verify_url="${verify_urls[$index]}"
+    local started_at finished_at elapsed upload_metrics upload_status upload_speed verify_status
+
+    started_at="$(date +%s)"
+    echo "[$(date --iso-8601=seconds)] 开始上传 CNB 附件：$asset_name"
+    if ! upload_metrics="$(curl --fail-with-body --silent --show-error \
+        --retry 2 \
+        --retry-all-errors \
+        --connect-timeout 30 \
+        --speed-limit 10240 \
+        --speed-time 120 \
+        --request PUT \
+        --upload-file "$asset_path" \
+        --output "$work_dir/upload-body-$index.txt" \
+        --write-out '%{http_code}\t%{time_total}\t%{speed_upload}' \
+        "$upload_url")"; then
+        echo "上传 CNB 附件失败：$asset_name" >&2
+        return 1
+    fi
+    IFS=$'\t' read -r upload_status _ upload_speed <<< "$upload_metrics"
+    case "$upload_status" in
+        200|201|204) ;;
+        *)
+            echo "上传 CNB 附件失败：$asset_name（HTTP $upload_status）" >&2
+            return 1
+            ;;
+    esac
+
+    if ! verify_status="$(curl --silent --show-error \
+        --retry 2 \
+        --retry-all-errors \
+        --connect-timeout 30 \
+        --request POST \
+        --header "$auth_header" \
+        --header "$accept_header" \
+        --output "$work_dir/verify-response-$index.json" \
+        --write-out '%{http_code}' \
+        "$verify_url")"; then
+        echo "校验 CNB 附件失败：$asset_name" >&2
+        return 1
+    fi
+    if [[ "$verify_status" != 200 ]]; then
+        echo "校验 CNB 附件失败：$asset_name（HTTP $verify_status）" >&2
+        jq . "$work_dir/verify-response-$index.json" 2>/dev/null || \
+            sed -n '1,80p' "$work_dir/verify-response-$index.json" >&2
+        return 1
+    fi
+
+    finished_at="$(date +%s)"
+    elapsed=$((finished_at - started_at))
+    printf '%s\t%s\t%s\t%s\n' \
+        "$asset_name" "$asset_size" "$elapsed" "$upload_speed" \
+        > "$work_dir/upload-result-$index.tsv"
+    awk \
+        -v name="$asset_name" \
+        -v elapsed="$elapsed" \
+        -v speed="$upload_speed" \
+        'BEGIN {
+            printf "[%s] 上传完成：%d:%02d，%.3f MiB/s\n",
+                name, int(elapsed / 60), elapsed % 60, speed / 1048576
+        }'
+}
+
+upload_cnb_group() {
+    local description="$1"
+    shift
+    local index pid failed=0
+    local -a pids=()
+
+    [[ "$#" -gt 0 ]] || return 0
+    echo "正在全部并行上传 CNB ${description}（共 $# 个）..."
+    for index in "$@"; do
+        upload_cnb_asset "$index" &
+        pids+=("$!")
+    done
+    for pid in "${pids[@]}"; do
+        if ! wait "$pid"; then
+            failed=1
+        fi
+    done
+    if [[ "$failed" -ne 0 ]]; then
+        echo "至少一个 CNB ${description}上传失败。" >&2
+        return 1
+    fi
+}
+
 echo "正在读取 GitHub Release：$RELEASE_TAG"
 github_release_json="$work_dir/github-release.json"
 gh api \
@@ -119,38 +240,56 @@ else
 fi
 
 declare -A expected_asset_names=()
+declare -a upload_asset_names=()
+declare -a upload_asset_paths=()
+declare -a upload_asset_sizes=()
+declare -a upload_urls=()
+declare -a verify_urls=()
+declare -a parallel_upload_indexes=()
+declare -a manifest_upload_indexes=()
+upload_index=0
 for asset_name in "${expected_assets[@]}"; do
     expected_asset_names["$asset_name"]=1
     asset_path="$asset_dir/$asset_name"
     asset_size="$(stat --format='%s' "$asset_path")"
-    jq -n \
-        --arg asset_name "$asset_name" \
-        --argjson size "$asset_size" \
-        '{asset_name:$asset_name,size:$size,overwrite:true,ttl:0}' \
-        > "$payload_file"
-    cnb_request POST \
-        "$api_repo/-/releases/$release_id/asset-upload-url" \
-        201 \
-        "$payload_file"
-    upload_url="$(jq -er '.upload_url' "$response_file")"
-    verify_url="$(jq -er '.verify_url' "$response_file")"
-
-    echo "正在上传 CNB 附件：$asset_name"
-    curl --fail-with-body --silent --show-error \
-        --request PUT \
-        --upload-file "$asset_path" \
-        "$upload_url"
-
-    if [[ "$verify_url" != http://* && "$verify_url" != https://* ]]; then
-        verify_url="$CNB_API_URL$verify_url"
-    fi
-    if [[ "$verify_url" == *\?* ]]; then
-        verify_url="${verify_url}&ttl=0"
-    else
-        verify_url="${verify_url}?ttl=0"
-    fi
-    cnb_request POST "$verify_url" 200
+    upload_asset_names[$upload_index]="$asset_name"
+    upload_asset_paths[$upload_index]="$asset_path"
+    upload_asset_sizes[$upload_index]="$asset_size"
+    case "$asset_name" in
+        *-manifest|SHA256SUMS|SHA256SUMS.*)
+            manifest_upload_indexes+=("$upload_index")
+            ;;
+        *)
+            parallel_upload_indexes+=("$upload_index")
+            ;;
+    esac
+    upload_index=$((upload_index + 1))
 done
+
+upload_started_at="$(date +%s)"
+prepare_cnb_uploads "${parallel_upload_indexes[@]}"
+upload_cnb_group "附件" "${parallel_upload_indexes[@]}"
+
+# 清单最后发布，避免同步失败时引用尚未就绪的新软件包。
+prepare_cnb_uploads "${manifest_upload_indexes[@]}"
+upload_cnb_group "清单" "${manifest_upload_indexes[@]}"
+upload_finished_at="$(date +%s)"
+upload_elapsed=$((upload_finished_at - upload_started_at))
+(( upload_elapsed > 0 )) || upload_elapsed=1
+
+total_uploaded_bytes=0
+for result_file in "$work_dir"/upload-result-*.tsv; do
+    IFS=$'\t' read -r _ asset_size _ _ < "$result_file"
+    total_uploaded_bytes=$((total_uploaded_bytes + asset_size))
+done
+awk \
+    -v bytes="$total_uploaded_bytes" \
+    -v elapsed="$upload_elapsed" \
+    'BEGIN {
+        printf "CNB 全部并行上传完成：%d:%02d，聚合速度 %.3f MiB/s（%.2f Mbit/s）\n",
+            int(elapsed / 60), elapsed % 60,
+            bytes / 1048576 / elapsed, bytes / 1048576 / elapsed * 8
+    }'
 
 # 上传完成后再删除旧附件，避免同步过程中破坏上一份完整镜像。
 cnb_request GET "$api_repo/-/releases/$release_id" 200
