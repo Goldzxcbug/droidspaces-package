@@ -415,19 +415,58 @@ jobs:
           git -C source checkout --quiet --detach FETCH_HEAD
           git -C source submodule update --init --recursive --depth=1 wine
 
-      - name: 默认启用 Wine Wayland 驱动
+      - name: 设置 Wine 默认图形驱动和字体替换
         shell: bash
         run: |
           set -euo pipefail
           wine_inf=source/wine/loader/wine.inf.in
-          # AddReg flag 2 (NOCLOBBER) keeps later user overrides intact.
-          graphics_default='HKCU,Software\Wine\Drivers,"Graphics",2,"wayland,x11"'
+          defaults_file="$RUNNER_TEMP/hangover-wine-defaults.inf"
+          updated_inf="$RUNNER_TEMP/wine.inf.in"
+
+          # AddReg flag 2 (NOCLOBBER) preserves values already set by the user.
+          cat > "$defaults_file" <<'WINE_DEFAULTS'
+          HKCU,Software\Wine\Drivers,"Graphics",2,"wayland,x11"
+          HKCU,Software\Wine\Fonts\Replacements,"Arial",2,"Liberation Sans"
+          HKCU,Software\Wine\Fonts\Replacements,"Calibri",2,"Carlito"
+          HKCU,Software\Wine\Fonts\Replacements,"Cambria",2,"Caladea"
+          HKCU,Software\Wine\Fonts\Replacements,"Consolas",2,"Cascadia Code"
+          HKCU,Software\Wine\Fonts\Replacements,"Courier New",2,"Liberation Mono"
+          HKCU,Software\Wine\Fonts\Replacements,"DengXian",2,"Noto Sans CJK SC"
+          HKCU,Software\Wine\Fonts\Replacements,"FangSong",2,"Noto Sans CJK SC"
+          HKCU,Software\Wine\Fonts\Replacements,"KaiTi",2,"Noto Sans CJK SC"
+          HKCU,Software\Wine\Fonts\Replacements,"Microsoft YaHei",2,"Noto Sans CJK SC"
+          HKCU,Software\Wine\Fonts\Replacements,"Microsoft YaHei UI",2,"Noto Sans CJK SC"
+          HKCU,Software\Wine\Fonts\Replacements,"NSimSun",2,"Noto Sans CJK SC"
+          HKCU,Software\Wine\Fonts\Replacements,"Segoe UI",2,"Selawik"
+          HKCU,Software\Wine\Fonts\Replacements,"Segoe UI Variable",2,"Selawik"
+          HKCU,Software\Wine\Fonts\Replacements,"SimHei",2,"Noto Sans CJK SC"
+          HKCU,Software\Wine\Fonts\Replacements,"SimSun",2,"Noto Sans CJK SC"
+          HKCU,Software\Wine\Fonts\Replacements,"Tahoma",2,"Selawik"
+          HKCU,Software\Wine\Fonts\Replacements,"Times New Roman",2,"Liberation Serif"
+          WINE_DEFAULTS
+
           test "$(grep -c '^\[CurrentVersion\]$' "$wine_inf")" -eq 1
-          if ! grep -Fqx "$graphics_default" "$wine_inf"; then
-            sed -i '/^\[CurrentVersion\]$/a HKCU,Software\\Wine\\Drivers,"Graphics",2,"wayland,x11"' \
-              "$wine_inf"
-          fi
-          grep -Fqx "$graphics_default" "$wine_inf"
+          awk -v defaults_file="$defaults_file" '
+            BEGIN {
+              while ((getline line < defaults_file) > 0) defaults[line] = 1
+              close(defaults_file)
+            }
+            defaults[$0] { next }
+            /^\[CurrentVersion\]$/ && !inserted {
+              print
+              while ((getline line < defaults_file) > 0) print line
+              close(defaults_file)
+              inserted = 1
+              next
+            }
+            { print }
+            END { if (!inserted) exit 1 }
+          ' "$wine_inf" > "$updated_inf"
+          mv "$updated_inf" "$wine_inf"
+
+          while IFS= read -r registry_default; do
+            test "$(grep -Fxc "$registry_default" "$wine_inf")" -eq 1
+          done < "$defaults_file"
 
       - name: 下载共享运行库
         uses: actions/download-artifact@v7
