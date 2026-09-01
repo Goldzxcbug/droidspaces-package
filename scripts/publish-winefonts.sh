@@ -317,7 +317,7 @@ release_exists() {
 }
 
 upload_assets() {
-    local revision release_notes
+    local revision release_notes release_id
     revision="$(git -C "$REPOSITORY_ROOT" rev-parse HEAD)"
     release_notes="$WORK_DIR/release-notes.md"
 
@@ -334,6 +334,12 @@ upload_assets() {
             --latest=false
     fi
 
+    release_id="$(gh release view "$RELEASE_TAG" \
+        --repo "$RELEASE_REPOSITORY" \
+        --json databaseId \
+        --jq '.databaseId')"
+    [[ "$release_id" =~ ^[0-9]+$ ]] || die "无法取得 GitHub Release ID：$RELEASE_TAG"
+
     # 新归档先上传；清单最后替换，旧清单在此之前仍指向旧归档。
     gh release upload "$RELEASE_TAG" "$ASSET_DIR/$ARCHIVE_NAME" \
         --repo "$RELEASE_REPOSITORY"
@@ -343,10 +349,10 @@ upload_assets() {
     gh release upload "$RELEASE_TAG" "$ASSET_DIR/$MANIFEST_NAME" \
         --repo "$RELEASE_REPOSITORY" --clobber
 
-    verify_uploaded_asset "$ASSET_DIR/$ARCHIVE_NAME"
-    verify_uploaded_asset "$ASSET_DIR/$INSTALLER_NAME"
-    verify_uploaded_asset "$ASSET_DIR/SHA256SUMS"
-    verify_uploaded_asset "$ASSET_DIR/$MANIFEST_NAME"
+    verify_uploaded_asset "$release_id" "$ASSET_DIR/$ARCHIVE_NAME"
+    verify_uploaded_asset "$release_id" "$ASSET_DIR/$INSTALLER_NAME"
+    verify_uploaded_asset "$release_id" "$ASSET_DIR/SHA256SUMS"
+    verify_uploaded_asset "$release_id" "$ASSET_DIR/$MANIFEST_NAME"
 
     if gh api "repos/$RELEASE_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
         gh api --method PATCH \
@@ -360,19 +366,20 @@ upload_assets() {
         --notes-file "$release_notes" \
         --draft=false --prerelease=false --latest=false
 
-    delete_stale_assets
+    delete_stale_assets "$release_id"
     log "GitHub Release 发布完成：https://github.com/$RELEASE_REPOSITORY/releases/tag/$RELEASE_TAG"
 }
 
 verify_uploaded_asset() {
-    local file="$1"
+    local release_id="$1"
+    local file="$2"
     local name expected_size expected_digest release_json actual_size actual_digest attempt
     name="${file##*/}"
     expected_size="$(stat -c '%s' "$file")"
     expected_digest="sha256:$(sha256sum "$file" | awk '{print $1}')"
 
     for attempt in {1..15}; do
-        release_json="$(gh api "repos/$RELEASE_REPOSITORY/releases/tags/$RELEASE_TAG")"
+        release_json="$(gh api "repos/$RELEASE_REPOSITORY/releases/$release_id")"
         actual_size="$(jq -er --arg name "$name" '
             [.assets[] | select(.name == $name)] |
             if length == 1 then .[0].size else error("asset is not unique") end
@@ -391,6 +398,7 @@ verify_uploaded_asset() {
 }
 
 delete_stale_assets() {
+    local release_id="$1"
     local release_json row asset_id asset_name
     local -A keep=(
         ["$ARCHIVE_NAME"]=1
@@ -399,7 +407,7 @@ delete_stale_assets() {
         ["$MANIFEST_NAME"]=1
     )
 
-    release_json="$(gh api "repos/$RELEASE_REPOSITORY/releases/tags/$RELEASE_TAG")"
+    release_json="$(gh api "repos/$RELEASE_REPOSITORY/releases/$release_id")"
     while IFS=$'\t' read -r asset_id asset_name; do
         [[ -n "$asset_id" && -n "$asset_name" ]] || continue
         if [[ -z "${keep[$asset_name]:-}" ]]; then
