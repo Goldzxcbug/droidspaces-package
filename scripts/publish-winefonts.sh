@@ -4,6 +4,7 @@ set -euo pipefail
 readonly DEFAULT_REPOSITORY="Goldzxcbug/droidspaces-package"
 readonly RELEASE_REPOSITORY="${WINEFONTS_RELEASE_REPOSITORY:-$DEFAULT_REPOSITORY}"
 readonly RELEASE_TAG="${WINEFONTS_RELEASE_TAG:-winefonts}"
+readonly RELEASE_TARGET="main"
 readonly MANIFEST_NAME="winefonts-manifest"
 readonly INSTALLER_NAME="install-winefonts.sh"
 readonly LICENSE_INVENTORY="FONT-LICENSES.tsv"
@@ -327,7 +328,7 @@ upload_assets() {
         log "正在创建草稿 Release：$RELEASE_TAG"
         gh release create "$RELEASE_TAG" \
             --repo "$RELEASE_REPOSITORY" \
-            --target "$revision" \
+            --target "$RELEASE_TARGET" \
             --title "$RELEASE_TITLE" \
             --notes-file "$release_notes" \
             --draft \
@@ -361,7 +362,7 @@ upload_assets() {
     fi
     gh release edit "$RELEASE_TAG" \
         --repo "$RELEASE_REPOSITORY" \
-        --target "$revision" \
+        --target "$RELEASE_TARGET" \
         --title "$RELEASE_TITLE" \
         --notes-file "$release_notes" \
         --draft=false --prerelease=false --latest=false
