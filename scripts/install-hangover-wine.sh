@@ -25,6 +25,8 @@ ARCHIVE_NAME=""
 PACKAGE_DIR=""
 WORK_DIR=""
 RELEASE_METADATA=""
+APT_TEMPORARY_HOLDS=()
+BOOTSTRAP_PACKAGES=()
 
 detect_language() {
     local locale_name="${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}"
@@ -90,6 +92,9 @@ parse_arguments() {
 }
 
 cleanup() {
+    if ((${#APT_TEMPORARY_HOLDS[@]} > 0)) && command -v apt-mark >/dev/null 2>&1; then
+        apt-mark unhold "${APT_TEMPORARY_HOLDS[@]}" >/dev/null 2>&1 || true
+    fi
     if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
         rm -rf -- "$WORK_DIR"
     fi
@@ -189,7 +194,107 @@ require_root() {
         bash "$script_path" "$@"
 }
 
+protect_deb_system_packages() {
+    local package
+    local -a installed=() held=()
+    local -A was_held=()
+
+    command -v apt-mark >/dev/null 2>&1 || \
+        die "缺少命令：apt-mark。" "Required command is missing: apt-mark."
+    command -v dpkg-query >/dev/null 2>&1 || \
+        die "缺少命令：dpkg-query。" "Required command is missing: dpkg-query."
+
+    mapfile -t installed < <(
+        dpkg-query -W -f='${db:Status-Abbrev}\t${Package}\n' \
+            'systemd' 'systemd-*' 'libsystemd*' 'libudev*' 'udev' 2>/dev/null |
+            awk -F '\t' '$1 == "ii " { print $2 }' |
+            sort -u
+    )
+    ((${#installed[@]} > 0)) || \
+        die "未找到已安装的 systemd 包，拒绝继续修改容器。" \
+            "No installed systemd packages were found; refusing to modify the container."
+
+    mapfile -t held < <(apt-mark showhold 2>/dev/null || true)
+    for package in "${held[@]}"; do
+        was_held["${package%%:*}"]=1
+    done
+    for package in "${installed[@]}"; do
+        [[ -n "${was_held[$package]:-}" ]] || APT_TEMPORARY_HOLDS+=("$package")
+    done
+
+    if ((${#APT_TEMPORARY_HOLDS[@]} > 0)); then
+        log "正在为本次安装临时锁定 systemd/udev 包..." \
+            "Temporarily holding systemd/udev packages for this installation..."
+        if ! apt-mark hold "${APT_TEMPORARY_HOLDS[@]}" >/dev/null; then
+            apt-mark unhold "${APT_TEMPORARY_HOLDS[@]}" >/dev/null 2>&1 || true
+            APT_TEMPORARY_HOLDS=()
+            die "无法锁定 systemd/udev 包，拒绝继续安装。" \
+                "Could not hold the systemd/udev packages; refusing to continue."
+        fi
+    fi
+}
+
+protect_system_packages() {
+    # DNF and Pacman are constrained per transaction below.
+    case "$PACKAGE_KIND" in
+        deb) protect_deb_system_packages ;;
+        rpm|arch) ;;
+    esac
+}
+
+append_bootstrap_package() {
+    local package="$1"
+    local existing
+
+    for existing in "${BOOTSTRAP_PACKAGES[@]}"; do
+        [[ "$existing" == "$package" ]] && return
+    done
+    BOOTSTRAP_PACKAGES+=("$package")
+}
+
+require_command_package() {
+    command -v "$1" >/dev/null 2>&1 || append_bootstrap_package "$2"
+}
+
+collect_bootstrap_packages() {
+    BOOTSTRAP_PACKAGES=()
+
+    [[ -s /etc/ssl/certs/ca-certificates.crt || -s /etc/pki/tls/certs/ca-bundle.crt ]] || \
+        append_bootstrap_package ca-certificates
+    require_command_package curl curl
+    require_command_package jq jq
+    require_command_package sha256sum coreutils
+    require_command_package stat coreutils
+    require_command_package sort coreutils
+    require_command_package tar tar
+    require_command_package find findutils
+    require_command_package sed sed
+    require_command_package gzip gzip
+
+    case "$PACKAGE_KIND" in
+        deb)
+            require_command_package awk mawk
+            require_command_package dpkg-deb dpkg
+            ;;
+        rpm)
+            require_command_package awk gawk
+            require_command_package rpm rpm
+            ;;
+        arch)
+            require_command_package awk gawk
+            require_command_package pacman pacman
+            ;;
+    esac
+}
+
 bootstrap_dependencies() {
+    collect_bootstrap_packages
+    if ((${#BOOTSTRAP_PACKAGES[@]} == 0)); then
+        log "下载和校验工具已齐全，跳过包管理器事务。" \
+            "Download and verification tools are already available; skipping the package-manager transaction."
+        return
+    fi
+
     log "正在准备下载和校验工具..." "Preparing download and verification tools..."
     case "$PACKAGE_KIND" in
         deb)
@@ -212,21 +317,24 @@ bootstrap_dependencies() {
                 done
                 apt-get update
             fi
-            apt-get install -y --no-install-recommends ca-certificates curl jq coreutils tar gzip
+            apt-get install -y --no-install-recommends "${BOOTSTRAP_PACKAGES[@]}"
             ;;
         rpm)
-            dnf install -y --setopt=install_weak_deps=False ca-certificates curl jq coreutils tar gzip rpm
+            dnf install -y --setopt=install_weak_deps=False --exclude='systemd*' \
+                "${BOOTSTRAP_PACKAGES[@]}"
             ;;
         arch)
-            pacman -Syu --noconfirm --needed ca-certificates curl jq coreutils tar gzip
+            # A full upgrade would replace Droidspaces' patched systemd and break networking.
+            pacman -S --noconfirm --needed \
+                --ignore systemd,systemd-libs,systemd-sysvcompat \
+                "${BOOTSTRAP_PACKAGES[@]}"
             ;;
     esac
 
-    local command_name
-    for command_name in curl jq sha256sum stat tar find awk sed sort; do
-        command -v "$command_name" >/dev/null 2>&1 || \
-            die "缺少命令：$command_name。" "Required command is missing: $command_name."
-    done
+    collect_bootstrap_packages
+    ((${#BOOTSTRAP_PACKAGES[@]} == 0)) || \
+        die "仍缺少依赖包：${BOOTSTRAP_PACKAGES[*]}。" \
+            "Required packages are still unavailable: ${BOOTSTRAP_PACKAGES[*]}."
 }
 
 download_source_name() {
@@ -567,12 +675,12 @@ install_packages() {
             mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.deb' -print | sort)
             log "正在通过 APT 安装 ${#files[@]} 个包并处理依赖..." \
                 "Installing ${#files[@]} packages through APT and resolving dependencies..."
-            apt-get install -y --allow-downgrades "${files[@]}"
+            apt-get install -y --no-install-recommends --allow-downgrades "${files[@]}"
             ;;
         rpm)
             mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.rpm' -print | sort)
             log "正在通过 DNF 安装 Hangover Wine..." "Installing Hangover Wine through DNF..."
-            dnf install -y --allowerasing "${files[@]}"
+            dnf install -y --allowerasing --exclude='systemd*' "${files[@]}"
             ;;
         arch)
             mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.pkg.tar.*' -print | sort)
@@ -591,7 +699,8 @@ install_packages() {
                 die "pacman.conf 缺少 [options] 段。" "pacman.conf has no [options] section."
             fi
 
-            if ! pacman --config "$pacman_conf" -U --noconfirm "${files[@]}"; then
+            if ! pacman --config "$pacman_conf" -U --noconfirm \
+                --ignore systemd,systemd-libs,systemd-sysvcompat "${files[@]}"; then
                 die "Arch 软件包安装失败。" "Arch package installation failed."
             fi
             ;;
@@ -599,11 +708,14 @@ install_packages() {
 }
 
 main() {
+    local wine_version
+
     detect_language
     parse_arguments "$@"
     validate_release_settings
     detect_target
     require_root "$@"
+    protect_system_packages
     bootstrap_dependencies
     select_download_source
     log "下载源：$(download_source_name "$DOWNLOAD_SOURCE")" \
@@ -611,13 +723,17 @@ main() {
     download_and_extract
     install_packages
 
-    if command -v wine >/dev/null 2>&1; then
-        log "安装完成：$(wine --version 2>/dev/null || printf 'wine')" \
-            "Installation complete: $(wine --version 2>/dev/null || printf 'wine')"
-    else
+    if ! command -v wine >/dev/null 2>&1; then
         die "安装事务完成，但找不到 wine 命令。" \
             "The package transaction completed, but the wine command was not found."
     fi
+    if ! wine_version="$(wine --version 2>&1)"; then
+        die "wine 命令存在，但启动验证失败：$wine_version" \
+            "The wine command exists, but startup validation failed: $wine_version"
+    fi
+    log "安装完成：$wine_version" "Installation complete: $wine_version"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

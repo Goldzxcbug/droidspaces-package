@@ -415,6 +415,20 @@ jobs:
           git -C source checkout --quiet --detach FETCH_HEAD
           git -C source submodule update --init --recursive --depth=1 wine
 
+      - name: 默认启用 Wine Wayland 驱动
+        shell: bash
+        run: |
+          set -euo pipefail
+          wine_inf=source/wine/loader/wine.inf.in
+          # AddReg flag 2 (NOCLOBBER) keeps later user overrides intact.
+          graphics_default='HKCU,Software\Wine\Drivers,"Graphics",2,"wayland,x11"'
+          test "$(grep -c '^\[CurrentVersion\]$' "$wine_inf")" -eq 1
+          if ! grep -Fqx "$graphics_default" "$wine_inf"; then
+            sed -i '/^\[CurrentVersion\]$/a HKCU,Software\\Wine\\Drivers,"Graphics",2,"wayland,x11"' \
+              "$wine_inf"
+          fi
+          grep -Fqx "$graphics_default" "$wine_inf"
+
       - name: 下载共享运行库
         uses: actions/download-artifact@v7
         with:
@@ -463,7 +477,9 @@ jobs:
           #!/usr/bin/env bash
           set -u
 
-          real_wine=/usr/lib/hangover-wine/wine.real
+          # Keep the real loader beside /usr/bin/wine. Wine derives
+          # ../lib/wine from the executable's actual location.
+          real_wine=/usr/bin/wine.real
           dxvk_root=/usr/share/hangover/dxvk
           prefix="${WINEPREFIX:-${HOME:-/tmp}/.wine}"
 
@@ -508,7 +524,7 @@ jobs:
           install -d "$package_root/usr/share/hangover/dxvk/arm64ec" \
             "$package_root/usr/share/hangover/dxvk/x32" \
             "$package_root/usr/share/licenses/hangover-wine/dxvk" \
-            "$package_root/usr/lib/hangover-wine"
+            "$package_root/usr/bin"
           cp -a /opt/hangover-dxvk/arm64ec/. "$package_root/usr/share/hangover/dxvk/arm64ec/"
           cp -a /opt/hangover-dxvk/x32/. "$package_root/usr/share/hangover/dxvk/x32/"
           install -m 0644 /opt/hangover-dxvk/version \
@@ -516,15 +532,20 @@ jobs:
           install -m 0644 /opt/hangover-dxvk/LICENSE \
             "$package_root/usr/share/licenses/hangover-wine/dxvk/LICENSE"
           if [[ -f "$package_root/usr/bin/wine" ]]; then
-            rm -f "$package_root/usr/lib/hangover-wine/wine.real"
-            mv "$package_root/usr/bin/wine" "$package_root/usr/lib/hangover-wine/wine.real"
+            rm -f "$package_root/usr/bin/wine.real"
+            mv "$package_root/usr/bin/wine" "$package_root/usr/bin/wine.real"
             install -m 0755 /opt/hangover-wine-dxvk-wrapper "$package_root/usr/bin/wine"
+            if [[ ! -f "$package_root/usr/bin/../lib/wine/aarch64-unix/ntdll.so" ]]; then
+              echo 'wine.real cannot resolve ../lib/wine/aarch64-unix/ntdll.so' >&2
+              exit 1
+            fi
           else
             echo 'wine executable was not found in the package staging directory' >&2
             exit 1
           fi
           DXVK_INSTALL
           chmod 0755 "$package_context/wine-dxvk-wrapper" "$package_context/install-dxvk.sh"
+          bash -n "$package_context/wine-dxvk-wrapper" "$package_context/install-dxvk.sh"
 
           if [ "$PACKAGE_TYPE" = deb ]; then
             package_version="${HOVERSION}~${CODENAME}"
