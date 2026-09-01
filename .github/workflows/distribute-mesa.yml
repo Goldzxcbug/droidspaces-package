@@ -1,0 +1,303 @@
+# 源仓库：https://github.com/lfdevs/mesa-for-android-container
+# 上游 Releases：https://github.com/lfdevs/mesa-for-android-container/releases
+# 本工作流用于获授权的二次分发，不修改上游 Mesa 资产内容。
+
+name: 分发 Mesa for Android Container
+run-name: 分发 Mesa ${{ inputs.upstream_tag || '最新稳定版本' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 可选的上游 mesa-* Release tag；留空自动选择最新稳定版本
+        required: false
+        type: string
+        default: ''
+      publish_cnb:
+        description: 同步发布到 CNB 国内镜像
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: distribute-mesa-for-android-container
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: lfdevs/mesa-for-android-container
+  UPSTREAM_URL: https://github.com/lfdevs/mesa-for-android-container
+  UPSTREAM_RELEASES_URL: https://github.com/lfdevs/mesa-for-android-container/releases
+  MEDIA_REPOSITORY: Re-s/droidspaces-media-decode
+  MEDIA_URL: https://github.com/Re-s/droidspaces-media-decode
+  DISTRIBUTION_TAG: mesa-for-android-container
+  MANIFEST_NAME: mesa-distribution-manifest
+
+jobs:
+  distribute:
+    name: 更新 Mesa 滚动发布
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: 检出分发脚本
+        uses: actions/checkout@v6
+
+      - name: 要求从 main 分支触发
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_NAME" != main ]]; then
+            echo "此工作流必须从 main 分支触发。" >&2
+            exit 1
+          fi
+
+      - name: 解析上游 Release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.upstream_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mesa_metadata="$RUNNER_TEMP/mesa-upstream-release.json"
+          media_metadata="$RUNNER_TEMP/media-upstream-release.json"
+          if [[ -n "$REQUESTED_TAG" ]]; then
+            [[ "$REQUESTED_TAG" =~ ^mesa-[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || {
+              echo "上游标签必须使用 mesa-* 格式：$REQUESTED_TAG" >&2
+              exit 1
+            }
+            gh api "repos/$UPSTREAM_REPOSITORY/releases/tags/$REQUESTED_TAG" \
+              > "$mesa_metadata"
+          else
+            gh api "repos/$UPSTREAM_REPOSITORY/releases?per_page=100" | jq -ce '
+              [
+                .[]
+                | select(.draft == false and .prerelease == false)
+                | select(.tag_name | test("^mesa-[A-Za-z0-9][A-Za-z0-9._+-]*$"))
+                | select(any(.assets[]?; .name | startswith("mesa-for-android-container_")))
+              ][0] // error("没有找到可分发的 mesa-* Release")
+            ' > "$mesa_metadata"
+          fi
+
+          jq -e '
+            .draft == false and
+            .prerelease == false and
+            (.tag_name | test("^mesa-[A-Za-z0-9][A-Za-z0-9._+-]*$"))
+          ' "$mesa_metadata" >/dev/null
+          mesa_tag="$(jq -er '.tag_name' "$mesa_metadata")"
+
+          gh api "repos/$MEDIA_REPOSITORY/releases/latest" > "$media_metadata"
+          jq -e --arg driver msm_drm_drv_video.so --arg sums SHA256SUMS '
+            .draft == false and
+            .prerelease == false and
+            ([.assets[] | select(.name == $driver)] | length == 1) and
+            ([.assets[] | select(.name == $sums)] | length == 1)
+          ' "$media_metadata" >/dev/null
+          media_tag="$(jq -er '.tag_name' "$media_metadata")"
+
+          echo "mesa_tag=$mesa_tag" >> "$GITHUB_OUTPUT"
+          echo "media_tag=$media_tag" >> "$GITHUB_OUTPUT"
+          echo "选择 Mesa 上游 Release：$UPSTREAM_RELEASES_URL/tag/$mesa_tag"
+          echo "选择媒体驱动 Release：$MEDIA_URL/releases/tag/$media_tag"
+
+      - name: 下载并校验分发资产
+        id: assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MESA_TAG: ${{ steps.upstream.outputs.mesa_tag }}
+          MEDIA_TAG: ${{ steps.upstream.outputs.media_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          asset_dir="$RUNNER_TEMP/mesa-distribution-assets"
+          mesa_metadata="$RUNNER_TEMP/mesa-upstream-release.json"
+          media_metadata="$RUNNER_TEMP/media-upstream-release.json"
+          rm -rf "$asset_dir"
+          mkdir -p "$asset_dir"
+
+          patterns=(
+            '*_archlinux_arm64.tar'
+            '*_debian_trixie_arm64.tar.gz'
+            '*_fedora_43_arm64.tar.gz'
+            '*_fedora_44_arm64.tar.gz'
+            '*_ubuntu_noble_arm64.tar.gz'
+            '*_ubuntu_questing_arm64.tar.gz'
+            '*_ubuntu_resolute_arm64.tar.gz'
+          )
+          download_arguments=()
+          for pattern in "${patterns[@]}"; do
+            download_arguments+=(--pattern "mesa-for-android-container_${pattern}")
+          done
+          gh release download "$MESA_TAG" \
+            --repo "$UPSTREAM_REPOSITORY" \
+            --dir "$asset_dir" \
+            "${download_arguments[@]}"
+          gh release download "$MEDIA_TAG" \
+            --repo "$MEDIA_REPOSITORY" \
+            --dir "$asset_dir" \
+            --pattern msm_drm_drv_video.so \
+            --pattern SHA256SUMS
+          gh api \
+            --header 'Accept: application/vnd.github.raw+json' \
+            "repos/$MEDIA_REPOSITORY/contents/LICENSE?ref=$MEDIA_TAG" \
+            > "$asset_dir/droidspaces-media-decode-LICENSE"
+
+          mapfile -t mesa_assets < <(
+            find "$asset_dir" -maxdepth 1 -type f \
+              -name 'mesa-for-android-container_*' -print | sort
+          )
+          [[ "${#mesa_assets[@]}" -eq 7 ]] || {
+            echo "应当下载 7 个 Mesa 资产，实际为 ${#mesa_assets[@]} 个。" >&2
+            exit 1
+          }
+          [[ -f "$asset_dir/msm_drm_drv_video.so" && \
+              -f "$asset_dir/SHA256SUMS" && \
+              -s "$asset_dir/droidspaces-media-decode-LICENSE" ]]
+
+          verify_upstream_asset() {
+            local metadata="$1" file="$2" name row digest expected_size
+            local expected_sha actual_sha actual_size
+            name="${file##*/}"
+            row="$(jq -er --arg name "$name" '
+              [.assets[] | select(.name == $name)]
+              | if length == 1 then [.[0].digest, .[0].size] | @tsv
+                else error("资产不唯一") end
+            ' "$metadata")"
+            IFS=$'\t' read -r digest expected_size <<< "$row"
+            [[ "$digest" =~ ^sha256:([0-9A-Fa-f]{64})$ ]]
+            expected_sha="${BASH_REMATCH[1],,}"
+            actual_sha="$(sha256sum "$file" | awk '{print $1}')"
+            actual_size="$(stat -c '%s' "$file")"
+            [[ "$actual_sha" == "$expected_sha" && "$actual_size" == "$expected_size" ]] || {
+              echo "上游资产校验失败：$name" >&2
+              return 1
+            }
+          }
+
+          for asset in "${mesa_assets[@]}"; do
+            verify_upstream_asset "$mesa_metadata" "$asset"
+          done
+          verify_upstream_asset "$media_metadata" "$asset_dir/msm_drm_drv_video.so"
+          verify_upstream_asset "$media_metadata" "$asset_dir/SHA256SUMS"
+
+          install -m 0755 scripts/install-mesa.sh "$asset_dir/install-mesa.sh"
+          manifest="$asset_dir/$MANIFEST_NAME"
+          {
+            printf 'format=1\n'
+            printf 'source_repository=%s\n' "$UPSTREAM_URL"
+            printf 'source_release=%s/tag/%s\n' "$UPSTREAM_RELEASES_URL" "$MESA_TAG"
+            printf 'source_tag=%s\n' "$MESA_TAG"
+            printf 'media_repository=%s\n' "$MEDIA_URL"
+            printf 'media_release=%s/releases/tag/%s\n' "$MEDIA_URL" "$MEDIA_TAG"
+            printf 'media_tag=%s\n' "$MEDIA_TAG"
+            printf 'generated_at=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            printf '\nsha256\tsize\tasset\n'
+            find "$asset_dir" -maxdepth 1 -type f ! -name "$MANIFEST_NAME" \
+              -print0 | sort -z | while IFS= read -r -d '' asset; do
+                printf '%s\t%s\t%s\n' \
+                  "$(sha256sum "$asset" | awk '{print $1}')" \
+                  "$(stat -c '%s' "$asset")" "${asset##*/}"
+              done
+          } > "$manifest"
+
+          echo "asset_dir=$asset_dir" >> "$GITHUB_OUTPUT"
+          echo "已准备 $(find "$asset_dir" -maxdepth 1 -type f | wc -l) 个分发附件。"
+
+      - name: 确保滚动标签存在
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$DISTRIBUTION_TAG" >/dev/null 2>&1; then
+            echo "滚动标签 $DISTRIBUTION_TAG 已存在。"
+          elif git tag "$DISTRIBUTION_TAG" "$GITHUB_SHA" && \
+              git push origin "refs/tags/$DISTRIBUTION_TAG"; then
+            echo "已创建滚动标签 $DISTRIBUTION_TAG。"
+          elif git ls-remote --exit-code --tags origin "refs/tags/$DISTRIBUTION_TAG" >/dev/null 2>&1; then
+            echo "滚动标签 $DISTRIBUTION_TAG 已由并发任务创建。"
+          else
+            echo "无法创建滚动标签 $DISTRIBUTION_TAG。" >&2
+            exit 1
+          fi
+
+      - name: 更新 GitHub 滚动发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MESA_TAG: ${{ steps.upstream.outputs.mesa_tag }}
+          MEDIA_TAG: ${{ steps.upstream.outputs.media_tag }}
+          ASSET_DIR: ${{ steps.assets.outputs.asset_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_body="$RUNNER_TEMP/mesa-release-body.md"
+          cat > "$release_body" <<EOF
+          源仓库：[$UPSTREAM_URL]($UPSTREAM_URL)
+
+          对应上游 Release：[$MESA_TAG]($UPSTREAM_RELEASES_URL/tag/$MESA_TAG)
+
+          本 Release 经原作者允许进行分发，Mesa 资产内容保持不变。安装脚本还会安装来自 [$MEDIA_REPOSITORY]($MEDIA_URL) 的 Apache-2.0 媒体解码驱动 $MEDIA_TAG，其许可证随附件提供。
+
+          安装脚本：
+
+          \`\`\`bash
+          bash install-mesa.sh --1  # GitHub
+          bash install-mesa.sh --2  # gh-proxy.com
+          bash install-mesa.sh --3  # CNB
+          \`\`\`
+
+          固定滚动地址：[$GITHUB_REPOSITORY Releases](https://github.com/$GITHUB_REPOSITORY/releases/tag/$DISTRIBUTION_TAG)
+          EOF
+
+          if ! gh release view "$DISTRIBUTION_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$DISTRIBUTION_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Mesa for Android Container ($MESA_TAG)" \
+              --notes-file "$release_body" \
+              --draft \
+              --latest=false
+          fi
+
+          mapfile -t uploads < <(find "$ASSET_DIR" -maxdepth 1 -type f -print | sort)
+          [[ "${#uploads[@]}" -gt 0 ]]
+          gh release upload "$DISTRIBUTION_TAG" "${uploads[@]}" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+          expected_names="$RUNNER_TEMP/mesa-expected-assets.txt"
+          printf '%s\n' "${uploads[@]##*/}" | sort -u > "$expected_names"
+          release_json="$RUNNER_TEMP/mesa-distribution-release.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$DISTRIBUTION_TAG" > "$release_json"
+          while IFS=$'\t' read -r asset_id asset_name; do
+            [[ -n "$asset_id" && -n "$asset_name" ]] || continue
+            if ! grep -Fqx "$asset_name" "$expected_names"; then
+              echo "删除旧分发附件：$asset_name"
+              gh api --method DELETE \
+                "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            fi
+          done < <(jq -r '.assets[] | [.id, .name] | @tsv' "$release_json")
+
+          gh release edit "$DISTRIBUTION_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Mesa for Android Container ($MESA_TAG)" \
+            --notes-file "$release_body" \
+            --draft=false \
+            --prerelease=false \
+            --latest=false
+
+      - name: 同步到 CNB
+        if: ${{ inputs.publish_cnb }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_REPO: ${{ vars.CNB_REPO }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${CNB_REPO,,}" == "goldzxcbug/droidspaces-package" ]] || {
+            echo "GitHub Actions Variable CNB_REPO 必须是 goldzxcbug/droidspaces-package。" >&2
+            exit 1
+          }
+          bash scripts/publish-cnb-release.sh "$DISTRIBUTION_TAG"
