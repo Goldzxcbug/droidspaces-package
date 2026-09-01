@@ -1,6 +1,7 @@
-# 源仓库：https://github.com/lfdevs/mesa-for-android-container
+# Mesa 源仓库：https://github.com/lfdevs/mesa-for-android-container
 # 上游 Releases：https://github.com/lfdevs/mesa-for-android-container/releases
-# 本工作流用于获授权的二次分发，不修改上游 Mesa 资产内容。
+# 媒体解码源仓库：https://github.com/Re-s/droidspaces-media-decode
+# 本工作流不修改上游 Mesa 资产内容。
 
 name: 分发 Mesa for Android Container
 run-name: 分发 Mesa ${{ inputs.upstream_tag || '最新稳定版本' }}
@@ -235,11 +236,13 @@ jobs:
 
           release_body="$RUNNER_TEMP/mesa-release-body.md"
           cat > "$release_body" <<EOF
-          源仓库：[$UPSTREAM_URL]($UPSTREAM_URL)
+          Mesa 源仓库：[$UPSTREAM_URL]($UPSTREAM_URL)
+
+          媒体解码源仓库：[$MEDIA_URL]($MEDIA_URL)
 
           对应上游 Release：[$MESA_TAG]($UPSTREAM_RELEASES_URL/tag/$MESA_TAG)
 
-          本 Release 经原作者允许进行分发，Mesa 资产内容保持不变。安装脚本还会安装来自 [$MEDIA_REPOSITORY]($MEDIA_URL) 的 Apache-2.0 媒体解码驱动 $MEDIA_TAG，其许可证随附件提供。
+          本 Release 中的 Mesa 资产内容保持不变。安装脚本还会安装 Apache-2.0 媒体解码驱动 $MEDIA_TAG，其许可证随附件提供。
 
           安装脚本：
 
