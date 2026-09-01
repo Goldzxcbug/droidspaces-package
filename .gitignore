@@ -1,4 +1,5 @@
 /out/
+/winefonts/
 *.log
 *.pkg.tar.*
 *.deb
