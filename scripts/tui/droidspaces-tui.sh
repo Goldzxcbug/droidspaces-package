@@ -16,7 +16,7 @@ readonly TUI_PROXY_DOWNLOAD_BASE="${DROIDSPACES_TUI_PROXY_BASE:-https://gh-proxy
 readonly TUI_CNB_DOWNLOAD_BASE="${DROIDSPACES_TUI_CNB_BASE:-https://cnb.cool/goldzxcbug/droidspaces-package/-/releases/download}"
 
 UI_LANG="en"
-DOWNLOAD_SOURCE="auto"
+DOWNLOAD_SOURCE=""
 SYSTEM_ID="unknown"
 SYSTEM_VERSION=""
 SYSTEM_LABEL="Unknown Linux"
@@ -39,6 +39,15 @@ detect_language() {
     locale_name="${locale_name,,}"
     [[ "$locale_name" == zh* ]] && UI_LANG="zh"
     return 0
+}
+
+set_default_download_source() {
+    [[ -z "$DOWNLOAD_SOURCE" ]] || return 0
+    if [[ "$UI_LANG" == "zh" ]]; then
+        DOWNLOAD_SOURCE="3"
+    else
+        DOWNLOAD_SOURCE="1"
+    fi
 }
 
 msg() {
@@ -772,6 +781,7 @@ handle_signal() {
 main() {
     detect_language
     parse_arguments "$@"
+    set_default_download_source
     validate_cache_action
     init_colors
     detect_system
