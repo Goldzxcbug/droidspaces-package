@@ -122,7 +122,10 @@ jobs:
           release_notes="$RUNNER_TEMP/droidspaces-tui-release-notes.md"
           managed_scripts="$(
             find "$ASSET_DIR" -maxdepth 1 -type f -name 'install-*.sh' \
-              ! -name 'install-tui.sh' -printf -- '- `%f`\n' | sort
+              ! -name 'install-tui.sh' -printf '%f\n' | sort | \
+              while IFS= read -r script_name; do
+                printf -- '- `%s`\n' "$script_name"
+              done
           )"
           cat > "$release_notes" <<EOF
           Droidspaces TUI 与受管安装脚本的固定标签滚动发布。
