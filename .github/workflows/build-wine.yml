@@ -961,7 +961,7 @@ jobs:
             exit 1
           fi
 
-          cp scripts/install-hangover-wine.sh "$installer"
+          cp scripts/tui/install-hangover-wine.sh "$installer"
           chmod +x "$installer"
           {
             echo 'format=1'

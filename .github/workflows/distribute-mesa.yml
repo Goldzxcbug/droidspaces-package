@@ -184,7 +184,7 @@ jobs:
           verify_upstream_asset "$media_metadata" "$asset_dir/msm_drm_drv_video.so"
           verify_upstream_asset "$media_metadata" "$asset_dir/SHA256SUMS"
 
-          install -m 0755 scripts/install-mesa.sh "$asset_dir/install-mesa.sh"
+          install -m 0755 scripts/tui/install-mesa.sh "$asset_dir/install-mesa.sh"
           manifest="$asset_dir/$MANIFEST_NAME"
           {
             printf 'format=1\n'

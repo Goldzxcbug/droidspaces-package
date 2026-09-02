@@ -100,8 +100,8 @@ validate_release_settings() {
 }
 
 validate_git_state() {
-    [[ -x "$REPOSITORY_ROOT/scripts/install-winefonts.sh" ]] || \
-        die "缺少可执行安装器：scripts/install-winefonts.sh"
+    [[ -x "$REPOSITORY_ROOT/scripts/tui/install-winefonts.sh" ]] || \
+        die "缺少可执行安装器：scripts/tui/install-winefonts.sh"
     [[ -z "$(git -C "$REPOSITORY_ROOT" status --porcelain --untracked-files=normal)" ]] || \
         die "Git 工作区不是干净状态；请先提交脚本变更再发布。"
     git -C "$REPOSITORY_ROOT" rev-parse --verify HEAD >/dev/null
@@ -274,7 +274,7 @@ prepare_assets() {
     xz --test "$archive_path"
 
     installer_path="$ASSET_DIR/$INSTALLER_NAME"
-    cp -- "$REPOSITORY_ROOT/scripts/install-winefonts.sh" "$installer_path"
+    cp -- "$REPOSITORY_ROOT/scripts/tui/install-winefonts.sh" "$installer_path"
     chmod 0755 "$installer_path"
 
     manifest_path="$ASSET_DIR/$MANIFEST_NAME"

@@ -8,7 +8,7 @@ on:
         description: 要同步到 CNB 的 GitHub Release tag
         required: true
         type: string
-        default: winefonts
+        default: Gold-bug-tui
 
 permissions:
   contents: read

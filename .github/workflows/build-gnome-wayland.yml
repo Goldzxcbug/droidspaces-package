@@ -590,7 +590,7 @@ jobs:
             test -f "$release_dir/$asset"
           done
 
-          cp scripts/install-anland-gnome.sh "$release_dir/install-anland-gnome.sh"
+          cp scripts/tui/install-anland-gnome.sh "$release_dir/install-anland-gnome.sh"
           chmod +x "$release_dir/install-anland-gnome.sh"
           {
             printf 'format=1\n'

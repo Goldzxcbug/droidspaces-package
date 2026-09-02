@@ -1,0 +1,239 @@
+name: 发布 Droidspaces TUI
+run-name: 更新 Gold-bug-tui 滚动发布
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_cnb:
+        description: 同步发布到 CNB 国内镜像
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-gold-bug-tui
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: Gold-bug-tui
+  MANIFEST_NAME: Gold-bug-tui-manifest
+
+jobs:
+  publish:
+    name: 发布 TUI 与受管脚本
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 检出发布源
+        uses: actions/checkout@v6
+
+      - name: 要求从 main 分支触发
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" == main ]] || {
+            echo "此工作流必须从 main 分支触发。" >&2
+            exit 1
+          }
+
+      - name: 准备脚本与发布清单
+        id: assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source_dir="$GITHUB_WORKSPACE/scripts/tui"
+          asset_dir="$RUNNER_TEMP/droidspaces-tui-release"
+          rm -rf -- "$asset_dir"
+          mkdir -p -- "$asset_dir"
+
+          mapfile -t scripts < <(
+            find "$source_dir" -maxdepth 1 -type f -name '*.sh' -printf '%f\n' | sort
+          )
+          ((${#scripts[@]} >= 3)) || {
+            echo "scripts/tui 中的脚本数量异常。" >&2
+            exit 1
+          }
+          [[ " ${scripts[*]} " == *' droidspaces-tui.sh '* && \
+             " ${scripts[*]} " == *' install-tui.sh '* ]] || {
+            echo "scripts/tui 缺少 droidspaces-tui.sh 或 install-tui.sh。" >&2
+            exit 1
+          }
+
+          for script_name in "${scripts[@]}"; do
+            [[ "$script_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.sh$ ]] || {
+              echo "脚本文件名不安全：$script_name" >&2
+              exit 1
+            }
+            case "$script_name" in
+              droidspaces-tui.sh|install-tui.sh|install-*.sh) ;;
+              *)
+                echo "未登记的脚本命名：$script_name" >&2
+                exit 1
+                ;;
+            esac
+            bash -n "$source_dir/$script_name"
+            install -m 0755 -- "$source_dir/$script_name" "$asset_dir/$script_name"
+          done
+
+          manifest="$asset_dir/$MANIFEST_NAME"
+          {
+            printf 'format=1\n'
+            printf 'release_tag=%s\n' "$RELEASE_TAG"
+            printf 'revision=%s\n' "$GITHUB_SHA"
+            printf 'generated_at=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            printf 'sha256\tsize\trole\ttarget\tasset\n'
+            for script_name in "${scripts[@]}"; do
+              case "$script_name" in
+                droidspaces-tui.sh)
+                  role=tui
+                  target=/usr/local/bin/droidspaces-tui
+                  ;;
+                install-tui.sh)
+                  role=bootstrap
+                  target=-
+                  ;;
+                install-*.sh)
+                  role=installer
+                  target="/usr/local/sbin/${script_name%.sh}"
+                  ;;
+              esac
+              printf '%s\t%s\t%s\t%s\t%s\n' \
+                "$(sha256sum "$asset_dir/$script_name" | awk '{print $1}')" \
+                "$(stat -c '%s' "$asset_dir/$script_name")" \
+                "$role" "$target" "$script_name"
+            done
+          } > "$manifest"
+
+          echo "asset_dir=$asset_dir" >> "$GITHUB_OUTPUT"
+          echo "发布清单包含 ${#scripts[@]} 个脚本。"
+
+      - name: 更新 GitHub 滚动发布
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_DIR: ${{ steps.assets.outputs.asset_dir }}
+        run: |
+          set -euo pipefail
+
+          release_notes="$RUNNER_TEMP/droidspaces-tui-release-notes.md"
+          managed_scripts="$(
+            find "$ASSET_DIR" -maxdepth 1 -type f -name 'install-*.sh' \
+              ! -name 'install-tui.sh' -printf -- '- `%f`\n' | sort
+          )"
+          cat > "$release_notes" <<EOF
+          Droidspaces TUI 与受管安装脚本的固定标签滚动发布。
+
+          - 标签：\`$RELEASE_TAG\`
+          - 提交：\`$GITHUB_SHA\`
+          - TUI 安装后命令：\`droidspaces-tui\`、\`dstui\` 或 \`ds-tui\`
+          - 旧 RootFS 一次性安装器：\`install-tui.sh\`（不会常驻容器）
+
+          当前受管脚本：
+
+          $managed_scripts
+
+          所有脚本均通过 GitHub Release API 提供的 SHA-256 和 \`$MANIFEST_NAME\` 双重校验；CNB 仅作为附件镜像，可信校验值仍来自 GitHub。
+          EOF
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "滚动 Release 已存在。"
+          else
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title 'Droidspaces TUI 滚动发布' \
+              --notes-file "$release_notes" \
+              --draft --latest=false
+          fi
+
+          mapfile -t script_assets < <(
+            find "$ASSET_DIR" -maxdepth 1 -type f -name '*.sh' -print | sort
+          )
+          gh release upload "$RELEASE_TAG" "${script_assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          # 清单最后上传，避免它提前引用尚未就绪的新脚本。
+          gh release upload "$RELEASE_TAG" "$ASSET_DIR/$MANIFEST_NAME" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+          declare -A expected_assets=()
+          for asset_path in "${script_assets[@]}" "$ASSET_DIR/$MANIFEST_NAME"; do
+            expected_assets["${asset_path##*/}"]=1
+          done
+          release_json="$RUNNER_TEMP/droidspaces-tui-release.json"
+          load_release_json() {
+            if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+                > "$release_json" 2>/dev/null; then
+              return
+            fi
+            # releases/tags 不返回 draft；首次发布时从最新列表中定位。
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq -ce \
+              --arg tag "$RELEASE_TAG" '
+                [.[] | select(.tag_name == $tag)]
+                | if length == 1 then .[0]
+                  else error("滚动标签对应的 Release 不唯一") end
+              ' > "$release_json"
+          }
+          load_release_json
+          while IFS=$'\t' read -r asset_name asset_id; do
+            [[ -n "$asset_name" && -n "$asset_id" ]] || continue
+            if [[ -z "${expected_assets[$asset_name]:-}" ]]; then
+              echo "删除旧附件：$asset_name"
+              gh api --method DELETE \
+                "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            fi
+          done < <(jq -r '.assets[] | [.name, .id] | @tsv' "$release_json")
+
+          verify_release_assets() {
+            local asset_path asset_name row expected_sha expected_size
+            local digest published_size
+            [[ "$(jq '.assets | length' "$release_json")" == "${#expected_assets[@]}" ]] || return 1
+            for asset_path in "${script_assets[@]}" "$ASSET_DIR/$MANIFEST_NAME"; do
+              asset_name="${asset_path##*/}"
+              row="$(jq -er --arg name "$asset_name" '
+                [.assets[] | select(.name == $name)]
+                | if length == 1 then [.[0].digest, .[0].size] | @tsv
+                  else error("附件缺失或不唯一") end
+              ' "$release_json")" || return 1
+              IFS=$'\t' read -r digest published_size <<< "$row"
+              [[ "$digest" =~ ^sha256:([0-9A-Fa-f]{64})$ ]] || return 1
+              expected_sha="$(sha256sum "$asset_path" | awk '{print $1}')"
+              expected_size="$(stat -c '%s' "$asset_path")"
+              [[ "${BASH_REMATCH[1],,}" == "$expected_sha" && \
+                 "$published_size" == "$expected_size" ]] || return 1
+            done
+          }
+
+          verified=false
+          for attempt in {1..10}; do
+            load_release_json
+            if verify_release_assets; then
+              verified=true
+              break
+            fi
+            echo "等待 GitHub 生成附件摘要（$attempt/10）..."
+            sleep 2
+          done
+          [[ "$verified" == true ]] || {
+            echo "GitHub Release 附件摘要验证失败。" >&2
+            exit 1
+          }
+
+          gh release edit "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title 'Droidspaces TUI 滚动发布' \
+            --notes-file "$release_notes" \
+            --draft=false --latest=false
+          echo "已更新 $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG"
+
+      - name: 同步到 CNB 国内镜像
+        if: ${{ inputs.publish_cnb }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_REPO: ${{ vars.CNB_REPO }}
+        run: bash scripts/publish-cnb-release.sh "$RELEASE_TAG"

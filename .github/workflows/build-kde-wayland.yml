@@ -672,7 +672,7 @@ jobs:
             test -f "$release_dir/$asset"
           done
 
-          cp scripts/install-anland-kde.sh "$release_dir/install-anland-kde.sh"
+          cp scripts/tui/install-anland-kde.sh "$release_dir/install-anland-kde.sh"
           chmod +x "$release_dir/install-anland-kde.sh"
           {
             printf 'format=1\n'
