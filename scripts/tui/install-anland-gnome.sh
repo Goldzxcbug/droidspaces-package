@@ -16,6 +16,7 @@ readonly GITHUB_API_URL="https://api.github.com"
 readonly GH_PROXY_RELEASE_URL="https://gh-proxy.com/https://github.com"
 readonly CNB_RELEASE_URL="https://cnb.cool"
 readonly APT_HOLD_STATE="/var/lib/anland-gnome/apt-holds"
+readonly COMPONENT_STATE_DIR="/var/lib/droidspaces-tui/components"
 
 WORK_DIR=""
 PREPARED_WORK_DIR="${ANLAND_GNOME_WORK_DIR:-}"
@@ -32,6 +33,7 @@ SKIP_SOURCE_PROBE=false
 EXPECTED_MANIFEST_SHA256=""
 EXPECTED_ARCHIVE_SHA256=""
 OFFICIAL_RELEASE_METADATA=""
+UNINSTALL=false
 
 detect_language() {
     local locale_name="${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}"
@@ -51,6 +53,26 @@ msg() {
 
 log() {
     printf '[anland-gnome] %s\n' "$(msg "$1" "$2")"
+}
+
+record_component_version() {
+    local version="$1" state_file="$COMPONENT_STATE_DIR/gnome.version" temporary_file
+    [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+:~_-]{0,63}$ ]] || return 0
+    if ! mkdir -p -- "$COMPONENT_STATE_DIR"; then
+        log "无法记录已安装的 Mutter 版本。" "Could not record the installed Mutter version."
+        return 0
+    fi
+    temporary_file="$(mktemp "$state_file.tmp.XXXXXXXX")" || {
+        log "无法记录已安装的 Mutter 版本。" "Could not record the installed Mutter version."
+        return 0
+    }
+    if printf '%s\n' "$version" > "$temporary_file" && \
+        chmod 0644 "$temporary_file" && mv -f -- "$temporary_file" "$state_file"; then
+        return 0
+    fi
+    rm -f -- "$temporary_file" || true
+    log "无法记录已安装的 Mutter 版本。" "Could not record the installed Mutter version."
+    return 0
 }
 
 die() {
@@ -75,12 +97,47 @@ parse_arguments() {
                 DOWNLOAD_SOURCE="3"
                 SKIP_SOURCE_PROBE=true
                 ;;
+            --uninstall)
+                UNINSTALL=true
+                ;;
             *)
-                die "不支持的参数：${argument}。可用参数为 -1/--1、-2/--2、-3/--3。" \
-                    "Unsupported argument: ${argument}. Valid arguments are -1/--1, -2/--2, and -3/--3."
+                die "不支持的参数：${argument}。可用参数为 -1/--1、-2/--2、-3/--3、--uninstall。" \
+                    "Unsupported argument: ${argument}. Valid arguments are -1/--1, -2/--2, -3/--3, and --uninstall."
                 ;;
         esac
     done
+}
+
+uninstall_gnome() {
+    local package candidate
+    local -a packages=() package_specs=()
+    [[ -s "$APT_HOLD_STATE" ]] || {
+        rm -f -- "$COMPONENT_STATE_DIR/gnome.version"
+        log "没有 Anland GNOME 安装记录。" "No Anland GNOME installation record was found."
+        return 0
+    }
+    command -v apt-cache >/dev/null 2>&1 || die "未找到 apt-cache。" "apt-cache was not found."
+    command -v apt-get >/dev/null 2>&1 || die "未找到 apt-get。" "apt-get was not found."
+    command -v apt-mark >/dev/null 2>&1 || die "未找到 apt-mark。" "apt-mark was not found."
+    mapfile -t packages < <(sed -nE 's/^([a-z0-9][a-z0-9+.-]*)$/\1/p' "$APT_HOLD_STATE" | sort -u)
+    ((${#packages[@]} > 0)) || die "APT hold 清单为空。" "The APT hold list is empty."
+    for package in "${packages[@]}"; do
+        candidate="$(apt-cache madison "$package" | awk -F '|' 'NR == 1 {
+            value = $2
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            print value
+        }')"
+        [[ -n "$candidate" ]] || \
+            die "找不到 $package 的官方候选版本。" "No distribution candidate was found for $package."
+        package_specs+=("$package=$candidate")
+    done
+    apt-mark unhold "${packages[@]}" >/dev/null
+    apt-get install -y --reinstall --allow-downgrades --allow-change-held-packages \
+        "${package_specs[@]}"
+    rm -f -- "$APT_HOLD_STATE" "$COMPONENT_STATE_DIR/gnome.version"
+    rmdir -- "${APT_HOLD_STATE%/*}" 2>/dev/null || true
+    log "Anland GNOME 已卸载，发行版 Mutter/Xwayland 已恢复。" \
+        "Anland GNOME was uninstalled and distribution Mutter/Xwayland packages were restored."
 }
 
 cleanup() {
@@ -674,10 +731,16 @@ install_deb_packages() {
 }
 
 main() {
+    local archive_version
     detect_language
     parse_arguments "$@"
     detect_target
     check_architecture
+    if [[ "$UNINSTALL" == true ]]; then
+        require_root "$@"
+        uninstall_gnome
+        return
+    fi
     require_runtime_dependencies
     resolve_release_tag
     if [[ -n "$PREPARED_WORK_DIR" || -n "$PREPARED_PACKAGE_DIR" ]]; then
@@ -690,8 +753,13 @@ main() {
 
     install_deb_packages
 
+    archive_version="${ARCHIVE_NAME#"$ARCHIVE_PREFIX"}"
+    archive_version="${archive_version%"$ARCHIVE_SUFFIX"}"
+    record_component_version "$archive_version"
     log "安装完成，patched Mutter/Xwayland 已锁定。" \
         "Installation complete; patched Mutter/Xwayland packages are now locked."
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

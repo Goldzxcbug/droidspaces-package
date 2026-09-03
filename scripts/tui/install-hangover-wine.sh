@@ -13,6 +13,7 @@ readonly CNB_RELEASE_URL="https://cnb.cool"
 readonly MAX_ARCHIVE_BYTES=$((2 * 1024 * 1024 * 1024))
 readonly MAX_EXTRACTED_BYTES=$((6 * 1024 * 1024 * 1024))
 readonly DOWNLOAD_CACHE_DIR="/var/cache/hangover-wine"
+readonly COMPONENT_STATE_DIR="/var/lib/droidspaces-tui/components"
 
 UI_LANG=en
 DOWNLOAD_SOURCE=""
@@ -27,6 +28,7 @@ WORK_DIR=""
 RELEASE_METADATA=""
 APT_TEMPORARY_HOLDS=()
 BOOTSTRAP_PACKAGES=()
+UNINSTALL=false
 
 detect_language() {
     local locale_name="${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}"
@@ -47,6 +49,29 @@ log() {
     printf '[hangover-wine] %s\n' "$(msg "$1" "$2")"
 }
 
+record_component_version() {
+    local version="$1" state_file="$COMPONENT_STATE_DIR/hangover.version" temporary_file
+    [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+:~_-]{0,63}$ ]] || return 0
+    if ! mkdir -p -- "$COMPONENT_STATE_DIR"; then
+        log "无法记录已安装的 Hangover Wine 版本。" \
+            "Could not record the installed Hangover Wine version."
+        return 0
+    fi
+    temporary_file="$(mktemp "$state_file.tmp.XXXXXXXX")" || {
+        log "无法记录已安装的 Hangover Wine 版本。" \
+            "Could not record the installed Hangover Wine version."
+        return 0
+    }
+    if printf '%s\n' "$version" > "$temporary_file" && \
+        chmod 0644 "$temporary_file" && mv -f -- "$temporary_file" "$state_file"; then
+        return 0
+    fi
+    rm -f -- "$temporary_file" || true
+    log "无法记录已安装的 Hangover Wine 版本。" \
+        "Could not record the installed Hangover Wine version."
+    return 0
+}
+
 die() {
     printf '[hangover-wine] %s: %s\n' "$(msg '错误' 'Error')" "$(msg "$1" "$2")" >&2
     exit 1
@@ -60,6 +85,7 @@ $(msg '用法' 'Usage'): $0 [--1|--2|--3]
   --1, -1  GitHub
   --2, -2  gh-proxy.com
   --3, -3  CNB
+  --uninstall  $(msg '卸载 Hangover Wine 软件包' 'Uninstall the Hangover Wine packages')
 EOF
 }
 
@@ -79,6 +105,9 @@ parse_arguments() {
                 DOWNLOAD_SOURCE=3
                 SKIP_SOURCE_PROBE=true
                 ;;
+            --uninstall)
+                UNINSTALL=true
+                ;;
             -h|--help)
                 usage
                 exit 0
@@ -89,6 +118,41 @@ parse_arguments() {
                 ;;
         esac
     done
+}
+
+uninstall_hangover() {
+    local package
+    local -a candidates=(hangover-libarm64ecfex hangover-libwow64fex hangover-wine hangover-wowbox64)
+    local -a installed=()
+
+    case "$PACKAGE_KIND" in
+        deb)
+            command -v dpkg-query >/dev/null 2>&1 || die "缺少命令：dpkg-query。" "Missing command: dpkg-query."
+            command -v apt-get >/dev/null 2>&1 || die "缺少命令：apt-get。" "Missing command: apt-get."
+            for package in "${candidates[@]}"; do
+                if dpkg-query -W -f='${db:Status-Abbrev}\n' "$package" 2>/dev/null | grep -qE '^.i $'; then
+                    installed+=("$package")
+                fi
+            done
+            ((${#installed[@]} == 0)) || \
+                apt-get remove -y --allow-change-held-packages "${installed[@]}"
+            ;;
+        rpm)
+            command -v rpm >/dev/null 2>&1 || die "缺少命令：rpm。" "Missing command: rpm."
+            command -v dnf >/dev/null 2>&1 || die "缺少命令：dnf。" "Missing command: dnf."
+            if rpm -q hangover-wine >/dev/null 2>&1; then
+                dnf remove -y hangover-wine
+            fi
+            ;;
+        arch)
+            command -v pacman >/dev/null 2>&1 || die "缺少命令：pacman。" "Missing command: pacman."
+            if pacman -Q hangover-wine >/dev/null 2>&1; then
+                pacman -R --noconfirm hangover-wine
+            fi
+            ;;
+    esac
+    rm -f -- "$COMPONENT_STATE_DIR/hangover.version"
+    log "Hangover Wine 已卸载。" "Hangover Wine was uninstalled."
 }
 
 cleanup() {
@@ -207,7 +271,7 @@ protect_deb_system_packages() {
     mapfile -t installed < <(
         dpkg-query -W -f='${db:Status-Abbrev}\t${Package}\n' \
             'systemd' 'systemd-*' 'libsystemd*' 'libudev*' 'udev' 2>/dev/null |
-            awk -F '\t' '$1 == "ii " { print $2 }' |
+            awk -F '\t' '$1 ~ /^.i $/ { print $2 }' |
             sort -u
     )
     ((${#installed[@]} > 0)) || \
@@ -708,13 +772,17 @@ install_packages() {
 }
 
 main() {
-    local wine_version
+    local wine_version archive_version
 
     detect_language
     parse_arguments "$@"
     validate_release_settings
     detect_target
     require_root "$@"
+    if [[ "$UNINSTALL" == true ]]; then
+        uninstall_hangover
+        return
+    fi
     protect_system_packages
     bootstrap_dependencies
     select_download_source
@@ -731,6 +799,9 @@ main() {
         die "wine 命令存在，但启动验证失败：$wine_version" \
             "The wine command exists, but startup validation failed: $wine_version"
     fi
+    archive_version="${ARCHIVE_NAME#"hangover-wine-${TARGET}-"}"
+    archive_version="${archive_version%"$ARCHIVE_SUFFIX"}"
+    record_component_version "$archive_version"
     log "安装完成：$wine_version" "Installation complete: $wine_version"
 }
 

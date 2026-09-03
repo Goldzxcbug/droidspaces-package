@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-readonly TUI_VERSION="1.2"
+readonly TUI_VERSION="1.3"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
+readonly DESKTOP_CONFIG="${DROIDSPACES_DESKTOP_CONFIG:-/etc/droidspaces-desktop.conf}"
 readonly HANGOVER_CACHE_DIR="/var/cache/hangover-wine"
 readonly HANGOVER_MANIFEST_NAME="hangover-wine-manifest"
+readonly COMPONENT_STATE_DIR="${DROIDSPACES_COMPONENT_STATE_DIR:-/var/lib/droidspaces-tui/components}"
+readonly COMPONENT_RELEASE_REPOSITORY="${DROIDSPACES_COMPONENT_REPOSITORY:-Goldzxcbug/droidspaces-package}"
+readonly COMPONENT_API_URL="${DROIDSPACES_COMPONENT_API_URL:-https://api.github.com}"
+readonly COMPONENT_VERSION_TIMEOUT=10
 readonly INSTALLED_TUI_PATH="/usr/local/bin/droidspaces-tui"
 readonly TUI_RELEASE_REPOSITORY="${DROIDSPACES_TUI_REPOSITORY:-Goldzxcbug/droidspaces-package}"
 readonly TUI_RELEASE_TAG="Gold-bug-tui"
@@ -24,6 +29,27 @@ ARCHITECTURE="unknown"
 CACHE_ACTION=""
 UPDATE_WORK_DIR=""
 UPDATE_UPDATER_PATH=""
+COMPONENT_VERSION_WORK_DIR=""
+COMPONENT_VERSION_DEADLINE=0
+COMPONENT_STATUS_CHANGED=false
+COMPONENT_REFRESH_REQUIRED=false
+SPINNER_INDEX=0
+DESKTOP_PROFILE=""
+DESKTOP_COMPONENT=""
+DESKTOP_COMPONENT_LABEL=""
+DESKTOP_COMPONENT_MODE="choose"
+MENU_INPUT_BUFFER=""
+MENU_CHOICE=""
+MENU_ESCAPE_SEQUENCE=""
+MENU_TTY_ECHO_DISABLED=false
+DYNAMIC_MENU_DRAWN=false
+
+readonly -a COMPONENT_NAMES=(mesa hangover fonts kde gnome)
+readonly -a SPINNER_FRAMES=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+declare -A COMPONENT_CURRENT_VERSIONS=()
+declare -A COMPONENT_UPSTREAM_VERSIONS=()
+declare -A COMPONENT_VERSION_PIDS=()
+declare -A COMPONENT_INSTALLED=()
 
 COLOR_RESET=""
 COLOR_BOLD=""
@@ -159,12 +185,195 @@ detect_system() {
     ARCHITECTURE="$(uname -m 2>/dev/null || printf 'unknown')"
 }
 
+set_desktop_component() {
+    DESKTOP_PROFILE="$1"
+    DESKTOP_COMPONENT=""
+    DESKTOP_COMPONENT_LABEL=""
+    DESKTOP_COMPONENT_MODE="choose"
+    case "$DESKTOP_PROFILE" in
+        kde|kde-mobile)
+            DESKTOP_COMPONENT="kde"
+            DESKTOP_COMPONENT_LABEL="Anland KDE (KWin/Xwayland)"
+            DESKTOP_COMPONENT_MODE="direct"
+            ;;
+        gnome)
+            DESKTOP_COMPONENT="gnome"
+            DESKTOP_COMPONENT_LABEL="Anland GNOME (Mutter/Xwayland)"
+            DESKTOP_COMPONENT_MODE="direct"
+            ;;
+    esac
+}
+
+detect_desktop_component() {
+    local line desktop="" backend="" desktop_lines=0 backend_lines=0
+
+    if [[ -e "$DESKTOP_CONFIG" || -L "$DESKTOP_CONFIG" ]]; then
+        if [[ -f "$DESKTOP_CONFIG" && ! -L "$DESKTOP_CONFIG" && -r "$DESKTOP_CONFIG" ]]; then
+            while IFS= read -r line || [[ -n "$line" ]]; do
+                case "$line" in
+                    DESKTOP=*)
+                        desktop="${line#DESKTOP=}"
+                        ((desktop_lines += 1))
+                        ;;
+                    DISPLAY_BACKEND=*)
+                        backend="${line#DISPLAY_BACKEND=}"
+                        ((backend_lines += 1))
+                        ;;
+                esac
+            done < "$DESKTOP_CONFIG"
+            if ((desktop_lines == 1 && backend_lines == 1)) && \
+                [[ "$desktop" =~ ^(none|[a-z][a-z0-9-]*)$ ]] && \
+                [[ "$backend" =~ ^(x11|anland-wayland)$ ]]; then
+                set_desktop_component "$desktop"
+            fi
+        fi
+        return
+    fi
+
+    # Compatibility for RootFS images built before the desktop config existed.
+    if managed_component_installed kde; then
+        set_desktop_component kde
+    elif managed_component_installed gnome; then
+        set_desktop_component gnome
+    else
+        set_desktop_component none
+    fi
+}
+
 clear_screen() {
     if [[ -t 1 && "${TERM:-dumb}" != "dumb" ]]; then
         printf '\033[2J\033[H'
     else
         printf '\n'
     fi
+}
+
+begin_dynamic_menu() {
+    MENU_INPUT_BUFFER=""
+    MENU_CHOICE=""
+    MENU_ESCAPE_SEQUENCE=""
+    DYNAMIC_MENU_DRAWN=false
+}
+
+dynamic_ui_supported() {
+    [[ -t 0 && -t 1 && "${TERM:-dumb}" != "dumb" ]]
+}
+
+disable_dynamic_menu_echo() {
+    [[ "$MENU_TTY_ECHO_DISABLED" == false ]] || return 0
+    command -v stty >/dev/null 2>&1 || return 0
+    if stty -echo 2>/dev/null; then
+        MENU_TTY_ECHO_DISABLED=true
+    fi
+}
+
+restore_dynamic_menu_echo() {
+    [[ "$MENU_TTY_ECHO_DISABLED" == true ]] || return 0
+    stty echo 2>/dev/null || true
+    MENU_TTY_ECHO_DISABLED=false
+}
+
+draw_dynamic_menu_frame() {
+    if dynamic_ui_supported; then
+        if [[ "$DYNAMIC_MENU_DRAWN" == true ]]; then
+            printf '\033[H'
+        else
+            printf '\033[2J\033[H'
+            DYNAMIC_MENU_DRAWN=true
+        fi
+    else
+        printf '\n'
+    fi
+}
+
+draw_dynamic_menu_prompt() {
+    if dynamic_ui_supported; then
+        printf '\r\033[2K'
+    fi
+    printf '%s: %s' "$(msg '请选择' 'Select')" "$MENU_INPUT_BUFFER"
+    if component_versions_pending && dynamic_ui_supported; then
+        printf '  %b%s%b' "$COLOR_CYAN" \
+            "${SPINNER_FRAMES[$((SPINNER_INDEX % ${#SPINNER_FRAMES[@]}))]}" \
+            "$COLOR_RESET"
+    fi
+    if dynamic_ui_supported; then
+        printf '\033[J'
+    fi
+}
+
+read_dynamic_menu_choice() {
+    local key="" line="" read_status=0
+    MENU_CHOICE=""
+
+    if ! dynamic_ui_supported; then
+        if IFS= read -r line; then
+            MENU_CHOICE="$line"
+            return 0
+        fi
+        return 2
+    fi
+
+    disable_dynamic_menu_echo
+    if component_versions_pending; then
+        IFS= read -r -s -n 1 -t 0.12 key
+        read_status=$?
+        if ((read_status != 0)); then
+            if ((read_status > 128)); then
+                SPINNER_INDEX=$((SPINNER_INDEX + 1))
+                return 1
+            fi
+            restore_dynamic_menu_echo
+            return 2
+        fi
+    elif ! IFS= read -r -s -n 1 key; then
+        restore_dynamic_menu_echo
+        return 2
+    fi
+
+    case "$MENU_ESCAPE_SEQUENCE" in
+        start)
+            case "$key" in
+                '[') MENU_ESCAPE_SEQUENCE="csi" ;;
+                O) MENU_ESCAPE_SEQUENCE="ss3" ;;
+                *) MENU_ESCAPE_SEQUENCE="" ;;
+            esac
+            return 1
+            ;;
+        csi)
+            case "$key" in
+                [@-~]) MENU_ESCAPE_SEQUENCE="" ;;
+            esac
+            return 1
+            ;;
+        ss3)
+            MENU_ESCAPE_SEQUENCE=""
+            return 1
+            ;;
+    esac
+
+    case "$key" in
+        "")
+            MENU_CHOICE="$MENU_INPUT_BUFFER"
+            MENU_INPUT_BUFFER=""
+            return 0
+            ;;
+        $'\177'|$'\b')
+            if [[ -n "$MENU_INPUT_BUFFER" ]]; then
+                MENU_INPUT_BUFFER="${MENU_INPUT_BUFFER%?}"
+            fi
+            ;;
+        $'\025')
+            MENU_INPUT_BUFFER=""
+            ;;
+        $'\004') restore_dynamic_menu_echo; return 2 ;;
+        $'\e') MENU_ESCAPE_SEQUENCE="start" ;;
+        *)
+            if [[ "$key" != [[:cntrl:]] ]] && ((${#MENU_INPUT_BUFFER} < 64)); then
+                MENU_INPUT_BUFFER+="$key"
+            fi
+            ;;
+    esac
+    return 1
 }
 
 source_label() {
@@ -317,20 +526,485 @@ component_supported() {
     esac
 }
 
-component_status() {
-    local component="$1"
-    if ! resolve_installer "$component" >/dev/null; then
-        printf '%b%s%b' "$COLOR_RED" "$(msg '缺少脚本' 'missing')" "$COLOR_RESET"
-    elif component_supported "$component"; then
-        printf '%b%s%b' "$COLOR_GREEN" "$(msg '可用' 'ready')" "$COLOR_RESET"
+valid_component_version() {
+    [[ "$1" =~ ^[0-9A-Za-z][0-9A-Za-z.+:~_-]{0,63}$ ]]
+}
+
+stored_component_version() {
+    local component="$1" version_file="$COMPONENT_STATE_DIR/$1.version" version
+    [[ -f "$version_file" && ! -L "$version_file" ]] || return 1
+    IFS= read -r version < "$version_file" || return 1
+    valid_component_version "$version" || return 1
+    printf '%s' "$version"
+}
+
+installed_package_version() {
+    local package output version
+    case "$SYSTEM_ID" in
+        debian|ubuntu)
+            command -v dpkg-query >/dev/null 2>&1 || return 1
+            for package in "$@"; do
+                output="$(dpkg-query -W -f='${db:Status-Abbrev}\t${Version}\n' \
+                    "$package" 2>/dev/null)" || continue
+                if [[ "$output" == ?i$' '*$'\t'* ]]; then
+                    version="${output#*$'\t'}"
+                    version="${version%%$'\n'*}"
+                    valid_component_version "$version" || continue
+                    printf '%s' "$version"
+                    return 0
+                fi
+            done
+            ;;
+        fedora)
+            command -v rpm >/dev/null 2>&1 || return 1
+            for package in "$@"; do
+                version="$(rpm -q --queryformat '%{VERSION}-%{RELEASE}\n' \
+                    "$package" 2>/dev/null)" || continue
+                version="${version%%$'\n'*}"
+                valid_component_version "$version" || continue
+                printf '%s' "$version"
+                return 0
+            done
+            ;;
+        arch|archarm|archlinux)
+            command -v pacman >/dev/null 2>&1 || return 1
+            for package in "$@"; do
+                output="$(pacman -Q "$package" 2>/dev/null)" || continue
+                version="${output#* }"
+                valid_component_version "$version" || continue
+                printf '%s' "$version"
+                return 0
+            done
+            ;;
+    esac
+    return 1
+}
+
+detected_component_package_version() {
+    local component="$1" version=""
+    case "$component" in
+        mesa)
+            case "$SYSTEM_ID" in
+                debian|ubuntu)
+                    version="$(installed_package_version mesa-vulkan-drivers libglx-mesa0 libegl-mesa0)" || true
+                    ;;
+                fedora) version="$(installed_package_version mesa-dri-drivers)" || true ;;
+                arch|archarm|archlinux) version="$(installed_package_version mesa)" || true ;;
+            esac
+            ;;
+        hangover)
+            version="$(installed_package_version hangover-wine)" || true
+            ;;
+        fonts)
+            [[ -d /usr/local/share/fonts/winefonts ]] && version="$(msg '未知版本' 'unknown')"
+            ;;
+        kde)
+            version="$(installed_package_version kwin-wayland kwin-x11 kwin-common kwin)" || true
+            ;;
+        gnome)
+            version="$(installed_package_version mutter-common mutter)" || true
+            ;;
+    esac
+    if [[ -n "$version" ]]; then
+        printf '%s' "$version"
+        return 0
+    fi
+    return 1
+}
+
+detect_current_component_version() {
+    local component="$1" version="" stored=""
+    if stored="$(stored_component_version "$component")"; then
+        printf '%s' "$stored"
+    elif version="$(detected_component_package_version "$component")"; then
+        printf '%s' "$version"
     else
-        printf '%b%s%b' "$COLOR_YELLOW" "$(msg '当前系统不支持' 'unsupported')" "$COLOR_RESET"
+        printf '%s' "$(msg '未知版本' 'unknown')"
     fi
 }
 
-print_component() {
-    printf '  %b[%s]%b %-32s %s\n' \
-        "$COLOR_CYAN" "$1" "$COLOR_RESET" "$2" "$(component_status "$3")"
+managed_component_installed() {
+    local component="$1"
+    stored_component_version "$component" >/dev/null 2>&1 && return 0
+    case "$component" in
+        mesa)
+            case "$SYSTEM_ID" in
+                debian|ubuntu) [[ -f /etc/apt/preferences.d/hold-anland-package ]] ;;
+                fedora) grep -Fqx '# BEGIN install-mesa package holds' /etc/dnf/dnf.conf 2>/dev/null ;;
+                arch|archarm|archlinux)
+                    grep -Fqx '# BEGIN install-mesa package holds' /etc/pacman.conf 2>/dev/null
+                    ;;
+                *) return 1 ;;
+            esac
+            ;;
+        hangover)
+            detected_component_package_version hangover >/dev/null 2>&1
+            ;;
+        fonts)
+            [[ -d /usr/local/share/fonts/winefonts ]]
+            ;;
+        kde)
+            case "$SYSTEM_ID" in
+                debian|ubuntu) [[ -s /var/lib/anland-kde/apt-holds ]] ;;
+                fedora) grep -Fqx '# BEGIN anland-kde package holds' /etc/dnf/dnf.conf 2>/dev/null ;;
+                arch|archarm|archlinux)
+                    grep -Eq '^[[:space:]]*IgnorePkg[[:space:]]*=.*(^|[[:space:]])kwin([[:space:]]|$)' \
+                        /etc/pacman.conf 2>/dev/null
+                    ;;
+                *) return 1 ;;
+            esac
+            ;;
+        gnome)
+            [[ -s /var/lib/anland-gnome/apt-holds ]]
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+component_versions_match() {
+    local component="$1"
+    local current="${COMPONENT_CURRENT_VERSIONS[$1]:-}"
+    local upstream="${COMPONENT_UPSTREAM_VERSIONS[$1]:-}"
+    [[ -n "$current" && -n "$upstream" ]] || return 1
+    [[ "$upstream" != pending && "$upstream" != "$(msg '超时' 'timeout')" ]] || return 1
+    [[ "$current" == "$upstream" ]] && return 0
+
+    case "$component" in
+        hangover)
+            [[ "$current" == "$upstream"~* || "$current" == "$upstream"-[0-9]* ]]
+            ;;
+        kde|gnome)
+            current="${current#*:}"
+            [[ "$current" == "$upstream"-* ]]
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+component_release_parts() {
+    local component="$1" tag prefix suffix
+    case "$component" in
+        mesa)
+            tag="mesa-for-android-container"
+            prefix="mesa-for-android-container_"
+            case "$SYSTEM_ID:$SYSTEM_VERSION" in
+                arch:*|archarm:*|archlinux:*) suffix="_archlinux_arm64.tar" ;;
+                debian:13*) suffix="_debian_trixie_arm64.tar.gz" ;;
+                ubuntu:24.04*) suffix="_ubuntu_noble_arm64.tar.gz" ;;
+                ubuntu:25.10*) suffix="_ubuntu_questing_arm64.tar.gz" ;;
+                ubuntu:26.04*) suffix="_ubuntu_resolute_arm64.tar.gz" ;;
+                fedora:43*) suffix="_fedora_43_arm64.tar.gz" ;;
+                fedora:44*) suffix="_fedora_44_arm64.tar.gz" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        hangover)
+            tag="hangover-wine-packages"
+            case "$SYSTEM_ID:$SYSTEM_VERSION" in
+                arch:*|archarm:*) prefix="hangover-wine-arch-"; suffix="-aarch64.tar.gz" ;;
+                debian:13*) prefix="hangover-wine-debian13-"; suffix="-arm64.tar.gz" ;;
+                ubuntu:24.04*) prefix="hangover-wine-ubuntu2404-"; suffix="-arm64.tar.gz" ;;
+                ubuntu:25.10*) prefix="hangover-wine-ubuntu2510-"; suffix="-arm64.tar.gz" ;;
+                ubuntu:26.04*) prefix="hangover-wine-ubuntu2604-"; suffix="-arm64.tar.gz" ;;
+                fedora:43*) prefix="hangover-wine-fedora43-"; suffix="-aarch64.tar.gz" ;;
+                fedora:44*) prefix="hangover-wine-fedora44-"; suffix="-aarch64.tar.gz" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        fonts)
+            tag="winefonts"
+            prefix="winefonts-"
+            suffix=".tar.xz"
+            ;;
+        kde)
+            tag="anland-kde-packages"
+            case "$SYSTEM_ID:$SYSTEM_VERSION" in
+                arch:*|archarm:*) prefix="anland-kde-arch-kwin-"; suffix="-aarch64.tar.gz" ;;
+                debian:13*) prefix="anland-kde-debian13-kwin-"; suffix="-arm64.tar.gz" ;;
+                ubuntu:26.04*) prefix="anland-kde-ubuntu2604-kwin-"; suffix="-arm64.tar.gz" ;;
+                fedora:43*) prefix="anland-kde-fedora43-kwin-"; suffix="-aarch64.tar.gz" ;;
+                fedora:44*) prefix="anland-kde-fedora44-kwin-"; suffix="-aarch64.tar.gz" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        gnome)
+            tag="anland-gnome-packages"
+            case "$SYSTEM_ID:$SYSTEM_VERSION" in
+                debian:13*) prefix="anland-gnome-debian13-mutter-"; suffix="-arm64.tar.gz" ;;
+                ubuntu:26.04*) prefix="anland-gnome-ubuntu2604-mutter-"; suffix="-arm64.tar.gz" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
+    printf '%s\n%s\n%s\n' "$tag" "$prefix" "$suffix"
+}
+
+release_asset_names() {
+    local metadata="$1" expected_tag="$2"
+    if command -v jq >/dev/null 2>&1; then
+        jq -er --arg tag "$expected_tag" '
+            select(.tag_name == $tag and .draft == false)
+            | .assets[]?.name
+            | select(type == "string")
+        ' "$metadata"
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 - "$metadata" "$expected_tag" <<'PY'
+import json
+import sys
+
+path, expected_tag = sys.argv[1:]
+with open(path, "r", encoding="utf-8") as stream:
+    release = json.load(stream)
+if release.get("tag_name") != expected_tag or release.get("draft") is not False:
+    raise SystemExit(1)
+for asset in release.get("assets", []):
+    name = asset.get("name")
+    if isinstance(name, str):
+        print(name)
+PY
+    else
+        return 1
+    fi
+}
+
+parse_component_release_version() {
+    local component="$1" metadata="$2"
+    local parts tag prefix suffix name version selected="" count=0
+    parts="$(component_release_parts "$component")" || return 1
+    tag="${parts%%$'\n'*}"
+    parts="${parts#*$'\n'}"
+    prefix="${parts%%$'\n'*}"
+    suffix="${parts#*$'\n'}"
+
+    while IFS= read -r name; do
+        case "$name" in
+            "$prefix"*"$suffix")
+                version="${name#"$prefix"}"
+                version="${version%"$suffix"}"
+                valid_component_version "$version" || continue
+                selected="$version"
+                ((count += 1))
+                ;;
+        esac
+    done < <(release_asset_names "$metadata" "$tag")
+    ((count == 1)) || return 1
+    printf '%s' "$selected"
+}
+
+fetch_component_release_version() {
+    local component="$1" result_file="$2"
+    local parts tag metadata version temporary_result curl_pid curl_status
+    command -v curl >/dev/null 2>&1 || return 1
+    parts="$(component_release_parts "$component")" || return 1
+    tag="${parts%%$'\n'*}"
+    metadata="$COMPONENT_VERSION_WORK_DIR/$component.release.json"
+    temporary_result="$result_file.tmp.$BASHPID"
+    local -a headers=(
+        --header 'Accept: application/vnd.github+json'
+        --header 'X-GitHub-Api-Version: 2022-11-28'
+        --header 'User-Agent: droidspaces-tui-components'
+    )
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        headers+=(--header "Authorization: Bearer $GITHUB_TOKEN")
+    fi
+    curl --fail --silent --show-error --location \
+        --connect-timeout 3 --max-time 9 "${headers[@]}" \
+        "$COMPONENT_API_URL/repos/$COMPONENT_RELEASE_REPOSITORY/releases/tags/$tag" \
+        --output "$metadata" >/dev/null 2>&1 &
+    curl_pid=$!
+    trap 'kill "$curl_pid" 2>/dev/null || true; wait "$curl_pid" 2>/dev/null || true; exit 1' \
+        HUP INT TERM
+    if wait "$curl_pid"; then
+        curl_status=0
+    else
+        curl_status=$?
+    fi
+    trap - HUP INT TERM
+    ((curl_status == 0)) || return 1
+    version="$(parse_component_release_version "$component" "$metadata")" || return 1
+    printf '%s\n' "$version" > "$temporary_result" || return 1
+    mv -f -- "$temporary_result" "$result_file"
+}
+
+component_versions_pending() {
+    local component
+    for component in "${COMPONENT_NAMES[@]}"; do
+        [[ "${COMPONENT_UPSTREAM_VERSIONS[$component]:-}" == pending ]] && return 0
+    done
+    return 1
+}
+
+component_visible() {
+    case "$1" in
+        mesa|hangover|fonts) return 0 ;;
+        kde|gnome)
+            [[ "$DESKTOP_COMPONENT_MODE" == choose || "$DESKTOP_COMPONENT" == "$1" ]]
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+stop_component_version_workers() {
+    local component pid
+    for component in "${COMPONENT_NAMES[@]}"; do
+        pid="${COMPONENT_VERSION_PIDS[$component]:-}"
+        [[ -n "$pid" ]] || continue
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+        fi
+        wait "$pid" 2>/dev/null || true
+        unset 'COMPONENT_VERSION_PIDS[$component]'
+    done
+    if [[ -n "$COMPONENT_VERSION_WORK_DIR" && -d "$COMPONENT_VERSION_WORK_DIR" ]]; then
+        rm -rf -- "$COMPONENT_VERSION_WORK_DIR"
+    fi
+    COMPONENT_VERSION_WORK_DIR=""
+}
+
+start_component_version_checks() {
+    local component result_file current_version
+    stop_component_version_workers
+    COMPONENT_VERSION_WORK_DIR="$(mktemp -d -t droidspaces-component-versions.XXXXXXXX)" || {
+        for component in "${COMPONENT_NAMES[@]}"; do
+            if ! component_visible "$component"; then
+                COMPONENT_INSTALLED[$component]=false
+                COMPONENT_CURRENT_VERSIONS[$component]=hidden
+                COMPONENT_UPSTREAM_VERSIONS[$component]=hidden
+                continue
+            fi
+            if managed_component_installed "$component"; then
+                COMPONENT_INSTALLED[$component]=true
+                COMPONENT_CURRENT_VERSIONS[$component]="$(detect_current_component_version "$component")"
+            else
+                COMPONENT_INSTALLED[$component]=false
+                COMPONENT_CURRENT_VERSIONS[$component]="$(msg '未安装' 'not installed')"
+            fi
+            COMPONENT_UPSTREAM_VERSIONS[$component]="$(msg '超时' 'timeout')"
+        done
+        return
+    }
+    chmod 0700 "$COMPONENT_VERSION_WORK_DIR" || true
+    COMPONENT_VERSION_DEADLINE=$((SECONDS + COMPONENT_VERSION_TIMEOUT))
+    SPINNER_INDEX=0
+    for component in "${COMPONENT_NAMES[@]}"; do
+        if ! component_visible "$component"; then
+            COMPONENT_INSTALLED[$component]=false
+            COMPONENT_CURRENT_VERSIONS[$component]=hidden
+            COMPONENT_UPSTREAM_VERSIONS[$component]=hidden
+            continue
+        fi
+        if managed_component_installed "$component"; then
+            COMPONENT_INSTALLED[$component]=true
+            current_version="$(detect_current_component_version "$component")"
+            COMPONENT_CURRENT_VERSIONS[$component]="$current_version"
+        else
+            COMPONENT_INSTALLED[$component]=false
+            COMPONENT_CURRENT_VERSIONS[$component]="$(msg '未安装' 'not installed')"
+        fi
+        COMPONENT_UPSTREAM_VERSIONS[$component]=pending
+    done
+    for component in "${COMPONENT_NAMES[@]}"; do
+        [[ "${COMPONENT_UPSTREAM_VERSIONS[$component]}" == hidden ]] && continue
+        result_file="$COMPONENT_VERSION_WORK_DIR/$component.result"
+        fetch_component_release_version "$component" "$result_file" &
+        COMPONENT_VERSION_PIDS[$component]=$!
+    done
+}
+
+poll_component_version_checks() {
+    local component result_file version pid
+    COMPONENT_STATUS_CHANGED=false
+    [[ -n "$COMPONENT_VERSION_WORK_DIR" ]] || return
+    for component in "${COMPONENT_NAMES[@]}"; do
+        [[ "${COMPONENT_UPSTREAM_VERSIONS[$component]:-}" == pending ]] || continue
+        result_file="$COMPONENT_VERSION_WORK_DIR/$component.result"
+        if [[ -f "$result_file" ]] && IFS= read -r version < "$result_file" && \
+            valid_component_version "$version"; then
+            COMPONENT_UPSTREAM_VERSIONS[$component]="$version"
+            COMPONENT_STATUS_CHANGED=true
+            pid="${COMPONENT_VERSION_PIDS[$component]:-}"
+            [[ -z "$pid" ]] || wait "$pid" 2>/dev/null || true
+            unset 'COMPONENT_VERSION_PIDS[$component]'
+        fi
+    done
+
+    if component_versions_pending && ((SECONDS >= COMPONENT_VERSION_DEADLINE)); then
+        for component in "${COMPONENT_NAMES[@]}"; do
+            if [[ "${COMPONENT_UPSTREAM_VERSIONS[$component]:-}" == pending ]]; then
+                COMPONENT_UPSTREAM_VERSIONS[$component]="$(msg '超时' 'timeout')"
+                COMPONENT_STATUS_CHANGED=true
+            fi
+        done
+    fi
+    component_versions_pending || stop_component_version_workers
+}
+
+component_upstream_display() {
+    local component="$1" value="${COMPONENT_UPSTREAM_VERSIONS[$1]:-}"
+    if [[ "$value" == pending ]]; then
+        printf '%b%s%b' "$COLOR_CYAN" \
+            "${SPINNER_FRAMES[$((SPINNER_INDEX % ${#SPINNER_FRAMES[@]}))]}" "$COLOR_RESET"
+    else
+        printf '%s' "$value"
+    fi
+}
+
+component_status_display() {
+    local component="$1" upstream="${COMPONENT_UPSTREAM_VERSIONS[$1]:-}"
+    if [[ "${COMPONENT_INSTALLED[$component]:-false}" == false ]]; then
+        printf '%b%s%b' "$COLOR_RED" "$(msg '未安装' 'not installed')" "$COLOR_RESET"
+    elif [[ "$upstream" == pending ]]; then
+        component_upstream_display "$component"
+    elif [[ "$upstream" == "$(msg '超时' 'timeout')" ]]; then
+        printf '%b%s%b' "$COLOR_YELLOW" "$upstream" "$COLOR_RESET"
+    elif component_versions_match "$component"; then
+        printf '%b%s%b' "$COLOR_GREEN" \
+            "$(msg '当前已是最新版本' 'up to date')" "$COLOR_RESET"
+    else
+        printf '%b%s%b' "$COLOR_YELLOW" "$(msg '检测到更新' 'update available')" "$COLOR_RESET"
+    fi
+}
+
+desktop_selection_status_display() {
+    local component upstream installed_any=false
+
+    for component in kde gnome; do
+        if [[ "${COMPONENT_INSTALLED[$component]:-false}" == true ]]; then
+            installed_any=true
+        fi
+    done
+    if [[ "$installed_any" == false ]]; then
+        printf '%b%s%b' "$COLOR_RED" "$(msg '未安装' 'not installed')" "$COLOR_RESET"
+        return
+    fi
+    for component in kde gnome; do
+        [[ "${COMPONENT_INSTALLED[$component]:-false}" == true ]] || continue
+        upstream="${COMPONENT_UPSTREAM_VERSIONS[$component]:-}"
+        if [[ "$upstream" == pending ]]; then
+            component_upstream_display "$component"
+            return
+        fi
+    done
+    for component in kde gnome; do
+        [[ "${COMPONENT_INSTALLED[$component]:-false}" == true ]] || continue
+        upstream="${COMPONENT_UPSTREAM_VERSIONS[$component]:-}"
+        if [[ "$upstream" == "$(msg '超时' 'timeout')" ]]; then
+            printf '%b%s%b' "$COLOR_YELLOW" "$upstream" "$COLOR_RESET"
+            return
+        fi
+        if ! component_versions_match "$component"; then
+            printf '%b%s%b' "$COLOR_YELLOW" "$(msg '检测到更新' 'update available')" "$COLOR_RESET"
+            return
+        fi
+    done
+    printf '%b%s%b' "$COLOR_GREEN" "$(msg '当前已是最新版本' 'up to date')" "$COLOR_RESET"
+}
+
+print_component_status() {
+    local number="$1" label="$2" component="$3"
+    printf '  %b[%s]%b %s - %s\n' \
+        "$COLOR_CYAN" "$number" "$COLOR_RESET" "$label" "$(component_status_display "$component")"
 }
 
 pause_menu() {
@@ -388,6 +1062,7 @@ run_component() {
 
     printf '\n%b%s%b\n\n' "$COLOR_BLUE" \
         "$(msg '安装器开始运行。' 'Starting installer.')" "$COLOR_RESET"
+    COMPONENT_REFRESH_REQUIRED=true
     if "$installer" "${source_argument[@]}"; then
         status=0
     else
@@ -404,6 +1079,138 @@ run_component() {
             "$COLOR_RESET"
     fi
     pause_menu
+}
+
+run_component_uninstall() {
+    local component="$1" label="$2" installer status
+
+    clear_screen
+    draw_header
+    printf '\n%b%s%b\n\n' "$COLOR_BOLD" "$label" "$COLOR_RESET"
+    if [[ "${COMPONENT_INSTALLED[$component]:-false}" == false ]]; then
+        printf '%b%s%b\n' "$COLOR_RED" "$(msg '该组件尚未安装。' 'This component is not installed.')" "$COLOR_RESET"
+        pause_menu
+        return
+    fi
+    if ! installer="$(resolve_installer "$component")"; then
+        printf '%b%s%b\n' "$COLOR_RED" \
+            "$(msg '找不到对应的安装脚本。' 'The installer script could not be found.')" "$COLOR_RESET"
+        pause_menu
+        return
+    fi
+    printf '%b%s%b\n\n' "$COLOR_YELLOW" \
+        "$(msg '替换系统组件将恢复发行版官方包；独立组件将被移除。' \
+            'Replaced system components will be restored to distribution packages; standalone components will be removed.')" \
+        "$COLOR_RESET"
+    confirm_run "$(msg "卸载 $label" "uninstall $label")" || return
+    printf '\n'
+    COMPONENT_REFRESH_REQUIRED=true
+    if "$installer" --uninstall; then
+        status=0
+    else
+        status=$?
+    fi
+    if ((status == 0)); then
+        printf '\n%b%s%b\n' "$COLOR_GREEN" \
+            "$(msg "$label 已卸载。" "$label was uninstalled.")" "$COLOR_RESET"
+    else
+        printf '\n%b%s%b\n' "$COLOR_RED" \
+            "$(msg "$label 卸载失败，退出码：$status。" \
+                "$label uninstall failed with exit code $status.")" "$COLOR_RESET"
+    fi
+    pause_menu
+}
+
+desktop_component_selection_menu() {
+    local choice read_status
+    begin_dynamic_menu
+    while :; do
+        poll_component_version_checks
+        if [[ "$DYNAMIC_MENU_DRAWN" == false || "$COMPONENT_STATUS_CHANGED" == true ]] || \
+            ! dynamic_ui_supported; then
+            draw_dynamic_menu_frame
+            draw_header
+            printf '\n%b%s%b\n\n' "$COLOR_BOLD" \
+                "$(msg '选择桌面组件' 'Select desktop component')" "$COLOR_RESET"
+            print_component_status "1" "Anland KDE (KWin/Xwayland)" "kde"
+            print_component_status "2" "Anland GNOME (Mutter/Xwayland)" "gnome"
+            printf '  %b[0]%b %s\n\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '返回' 'Back')"
+        fi
+        draw_dynamic_menu_prompt
+        read_dynamic_menu_choice
+        read_status=$?
+        if ((read_status == 2)); then
+            restore_dynamic_menu_echo
+            return
+        fi
+        ((read_status == 0)) || continue
+        choice="$MENU_CHOICE"
+        [[ -n "$choice" ]] || continue
+        case "${choice,,}" in
+            1)
+                restore_dynamic_menu_echo
+                component_menu "kde" "Anland KDE (KWin/Xwayland)"
+                return
+                ;;
+            2)
+                restore_dynamic_menu_echo
+                component_menu "gnome" "Anland GNOME (Mutter/Xwayland)"
+                return
+                ;;
+            0|q)
+                restore_dynamic_menu_echo
+                return
+                ;;
+        esac
+    done
+}
+
+component_menu() {
+    local component="$1" label="$2" choice read_status
+    begin_dynamic_menu
+    while :; do
+        poll_component_version_checks
+        if [[ "$DYNAMIC_MENU_DRAWN" == false || "$COMPONENT_STATUS_CHANGED" == true ]] || \
+            ! dynamic_ui_supported; then
+            draw_dynamic_menu_frame
+            draw_header
+            printf '\n%b%s%b\n\n' "$COLOR_BOLD" "$label" "$COLOR_RESET"
+            printf '  %s: %s\n' "$(msg '状态' 'Status')" "$(component_status_display "$component")"
+            printf '  %s: %s\n' "$(msg '当前版本' 'Installed version')" \
+                "${COMPONENT_CURRENT_VERSIONS[$component]}"
+            printf '  %s: %s\n\n' "$(msg '上游版本' 'Upstream version')" \
+                "$(component_upstream_display "$component")"
+            printf '  %b[1]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '更新/安装' 'Update/install')"
+            printf '  %b[2]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '卸载' 'Uninstall')"
+            printf '  %b[0]%b %s\n\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '返回' 'Back')"
+        fi
+        draw_dynamic_menu_prompt
+        read_dynamic_menu_choice
+        read_status=$?
+        if ((read_status == 2)); then
+            restore_dynamic_menu_echo
+            return
+        fi
+        ((read_status == 0)) || continue
+        choice="$MENU_CHOICE"
+        [[ -n "$choice" ]] || continue
+        case "${choice,,}" in
+            1)
+                restore_dynamic_menu_echo
+                run_component "$component" "$label"
+                return
+                ;;
+            2)
+                restore_dynamic_menu_echo
+                run_component_uninstall "$component" "$label"
+                return
+                ;;
+            0|q)
+                restore_dynamic_menu_echo
+                return
+                ;;
+        esac
+    done
 }
 
 select_download_source() {
@@ -735,47 +1542,92 @@ show_about() {
     printf '\n%s\n' "$(msg \
         'GNOME Anland 仅支持 Debian 13 和 Ubuntu 26.04；KDE Anland 还支持 Fedora 43/44 与 Arch Linux。' \
         'GNOME Anland supports Debian 13 and Ubuntu 26.04. KDE Anland also supports Fedora 43/44 and Arch Linux.')"
+    printf '\n%s\n' "$(msg \
+        '桌面更新项根据 /etc/droidspaces-desktop.conf 中的 DESKTOP 字段选择。' \
+        'The desktop update entry is selected by the DESKTOP field in /etc/droidspaces-desktop.conf.')"
     pause_menu
 }
 
 main_menu() {
-    local choice
+    local choice read_status
+    start_component_version_checks
+    begin_dynamic_menu
     while :; do
-        clear_screen
-        draw_header
-        printf '\n%b%s%b\n\n' "$COLOR_BOLD" "$(msg '组件安装' 'Component installers')" "$COLOR_RESET"
-        print_component "1" "Mesa + MediaCodec VA-API" "mesa"
-        print_component "2" "Hangover Wine" "hangover"
-        print_component "3" "$(msg 'Wine 字体' 'Wine fonts')" "fonts"
-        print_component "4" "Anland KDE (KWin/Xwayland)" "kde"
-        print_component "5" "Anland GNOME (Mutter/Xwayland)" "gnome"
-        printf '\n'
-        printf '  %b[S]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '切换下载源' 'Change download source')"
-        printf '  %b[C]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '清理下载缓存' 'Clean download cache')"
-        printf '  %b[U]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '检查与安装更新' 'Check for and install updates')"
-        printf '  %b[A]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '关于与支持范围' 'About and support')"
-        printf '  %b[Q]%b %s\n\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '退出' 'Quit')"
-        printf '%s: ' "$(msg '请选择' 'Select')"
-        IFS= read -r choice || return
+        poll_component_version_checks
+        if [[ "$DYNAMIC_MENU_DRAWN" == false || "$COMPONENT_STATUS_CHANGED" == true ]] || \
+            ! dynamic_ui_supported; then
+            draw_dynamic_menu_frame
+            draw_header
+            printf '\n%b%s%b\n\n' "$COLOR_BOLD" "$(msg '组件管理' 'Component management')" "$COLOR_RESET"
+            print_component_status "1" "Mesa + MediaCodec VA-API" "mesa"
+            print_component_status "2" "Hangover Wine" "hangover"
+            print_component_status "3" "$(msg 'Wine 字体' 'Wine fonts')" "fonts"
+            if [[ "$DESKTOP_COMPONENT_MODE" == direct ]]; then
+                print_component_status "4" "$DESKTOP_COMPONENT_LABEL" "$DESKTOP_COMPONENT"
+            else
+                printf '  %b[4]%b %s - %s\n' \
+                    "$COLOR_CYAN" "$COLOR_RESET" \
+                    "$(msg 'Anland 桌面组件' 'Anland desktop components')" \
+                    "$(desktop_selection_status_display)"
+            fi
+            printf '\n'
+            printf '  %b[S]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '切换下载源' 'Change download source')"
+            printf '  %b[C]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '清理下载缓存' 'Clean download cache')"
+            printf '  %b[U]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '检查与安装更新' 'Check for and install updates')"
+            printf '  %b[A]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '关于与支持范围' 'About and support')"
+            printf '  %b[Q]%b %s\n\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '退出' 'Quit')"
+        fi
+        draw_dynamic_menu_prompt
+        read_dynamic_menu_choice
+        read_status=$?
+        if ((read_status == 2)); then
+            restore_dynamic_menu_echo
+            return
+        fi
+        ((read_status == 0)) || continue
+        choice="$MENU_CHOICE"
+        [[ -n "$choice" ]] || continue
         case "${choice,,}" in
-            1) run_component "mesa" "Mesa + MediaCodec VA-API" ;;
-            2) run_component "hangover" "Hangover Wine" ;;
-            3) run_component "fonts" "$(msg 'Wine 字体' 'Wine fonts')" ;;
-            4) run_component "kde" "Anland KDE" ;;
-            5) run_component "gnome" "Anland GNOME" ;;
+            0|1|2|3|4|q|s|c|u|a) restore_dynamic_menu_echo ;;
+            *) continue ;;
+        esac
+        case "${choice,,}" in
+            1) component_menu "mesa" "Mesa + MediaCodec VA-API" ;;
+            2) component_menu "hangover" "Hangover Wine" ;;
+            3) component_menu "fonts" "$(msg 'Wine 字体' 'Wine fonts')" ;;
+            4)
+                if [[ "$DESKTOP_COMPONENT_MODE" == direct ]]; then
+                    component_menu "$DESKTOP_COMPONENT" "$DESKTOP_COMPONENT_LABEL"
+                else
+                    desktop_component_selection_menu
+                fi
+                ;;
             s) select_download_source ;;
             c) manage_cache ;;
             u) manage_updates ;;
             a) show_about ;;
             q|0) return ;;
         esac
+        if [[ "$COMPONENT_REFRESH_REQUIRED" == true ]]; then
+            COMPONENT_REFRESH_REQUIRED=false
+            start_component_version_checks
+        fi
+        begin_dynamic_menu
     done
 }
 
 handle_signal() {
+    restore_dynamic_menu_echo
+    stop_component_version_workers
     cleanup_update_files
     printf '\n'
     exit 130
+}
+
+cleanup_all() {
+    restore_dynamic_menu_echo
+    stop_component_version_workers
+    cleanup_update_files
 }
 
 main() {
@@ -785,6 +1637,7 @@ main() {
     validate_cache_action
     init_colors
     detect_system
+    detect_desktop_component
     if [[ -n "$CACHE_ACTION" ]]; then
         clean_cache_as_root "$CACHE_ACTION"
         exit 0
@@ -793,10 +1646,12 @@ main() {
         "需要交互式终端，请通过 adb shell -t 或普通终端运行。" \
         "An interactive terminal is required; use adb shell -t or a regular terminal."
     trap handle_signal HUP INT TERM
-    trap cleanup_update_files EXIT
+    trap cleanup_all EXIT
     main_menu
     clear_screen
     printf '%s\n' "$(msg '已退出 Droidspaces 工具箱。' 'Exited Droidspaces Toolkit.')"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

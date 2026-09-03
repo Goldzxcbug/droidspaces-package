@@ -21,6 +21,20 @@ sudo bash install-tui.sh --source cnb
 安装完成后可运行 `droidspaces-tui`、`dstui` 或 `ds-tui`。`install-tui.sh` 是旧
 RootFS 使用的一次性引导器，不会安装到容器；TUI 更新时只会临时下载并执行它。
 
+主菜单只显示组件状态：黄色“检测到更新”、绿色“当前已是最新版本”或红色“未安装”。
+后台查询期间显示动态 Braille 符号，菜单输入不会等待网络；单项在 10 秒内未取得有效
+版本时显示“超时”。选择组件进入二级菜单后才显示当前/上游版本，并提供“更新/安装”
+和“卸载”。桌面更新项读取 `/etc/droidspaces-desktop.conf` 的 `DESKTOP` 字段：KDE/KDE
+mobile 只显示 Anland KDE，GNOME 只显示 Anland GNOME；`none` 或未知桌面进入选择页，可
+选择 Anland KWin 或 GNOME。旧 RootFS 缺少配置时按已安装组件兜底，无法判断时同样进入
+选择页。版本检测在启动 TUI 时运行，进入菜单、返回或输入无效内容不会重新检测；安装
+或卸载实际开始执行后，返回主菜单时会自动刷新一次。输入内容会显示并支持退格，
+Loading 使用原地重绘以避免反复清屏闪烁。
+
+安装器成功完成后会将精确的 Release 版本记录到 `/var/lib/droidspaces-tui/components`。
+卸载 Mesa、KWin 或 Mutter 补丁时会恢复发行版官方包，而不是直接删除系统图形栈；
+Hangover Wine 和 Wine 字体则会移除各自的软件包或受管目录。
+
 ## 发布
 
 在 GitHub Actions 中手动运行 `发布 Droidspaces TUI`。工作流会：

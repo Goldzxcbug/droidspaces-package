@@ -26,6 +26,7 @@ readonly PACMAN_CONFIG="/etc/pacman.conf"
 readonly PACMAN_MANAGED_BEGIN="# BEGIN install-mesa package holds"
 readonly PACMAN_MANAGED_END="# END install-mesa package holds"
 readonly SYSTEMD257_STATE="/etc/droidspaces-systemd257"
+readonly COMPONENT_STATE_DIR="/var/lib/droidspaces-tui/components"
 readonly MAX_ARCHIVE_BYTES=$((512 * 1024 * 1024))
 readonly MAX_EXTRACTED_BYTES=$((2 * 1024 * 1024 * 1024))
 readonly MAX_MEDIA_DRIVER_BYTES=$((16 * 1024 * 1024))
@@ -57,6 +58,7 @@ MEDIA_DRIVER_TEMP_FILE=""
 MEDIA_DRIVER_INSTALL_DIR=""
 MEDIA_DRIVER_INSTALL_PATH=""
 MESA_PACKAGE_NAMES=()
+UNINSTALL=false
 
 detect_language() {
     local locale_name="${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}"
@@ -78,6 +80,41 @@ log() {
     printf '[install-mesa] %s\n' "$(msg "$1" "$2")"
 }
 
+record_component_version() {
+    local version="$1" state_file="$COMPONENT_STATE_DIR/mesa.version" temporary_file
+    [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+:~_-]{0,63}$ ]] || return 0
+    if ! mkdir -p -- "$COMPONENT_STATE_DIR"; then
+        log "无法记录已安装的 Mesa 版本。" "Could not record the installed Mesa version."
+        return 0
+    fi
+    temporary_file="$(mktemp "$state_file.tmp.XXXXXXXX")" || {
+        log "无法记录已安装的 Mesa 版本。" "Could not record the installed Mesa version."
+        return 0
+    }
+    if printf '%s\n' "$version" > "$temporary_file" && \
+        chmod 0644 "$temporary_file" && mv -f -- "$temporary_file" "$state_file"; then
+        return 0
+    fi
+    rm -f -- "$temporary_file" || true
+    log "无法记录已安装的 Mesa 版本。" "Could not record the installed Mesa version."
+    return 0
+}
+
+mesa_archive_version() {
+    local version="${ARCHIVE_NAME#mesa-for-android-container_}"
+    case "$version" in
+        *_archlinux_arm64.tar) version="${version%_archlinux_arm64.tar}" ;;
+        *_debian_trixie_arm64.tar.gz) version="${version%_debian_trixie_arm64.tar.gz}" ;;
+        *_ubuntu_noble_arm64.tar.gz) version="${version%_ubuntu_noble_arm64.tar.gz}" ;;
+        *_ubuntu_questing_arm64.tar.gz) version="${version%_ubuntu_questing_arm64.tar.gz}" ;;
+        *_ubuntu_resolute_arm64.tar.gz) version="${version%_ubuntu_resolute_arm64.tar.gz}" ;;
+        *_fedora_43_arm64.tar.gz) version="${version%_fedora_43_arm64.tar.gz}" ;;
+        *_fedora_44_arm64.tar.gz) version="${version%_fedora_44_arm64.tar.gz}" ;;
+        *) return 1 ;;
+    esac
+    printf '%s' "$version"
+}
+
 die() {
     printf '[install-mesa] %s: %s\n' \
         "$(msg '错误' 'Error')" "$(msg "$1" "$2")" >&2
@@ -91,6 +128,7 @@ $(msg '用法' 'Usage'): $0
   -1, --1       $(msg '使用 GitHub 并跳过测速。' 'Use GitHub and skip latency checks.')
   -2, --2       $(msg '使用 gh-proxy.com 并跳过测速。' 'Use gh-proxy.com and skip latency checks.')
   -3, --3       $(msg '使用 CNB 国内镜像并跳过测速。' 'Use the CNB mirror and skip latency checks.')
+  --uninstall   $(msg '卸载自定义驱动并恢复发行版 Mesa' 'Uninstall custom drivers and restore distribution Mesa')
   -h, --help    $(msg '显示此帮助。' 'Show this help.')
 
 $(msg '未指定下载源时，将测试三个源并提示选择。' 'Without a source option, all three sources are probed before prompting.')
@@ -121,6 +159,9 @@ parse_arguments() {
             -3|--3)
                 set_download_source_argument "3"
                 ;;
+            --uninstall)
+                UNINSTALL=true
+                ;;
             -h|--help)
                 usage
                 exit 0
@@ -131,6 +172,134 @@ parse_arguments() {
                 ;;
         esac
     done
+}
+
+uninstall_mesa_apt() {
+    local package candidate backup=""
+    local -a packages=(libegl-mesa0 libgbm1 libgl1-mesa-dri libglx-mesa0 mesa-libgallium mesa-vulkan-drivers)
+    local -a package_specs=()
+    command -v apt-cache >/dev/null 2>&1 || die "未找到 apt-cache。" "apt-cache was not found."
+    command -v apt-get >/dev/null 2>&1 || die "未找到 apt-get。" "apt-get was not found."
+    if [[ -e "$APT_HOLD_PREFERENCES" ]]; then
+        [[ -f "$APT_HOLD_PREFERENCES" && ! -L "$APT_HOLD_PREFERENCES" ]] || \
+            die "Mesa 锁定配置路径异常。" "The Mesa hold configuration path is invalid."
+        grep -Fqx '# /etc/apt/preferences.d/hold-anland-package' "$APT_HOLD_PREFERENCES" && \
+            grep -Fqx 'Pin-Priority: -1' "$APT_HOLD_PREFERENCES" || \
+            die "Mesa 锁定配置已被修改，拒绝自动删除。" \
+                "The Mesa hold configuration was modified; refusing to remove it automatically."
+        backup="$(mktemp -t install-mesa-apt-hold.XXXXXXXX)"
+        cp -p -- "$APT_HOLD_PREFERENCES" "$backup"
+        rm -f -- "$APT_HOLD_PREFERENCES"
+    fi
+    for package in "${packages[@]}"; do
+        candidate="$(apt-cache madison "$package" | awk -F '|' 'NR == 1 {
+            value = $2
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            print value
+        }')"
+        if [[ -z "$candidate" ]]; then
+            [[ -z "$backup" ]] || install -m 0644 "$backup" "$APT_HOLD_PREFERENCES"
+            rm -f -- "$backup"
+            die "找不到 $package 的官方候选版本。" "No distribution candidate was found for $package."
+        fi
+        package_specs+=("$package=$candidate")
+    done
+    if ! apt-get install -y --reinstall --allow-downgrades "${package_specs[@]}"; then
+        [[ -z "$backup" ]] || install -m 0644 "$backup" "$APT_HOLD_PREFERENCES"
+        rm -f -- "$backup"
+        die "恢复发行版 Mesa 失败。" "Failed to restore distribution Mesa packages."
+    fi
+    rm -f -- "$backup"
+}
+
+uninstall_mesa_dnf() {
+    local backup stripped package
+    local -a packages=()
+    command -v dnf >/dev/null 2>&1 || die "未找到 dnf。" "dnf was not found."
+    command -v rpm >/dev/null 2>&1 || die "未找到 rpm。" "rpm was not found."
+    [[ -f "$DNF_CONFIG" ]] || die "找不到 DNF 配置。" "The DNF configuration was not found."
+    mapfile -t packages < <(rpm -qa --queryformat '%{NAME}\n' | awk '/^mesa/ { print }' | sort -u)
+    ((${#packages[@]} > 0)) || die "没有找到已安装的 Mesa 包。" "No installed Mesa packages were found."
+    backup="$(mktemp -t install-mesa-uninstall.XXXXXXXX)"
+    stripped="$(mktemp -t install-mesa-uninstall.XXXXXXXX)"
+    cp -p -- "$DNF_CONFIG" "$backup"
+    WORK_DIR="$(mktemp -d -t install-mesa-uninstall.XXXXXXXX)"
+    if ! rewrite_without_managed_block \
+        "$DNF_CONFIG" "$stripped" "$DNF_MANAGED_BEGIN" "$DNF_MANAGED_END" || \
+        ! install -m 0644 "$stripped" "$DNF_CONFIG" || \
+        ! dnf distro-sync -y --exclude='systemd*' "${packages[@]}"; then
+        install -m 0644 "$backup" "$DNF_CONFIG" || true
+        rm -f -- "$backup" "$stripped"
+        die "恢复发行版 Mesa 失败。" "Failed to restore distribution Mesa packages."
+    fi
+    rm -f -- "$backup" "$stripped"
+}
+
+uninstall_mesa_pacman() {
+    local backup stripped protected preserve_kde=false
+    local -a packages=()
+    command -v pacman >/dev/null 2>&1 || die "未找到 pacman。" "pacman was not found."
+    [[ -f "$PACMAN_CONFIG" ]] || die "找不到 pacman.conf。" "pacman.conf was not found."
+    mapfile -t packages < <(awk -v begin="$PACMAN_MANAGED_BEGIN" -v end="$PACMAN_MANAGED_END" '
+        $0 == begin { inside = 1; next }
+        $0 == end { inside = 0; next }
+        inside && $1 == "IgnorePkg" {
+            for (i = 3; i <= NF; i++) {
+                if ($i !~ /^systemd(-libs|-sysvcompat)?$/ && \
+                    $i != "kwin" && $i != "xorg-xwayland") print $i
+            }
+        }
+    ' "$PACMAN_CONFIG" | sort -u)
+    ((${#packages[@]} > 0)) || packages=(mesa)
+    backup="$(mktemp -t install-mesa-uninstall.XXXXXXXX)"
+    stripped="$(mktemp -t install-mesa-uninstall.XXXXXXXX)"
+    protected="$(mktemp -t install-mesa-uninstall.XXXXXXXX)"
+    cp -p -- "$PACMAN_CONFIG" "$backup"
+    WORK_DIR="$(mktemp -d -t install-mesa-uninstall.XXXXXXXX)"
+    if grep -Eq '^[[:space:]]*IgnorePkg[[:space:]]*=.*(^|[[:space:]])kwin([[:space:]]|$)' \
+        "$PACMAN_CONFIG"; then
+        preserve_kde=true
+    fi
+    if ! rewrite_without_managed_block \
+        "$PACMAN_CONFIG" "$stripped" "$PACMAN_MANAGED_BEGIN" "$PACMAN_MANAGED_END"; then
+        rm -f -- "$backup" "$stripped" "$protected"
+        die "无法移除 Mesa 锁定配置。" "Failed to remove the Mesa hold configuration."
+    fi
+    if [[ "$preserve_kde" == true ]] && \
+        ! grep -Eq '^[[:space:]]*IgnorePkg[[:space:]]*=.*(^|[[:space:]])kwin([[:space:]]|$)' "$stripped"; then
+        awk '
+            { print }
+            /^\[options\][[:space:]]*$/ && !added {
+                print "IgnorePkg = kwin xorg-xwayland"
+                added = 1
+            }
+            END { if (!added) exit 1 }
+        ' "$stripped" > "$protected" || {
+            rm -f -- "$backup" "$stripped" "$protected"
+            die "无法保留 Anland KDE 锁定。" "Failed to preserve the Anland KDE hold."
+        }
+    else
+        cp -- "$stripped" "$protected"
+    fi
+    if ! install -m 0644 "$protected" "$PACMAN_CONFIG" || \
+        ! pacman -S --noconfirm "${packages[@]}"; then
+        install -m 0644 "$backup" "$PACMAN_CONFIG" || true
+        rm -f -- "$backup" "$stripped" "$protected"
+        die "恢复发行版 Mesa 失败。" "Failed to restore distribution Mesa packages."
+    fi
+    rm -f -- "$backup" "$stripped" "$protected"
+}
+
+uninstall_mesa() {
+    case "$PACKAGE_MANAGER" in
+        apt) uninstall_mesa_apt ;;
+        dnf) uninstall_mesa_dnf ;;
+        pacman) uninstall_mesa_pacman ;;
+    esac
+    rm -f -- "$MEDIA_DRIVER_INSTALL_PATH" "$COMPONENT_STATE_DIR/mesa.version"
+    command -v ldconfig >/dev/null 2>&1 && ldconfig || true
+    log "自定义 Mesa/MediaCodec 驱动已卸载，发行版 Mesa 已恢复。" \
+        "Custom Mesa/MediaCodec drivers were uninstalled and distribution Mesa was restored."
 }
 
 cleanup() {
@@ -1185,6 +1354,7 @@ install_mesa() {
     esac
     configure_package_holds
     install_media_decode_driver
+    record_component_version "$(mesa_archive_version)"
 }
 
 main() {
@@ -1193,6 +1363,10 @@ main() {
     detect_target
     check_architecture
     require_root "$@"
+    if [[ "$UNINSTALL" == true ]]; then
+        uninstall_mesa
+        return
+    fi
     require_commands
     install_mesa
     log "Mesa 和媒体解码驱动安装完成，相关软件包已锁定。" \

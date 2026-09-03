@@ -8,6 +8,7 @@ readonly MANIFEST_NAME="winefonts-manifest"
 readonly LICENSE_INVENTORY="FONT-LICENSES.tsv"
 readonly FONT_PARENT="/usr/local/share/fonts"
 readonly FONT_TARGET="$FONT_PARENT/winefonts"
+readonly COMPONENT_STATE_DIR="/var/lib/droidspaces-tui/components"
 readonly SOURCE_PROBE_TIMEOUT_SECONDS=2
 readonly GITHUB_RELEASE_URL="https://github.com"
 readonly GITHUB_API_URL="https://api.github.com"
@@ -33,6 +34,7 @@ INSTALL_BACKUP=""
 INSTALL_TARGET=""
 NEW_TARGET_ACTIVE=false
 INSTALL_SUCCEEDED=false
+UNINSTALL=false
 
 detect_language() {
     local locale_name="${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}"
@@ -53,6 +55,26 @@ log() {
     printf '[winefonts] %s\n' "$(msg "$1" "$2")"
 }
 
+record_component_version() {
+    local version="$1" state_file="$COMPONENT_STATE_DIR/fonts.version" temporary_file
+    [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+:~_-]{0,63}$ ]] || return 0
+    if ! mkdir -p -- "$COMPONENT_STATE_DIR"; then
+        log "无法记录已安装的字体版本。" "Could not record the installed font version."
+        return 0
+    fi
+    temporary_file="$(mktemp "$state_file.tmp.XXXXXXXX")" || {
+        log "无法记录已安装的字体版本。" "Could not record the installed font version."
+        return 0
+    }
+    if printf '%s\n' "$version" > "$temporary_file" && \
+        chmod 0644 "$temporary_file" && mv -f -- "$temporary_file" "$state_file"; then
+        return 0
+    fi
+    rm -f -- "$temporary_file" || true
+    log "无法记录已安装的字体版本。" "Could not record the installed font version."
+    return 0
+}
+
 die() {
     printf '[winefonts] %s: %s\n' "$(msg '错误' 'Error')" "$(msg "$1" "$2")" >&2
     exit 1
@@ -66,6 +88,7 @@ $(msg '用法' 'Usage'): $0 [--1|--2|--3]
   --1, -1  GitHub
   --2, -2  gh-proxy.com
   --3, -3  CNB
+  --uninstall  $(msg '卸载由本脚本管理的 Wine 字体' 'Uninstall Wine fonts managed by this script')
 
 $(msg '安装目录：/usr/local/share/fonts/winefonts' 'Install directory: /usr/local/share/fonts/winefonts')
 $(msg '安装器绝不会删除或修改 /usr/share/fonts。' 'The installer never deletes or changes /usr/share/fonts.')
@@ -79,6 +102,7 @@ parse_arguments() {
             -1|--1) DOWNLOAD_SOURCE=1; SKIP_SOURCE_PROBE=true ;;
             -2|--2) DOWNLOAD_SOURCE=2; SKIP_SOURCE_PROBE=true ;;
             -3|--3) DOWNLOAD_SOURCE=3; SKIP_SOURCE_PROBE=true ;;
+            --uninstall) UNINSTALL=true ;;
             -h|--help)
                 usage
                 exit 0
@@ -89,6 +113,21 @@ parse_arguments() {
                 ;;
         esac
     done
+}
+
+uninstall_fonts() {
+    if [[ -e "$FONT_TARGET" || -L "$FONT_TARGET" ]]; then
+        [[ -d "$FONT_TARGET" && ! -L "$FONT_TARGET" ]] || \
+            die "管理目录不是普通目录，拒绝删除：$FONT_TARGET" \
+                "The managed path is not a regular directory; refusing to remove it: $FONT_TARGET"
+        rm -rf -- "$FONT_TARGET"
+    fi
+    rm -f -- "$COMPONENT_STATE_DIR/fonts.version"
+    if command -v fc-cache >/dev/null 2>&1; then
+        fc-cache -f || die "刷新 Fontconfig 缓存失败。" "Failed to refresh the Fontconfig cache."
+    fi
+    log "Wine 字体已卸载；/usr/share/fonts 未修改。" \
+        "Wine fonts were uninstalled; /usr/share/fonts was not modified."
 }
 
 rollback_install() {
@@ -581,10 +620,15 @@ install_fonts() {
 }
 
 main() {
+    local archive_version
     detect_language
     parse_arguments "$@"
     validate_release_settings
     require_root "$@"
+    if [[ "$UNINSTALL" == true ]]; then
+        uninstall_fonts
+        return
+    fi
     require_commands
     select_download_source
     log "下载源：$(download_source_name "$DOWNLOAD_SOURCE")" \
@@ -592,6 +636,9 @@ main() {
     download_and_extract
     confirm_replacement "$FONT_TARGET"
     install_fonts "$EXTRACTED_FONT_DIR" "$FONT_TARGET"
+    archive_version="${ARCHIVE_NAME#winefonts-}"
+    archive_version="${archive_version%.tar.xz}"
+    record_component_version "$archive_version"
     log "安装完成：$FONT_TARGET" "Installation complete: $FONT_TARGET"
     log "未修改 /usr/share/fonts；商业字体需由用户从有许可证的电脑自行补全。" \
         "Did not modify /usr/share/fonts; users must supply licensed commercial fonts themselves."

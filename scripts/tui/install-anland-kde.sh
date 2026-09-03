@@ -21,6 +21,7 @@ readonly DNF_MANAGED_END="# END anland-kde package holds"
 readonly MESA_DNF_MANAGED_BEGIN="# BEGIN install-mesa package holds"
 readonly MESA_DNF_MANAGED_END="# END install-mesa package holds"
 readonly SYSTEMD257_STATE="/etc/droidspaces-systemd257"
+readonly COMPONENT_STATE_DIR="/var/lib/droidspaces-tui/components"
 
 WORK_DIR=""
 PREPARED_WORK_DIR="${ANLAND_KDE_WORK_DIR:-}"
@@ -38,6 +39,7 @@ SKIP_SOURCE_PROBE=false
 EXPECTED_MANIFEST_SHA256=""
 EXPECTED_ARCHIVE_SHA256=""
 OFFICIAL_RELEASE_METADATA=""
+UNINSTALL=false
 
 detect_language() {
     local locale_name="${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}"
@@ -57,6 +59,26 @@ msg() {
 
 log() {
     printf '[anland-kde] %s\n' "$(msg "$1" "$2")"
+}
+
+record_component_version() {
+    local version="$1" state_file="$COMPONENT_STATE_DIR/kde.version" temporary_file
+    [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+:~_-]{0,63}$ ]] || return 0
+    if ! mkdir -p -- "$COMPONENT_STATE_DIR"; then
+        log "无法记录已安装的 KWin 版本。" "Could not record the installed KWin version."
+        return 0
+    fi
+    temporary_file="$(mktemp "$state_file.tmp.XXXXXXXX")" || {
+        log "无法记录已安装的 KWin 版本。" "Could not record the installed KWin version."
+        return 0
+    }
+    if printf '%s\n' "$version" > "$temporary_file" && \
+        chmod 0644 "$temporary_file" && mv -f -- "$temporary_file" "$state_file"; then
+        return 0
+    fi
+    rm -f -- "$temporary_file" || true
+    log "无法记录已安装的 KWin 版本。" "Could not record the installed KWin version."
+    return 0
 }
 
 die() {
@@ -81,12 +103,104 @@ parse_arguments() {
                 DOWNLOAD_SOURCE="3"
                 SKIP_SOURCE_PROBE=true
                 ;;
+            --uninstall)
+                UNINSTALL=true
+                ;;
             *)
-                die "不支持的参数：${argument}。可用参数为 -1/--1、-2/--2、-3/--3。" \
-                    "Unsupported argument: ${argument}. Valid arguments are -1/--1, -2/--2, and -3/--3."
+                die "不支持的参数：${argument}。可用参数为 -1/--1、-2/--2、-3/--3、--uninstall。" \
+                    "Unsupported argument: ${argument}. Valid arguments are -1/--1, -2/--2, -3/--3, and --uninstall."
                 ;;
         esac
     done
+}
+
+uninstall_kde_deb() {
+    local package candidate
+    local -a packages=() package_specs=()
+    [[ -s "$APT_HOLD_STATE" ]] || {
+        rm -f -- "$COMPONENT_STATE_DIR/kde.version"
+        log "没有 Anland KDE 安装记录。" "No Anland KDE installation record was found."
+        return 0
+    }
+    command -v apt-cache >/dev/null 2>&1 || die "未找到 apt-cache。" "apt-cache was not found."
+    command -v apt-get >/dev/null 2>&1 || die "未找到 apt-get。" "apt-get was not found."
+    command -v apt-mark >/dev/null 2>&1 || die "未找到 apt-mark。" "apt-mark was not found."
+    mapfile -t packages < <(sed -nE 's/^([a-z0-9][a-z0-9+.-]*)$/\1/p' "$APT_HOLD_STATE" | sort -u)
+    ((${#packages[@]} > 0)) || die "APT hold 清单为空。" "The APT hold list is empty."
+    for package in "${packages[@]}"; do
+        candidate="$(apt-cache madison "$package" | awk -F '|' 'NR == 1 {
+            value = $2
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            print value
+        }')"
+        [[ -n "$candidate" ]] || \
+            die "找不到 $package 的官方候选版本。" "No distribution candidate was found for $package."
+        package_specs+=("$package=$candidate")
+    done
+    apt-mark unhold "${packages[@]}" >/dev/null
+    apt-get install -y --reinstall --allow-downgrades --allow-change-held-packages \
+        "${package_specs[@]}"
+    rm -f -- "$APT_HOLD_STATE" "$COMPONENT_STATE_DIR/kde.version"
+    rmdir -- "${APT_HOLD_STATE%/*}" 2>/dev/null || true
+}
+
+uninstall_kde_rpm() {
+    local dnf_conf="/etc/dnf/dnf.conf" backup stripped
+    command -v dnf >/dev/null 2>&1 || die "未找到 dnf。" "dnf was not found."
+    [[ -f "$dnf_conf" ]] || die "找不到 DNF 配置。" "The DNF configuration was not found."
+    backup="$(mktemp -t anland-kde-uninstall.XXXXXXXX)"
+    stripped="$(mktemp -t anland-kde-uninstall.XXXXXXXX)"
+    cp -p -- "$dnf_conf" "$backup"
+    if ! rewrite_dnf_config_without_managed_block "$dnf_conf" "$stripped" || \
+        ! install -m 0644 "$stripped" "$dnf_conf" || \
+        ! dnf distro-sync -y --exclude='mesa*' --exclude='systemd*' \
+            'kwin*' 'xorg-x11-server-Xwayland*'; then
+        install -m 0644 "$backup" "$dnf_conf" || true
+        rm -f -- "$backup" "$stripped"
+        die "恢复发行版 KWin/Xwayland 失败。" "Failed to restore distribution KWin/Xwayland packages."
+    fi
+    rm -f -- "$backup" "$stripped" "$COMPONENT_STATE_DIR/kde.version"
+}
+
+uninstall_kde_arch() {
+    local backup stripped
+    command -v pacman >/dev/null 2>&1 || die "未找到 pacman。" "pacman was not found."
+    [[ -f /etc/pacman.conf ]] || die "找不到 pacman.conf。" "pacman.conf was not found."
+    backup="$(mktemp -t anland-kde-uninstall.XXXXXXXX)"
+    stripped="$(mktemp -t anland-kde-uninstall.XXXXXXXX)"
+    cp -p -- /etc/pacman.conf "$backup"
+    awk '
+        /^[[:space:]]*IgnorePkg[[:space:]]*=/ {
+            equals = index($0, "=")
+            count = split(substr($0, equals + 1), items, /[[:space:]]+/)
+            output = ""
+            for (i = 1; i <= count; i++) {
+                if (items[i] != "" && items[i] != "kwin" && items[i] != "xorg-xwayland") {
+                    output = output (output == "" ? "" : " ") items[i]
+                }
+            }
+            if (output != "") print "IgnorePkg = " output
+            next
+        }
+        { print }
+    ' /etc/pacman.conf > "$stripped"
+    if ! install -m 0644 "$stripped" /etc/pacman.conf || \
+        ! pacman -S --noconfirm kwin xorg-xwayland; then
+        install -m 0644 "$backup" /etc/pacman.conf || true
+        rm -f -- "$backup" "$stripped"
+        die "恢复发行版 KWin/Xwayland 失败。" "Failed to restore distribution KWin/Xwayland packages."
+    fi
+    rm -f -- "$backup" "$stripped" "$COMPONENT_STATE_DIR/kde.version"
+}
+
+uninstall_kde() {
+    case "$PACKAGE_TYPE" in
+        deb) uninstall_kde_deb ;;
+        rpm) uninstall_kde_rpm ;;
+        pkg.tar.*) uninstall_kde_arch ;;
+    esac
+    log "Anland KDE 已卸载，发行版 KWin/Xwayland 已恢复。" \
+        "Anland KDE was uninstalled and distribution KWin/Xwayland packages were restored."
 }
 
 cleanup() {
@@ -1077,10 +1191,16 @@ install_arch_packages() {
 }
 
 main() {
+    local archive_version
     detect_language
     parse_arguments "$@"
     detect_target
     check_architecture
+    if [[ "$UNINSTALL" == true ]]; then
+        require_root "$@"
+        uninstall_kde
+        return
+    fi
     require_runtime_dependencies
     resolve_release_tag
     if [[ -n "$PREPARED_WORK_DIR" || -n "$PREPARED_PACKAGE_DIR" ]]; then
@@ -1097,8 +1217,13 @@ main() {
         pkg.tar.*) install_arch_packages ;;
     esac
 
+    archive_version="${ARCHIVE_NAME#"$ARCHIVE_PREFIX"}"
+    archive_version="${archive_version%"$ARCHIVE_SUFFIX"}"
+    record_component_version "$archive_version"
     log "安装完成，patched KWin/Xwayland 已锁定。" \
         "Installation complete; patched KWin/Xwayland packages are now locked."
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
