@@ -13,7 +13,8 @@ curl -fLO https://github.com/Goldzxcbug/droidspaces-package/releases/download/Go
 从 CNB 镜像下载：
 
 ```bash
-curl -fLO https://cnb.cool/goldzxcbug/droidspaces-package/-/releases/download/Gold-bug-tui/install-tui.sh | sudo bash --source cnb
+curl -fLO https://cnb.cool/goldzxcbug/droidspaces-package/-/releases/download/Gold-bug-tui/install-tui.sh
+sudo bash install-tui.sh --source cnb
 ```
 
 安装完成后可运行 `droidspaces-tui`、`dstui` 或 `ds-tui`。`install-tui.sh` 是旧
