@@ -22,6 +22,7 @@ readonly MESA_DNF_MANAGED_BEGIN="# BEGIN install-mesa package holds"
 readonly MESA_DNF_MANAGED_END="# END install-mesa package holds"
 readonly SYSTEMD257_STATE="/etc/droidspaces-systemd257"
 readonly COMPONENT_STATE_DIR="/var/lib/droidspaces-tui/components"
+readonly DESKTOP_CONFIG="${DROIDSPACES_DESKTOP_CONFIG:-/etc/droidspaces-desktop.conf}"
 
 WORK_DIR=""
 PREPARED_WORK_DIR="${ANLAND_KDE_WORK_DIR:-}"
@@ -79,6 +80,65 @@ record_component_version() {
     rm -f -- "$temporary_file" || true
     log "无法记录已安装的 KWin 版本。" "Could not record the installed KWin version."
     return 0
+}
+
+update_desktop_config() {
+    local desktop="kde" config_dir temporary_file line configured_desktop=""
+    local desktop_lines=0
+
+    config_dir="$(dirname -- "$DESKTOP_CONFIG")"
+    if [[ ! -e "$DESKTOP_CONFIG" && ! -L "$DESKTOP_CONFIG" ]]; then
+        if [[ ! -d "$config_dir" ]]; then
+            install -d -m 0755 -- "$config_dir" || \
+                die "无法创建桌面配置目录。" "Could not create the desktop configuration directory."
+        fi
+        temporary_file="$(mktemp "$config_dir/.droidspaces-desktop.conf.tmp.XXXXXXXX")" || \
+            die "无法创建临时桌面配置。" "Could not create a temporary desktop configuration."
+        if ! printf 'DESKTOP=%s\n' "$desktop" > "$temporary_file" || \
+            ! chmod 0644 "$temporary_file" || ! mv -f -- "$temporary_file" "$DESKTOP_CONFIG"; then
+            rm -f -- "$temporary_file" || true
+            die "无法创建桌面配置。" "Could not create the desktop configuration."
+        fi
+        log "已创建桌面配置：DESKTOP=${desktop}。" \
+            "Created the desktop configuration with DESKTOP=${desktop}."
+        return
+    fi
+
+    if [[ ! -f "$DESKTOP_CONFIG" || -L "$DESKTOP_CONFIG" || ! -r "$DESKTOP_CONFIG" ]]; then
+        die "桌面配置不是可安全修改的普通文件：${DESKTOP_CONFIG}。" \
+            "The desktop configuration is not a safely writable regular file: ${DESKTOP_CONFIG}."
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        case "$line" in
+            DESKTOP=*)
+                configured_desktop="${line#DESKTOP=}"
+                ((desktop_lines += 1))
+                ;;
+        esac
+    done < "$DESKTOP_CONFIG"
+    if ((desktop_lines != 1)) || \
+        [[ ! "$configured_desktop" =~ ^(none|[a-z][a-z0-9-]*)$ ]]; then
+        die "桌面配置格式无效，未覆盖原文件。" \
+            "The desktop configuration is invalid; the original file was not overwritten."
+    fi
+    if [[ "$configured_desktop" != none ]]; then
+        log "保留现有桌面配置：DESKTOP=${configured_desktop}。" \
+            "Keeping the existing desktop configuration: DESKTOP=${configured_desktop}."
+        return
+    fi
+
+    temporary_file="$(mktemp "$config_dir/.droidspaces-desktop.conf.tmp.XXXXXXXX")" || \
+        die "无法创建临时桌面配置。" "Could not create a temporary desktop configuration."
+    if ! awk -v desktop="$desktop" '
+        /^DESKTOP=/ { print "DESKTOP=" desktop; next }
+        { print }
+    ' "$DESKTOP_CONFIG" > "$temporary_file" || ! chmod 0644 "$temporary_file" || \
+        ! mv -f -- "$temporary_file" "$DESKTOP_CONFIG"; then
+        rm -f -- "$temporary_file" || true
+        die "无法更新桌面配置。" "Could not update the desktop configuration."
+    fi
+    log "已将桌面配置更新为 DESKTOP=${desktop}。" \
+        "Updated the desktop configuration to DESKTOP=${desktop}."
 }
 
 die() {
@@ -225,6 +285,7 @@ require_root() {
         "ANLAND_KDE_RELEASE_TAG=$RELEASE_TAG" \
         "ANLAND_KDE_WORK_DIR=$WORK_DIR" \
         "ANLAND_KDE_PACKAGE_DIR=$PACKAGE_DIR" \
+        "DROIDSPACES_DESKTOP_CONFIG=$DESKTOP_CONFIG" \
         bash "$script_path" "$@"; then
         status=0
     else
@@ -1220,6 +1281,7 @@ main() {
     archive_version="${ARCHIVE_NAME#"$ARCHIVE_PREFIX"}"
     archive_version="${archive_version%"$ARCHIVE_SUFFIX"}"
     record_component_version "$archive_version"
+    update_desktop_config
     log "安装完成，patched KWin/Xwayland 已锁定。" \
         "Installation complete; patched KWin/Xwayland packages are now locked."
 }

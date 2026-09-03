@@ -7,15 +7,13 @@
 从 GitHub 下载引导安装器：
 
 ```bash
-curl -fLO https://github.com/Goldzxcbug/droidspaces-package/releases/download/Gold-bug-tui/install-tui.sh
-sudo bash install-tui.sh --source github
+curl -fLO https://github.com/Goldzxcbug/droidspaces-package/releases/download/Gold-bug-tui/install-tui.sh | sudo bash --source github
 ```
 
 从 CNB 镜像下载：
 
 ```bash
-curl -fLO https://cnb.cool/goldzxcbug/droidspaces-package/-/releases/download/Gold-bug-tui/install-tui.sh
-sudo bash install-tui.sh --source cnb
+curl -fLO https://cnb.cool/goldzxcbug/droidspaces-package/-/releases/download/Gold-bug-tui/install-tui.sh | sudo bash --source cnb
 ```
 
 安装完成后可运行 `droidspaces-tui`、`dstui` 或 `ds-tui`。`install-tui.sh` 是旧
@@ -27,9 +25,11 @@ RootFS 使用的一次性引导器，不会安装到容器；TUI 更新时只会
 和“卸载”。桌面更新项读取 `/etc/droidspaces-desktop.conf` 的 `DESKTOP` 字段：KDE/KDE
 mobile 只显示 Anland KDE，GNOME 只显示 Anland GNOME；`none` 或未知桌面进入选择页，可
 选择 Anland KWin 或 GNOME。旧 RootFS 缺少配置时按已安装组件兜底，无法判断时同样进入
-选择页。版本检测在启动 TUI 时运行，进入菜单、返回或输入无效内容不会重新检测；安装
-或卸载实际开始执行后，返回主菜单时会自动刷新一次。输入内容会显示并支持退格，
-Loading 使用原地重绘以避免反复清屏闪烁。
+选择页。成功安装 Anland KDE 或 GNOME 后，安装器只把 `DESKTOP=none` 原子更新为对应桌面，
+不会修改显示后端或桌面环境变量；配置文件不存在时会创建桌面标记，已有明确桌面则保持
+不变。版本检测在启动 TUI 时运行，进入菜单、返回或输入无效内容不会重新检测；安装或
+卸载实际开始执行后，返回主菜单时会重新识别桌面并自动刷新一次。输入内容会显示并支持
+退格，Loading 使用原地重绘以避免反复清屏闪烁。
 
 安装器成功完成后会将精确的 Release 版本记录到 `/var/lib/droidspaces-tui/components`。
 卸载 Mesa、KWin 或 Mutter 补丁时会恢复发行版官方包，而不是直接删除系统图形栈；

@@ -205,7 +205,9 @@ set_desktop_component() {
 }
 
 detect_desktop_component() {
-    local line desktop="" backend="" desktop_lines=0 backend_lines=0
+    local line desktop="" desktop_lines=0
+
+    set_desktop_component none
 
     if [[ -e "$DESKTOP_CONFIG" || -L "$DESKTOP_CONFIG" ]]; then
         if [[ -f "$DESKTOP_CONFIG" && ! -L "$DESKTOP_CONFIG" && -r "$DESKTOP_CONFIG" ]]; then
@@ -215,15 +217,10 @@ detect_desktop_component() {
                         desktop="${line#DESKTOP=}"
                         ((desktop_lines += 1))
                         ;;
-                    DISPLAY_BACKEND=*)
-                        backend="${line#DISPLAY_BACKEND=}"
-                        ((backend_lines += 1))
-                        ;;
                 esac
             done < "$DESKTOP_CONFIG"
-            if ((desktop_lines == 1 && backend_lines == 1)) && \
-                [[ "$desktop" =~ ^(none|[a-z][a-z0-9-]*)$ ]] && \
-                [[ "$backend" =~ ^(x11|anland-wayland)$ ]]; then
+            if ((desktop_lines == 1)) && \
+                [[ "$desktop" =~ ^(none|[a-z][a-z0-9-]*)$ ]]; then
                 set_desktop_component "$desktop"
             fi
         fi
@@ -1610,6 +1607,7 @@ main_menu() {
         esac
         if [[ "$COMPONENT_REFRESH_REQUIRED" == true ]]; then
             COMPONENT_REFRESH_REQUIRED=false
+            detect_desktop_component
             start_component_version_checks
         fi
         begin_dynamic_menu
