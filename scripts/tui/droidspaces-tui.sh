@@ -1292,6 +1292,106 @@ manage_cache() {
     done
 }
 
+reclaim_sparse_storage() {
+    local root_info root_source root_fstype root_options status
+
+    clear_screen
+    draw_header
+    printf '\n%b%s%b\n\n' "$COLOR_BOLD" \
+        "$(msg '回收存储空间（稀疏镜像）' 'Reclaim storage (sparse image)')" "$COLOR_RESET"
+    printf '%s\n' "$(msg \
+        '此操作用于正常启动的 rootfs.img 稀疏镜像容器。' \
+        'This action is for a normally started rootfs.img sparse-image container.')"
+    printf '%s\n' "$(msg \
+        '只修剪根文件系统中未使用的块，不会删除现有文件。' \
+        'Only unused root-filesystem blocks are trimmed; existing files are not deleted.')"
+    printf '%s\n\n' "$(msg \
+        '宿主端实际占用空间可能减少；镜像的逻辑文件大小通常不变。' \
+        'Host-side allocated space may decrease; the image logical size usually stays unchanged.')"
+
+    if ! command -v findmnt >/dev/null 2>&1; then
+        printf '%b%s%b\n' "$COLOR_RED" \
+            "$(msg '缺少 findmnt，无法确认根文件系统类型。' \
+                'findmnt is unavailable, so the root filesystem type cannot be verified.')" "$COLOR_RESET"
+        pause_menu
+        return
+    fi
+    if ! command -v fstrim >/dev/null 2>&1; then
+        printf '%b%s%b\n' "$COLOR_RED" \
+            "$(msg '缺少 fstrim，请先安装 util-linux。' \
+                'fstrim is unavailable; install util-linux first.')" "$COLOR_RESET"
+        pause_menu
+        return
+    fi
+    if ! root_info="$(findmnt -rnT / -o SOURCE,FSTYPE,OPTIONS 2>/dev/null)" || \
+        [[ -z "$root_info" || "$root_info" == *$'\n'* ]]; then
+        printf '%b%s%b\n' "$COLOR_RED" \
+            "$(msg '无法唯一识别根文件系统挂载。' \
+                'The root filesystem mount could not be identified uniquely.')" "$COLOR_RESET"
+        pause_menu
+        return
+    fi
+    read -r root_source root_fstype root_options <<< "$root_info"
+    if [[ "$root_fstype" != ext4 || \
+        ! "$root_source" =~ ^/dev/(block/)?loop[0-9]+(\[[^]]+\])?$ || \
+        ",$root_options," != *,rw,* ]]; then
+        printf '%b%s%b\n' "$COLOR_YELLOW" \
+            "$(msg \
+                '根文件系统不是可写的 Ext4 loop 镜像，已取消操作。' \
+                'The root filesystem is not a writable Ext4 loop image; the operation was cancelled.')" \
+            "$COLOR_RESET"
+        printf '%s: %s (%s, %s)\n' "$(msg '检测结果' 'Detected')" \
+            "$root_source" "$root_fstype" "$root_options"
+        pause_menu
+        return
+    fi
+
+    printf '%s: %s (%s)\n\n' "$(msg '根镜像设备' 'Root image device')" \
+        "$root_source" "$root_fstype"
+    confirm_run "$(msg '回收根镜像的未使用空间' \
+        'reclaim unused space from the root image')" || return 0
+
+    printf '\n%b%s%b\n\n' "$COLOR_BLUE" \
+        "$(msg '正在修剪根文件系统，请勿中断容器。' \
+            'Trimming the root filesystem; do not stop the container.')" "$COLOR_RESET"
+    if ((EUID == 0)); then
+        if fstrim -v /; then
+            status=0
+        else
+            status=$?
+        fi
+    else
+        if ! command -v sudo >/dev/null 2>&1; then
+            printf '%b%s%b\n' "$COLOR_RED" \
+                "$(msg '该操作需要 root 权限，且系统未安装 sudo。' \
+                    'This operation requires root access, and sudo is unavailable.')" "$COLOR_RESET"
+            pause_menu
+            return
+        fi
+        if sudo -- fstrim -v /; then
+            status=0
+        else
+            status=$?
+        fi
+    fi
+
+    printf '\n'
+    if ((status == 0)); then
+        printf '%b%s%b\n' "$COLOR_GREEN" \
+            "$(msg \
+                '修剪完成。请在 Android 宿主端查看 rootfs.img 的实际占用空间。' \
+                'Trim completed. Check the allocated space used by rootfs.img on the Android host.')" \
+            "$COLOR_RESET"
+    else
+        printf '%b%s%b\n' "$COLOR_RED" \
+            "$(msg \
+                "修剪失败，退出码：$status。可能是权限不足、挂载已变为只读，或内核、loop 设备、宿主文件系统不支持 discard。" \
+                "Trim failed with exit code $status. Access may be denied, the mount may be read-only, or the kernel, loop device, or host filesystem may not support discard.")" \
+            "$COLOR_RESET"
+    fi
+    pause_menu
+}
+
 cleanup_update_files() {
     if [[ -n "$UPDATE_WORK_DIR" && -d "$UPDATE_WORK_DIR" ]]; then
         rm -rf -- "$UPDATE_WORK_DIR"
@@ -1570,6 +1670,8 @@ main_menu() {
             printf '\n'
             printf '  %b[S]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '切换下载源' 'Change download source')"
             printf '  %b[C]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '清理下载缓存' 'Clean download cache')"
+            printf '  %b[R]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" \
+                "$(msg '回收存储空间（稀疏镜像）' 'Reclaim storage (sparse image)')"
             printf '  %b[U]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '检查与安装更新' 'Check for and install updates')"
             printf '  %b[A]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '关于与支持范围' 'About and support')"
             printf '  %b[Q]%b %s\n\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '退出' 'Quit')"
@@ -1585,7 +1687,7 @@ main_menu() {
         choice="$MENU_CHOICE"
         [[ -n "$choice" ]] || continue
         case "${choice,,}" in
-            0|1|2|3|4|q|s|c|u|a) restore_dynamic_menu_echo ;;
+            0|1|2|3|4|q|s|c|r|u|a) restore_dynamic_menu_echo ;;
             *) continue ;;
         esac
         case "${choice,,}" in
@@ -1601,6 +1703,7 @@ main_menu() {
                 ;;
             s) select_download_source ;;
             c) manage_cache ;;
+            r) reclaim_sparse_storage ;;
             u) manage_updates ;;
             a) show_about ;;
             q|0) return ;;

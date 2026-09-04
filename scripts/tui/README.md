@@ -32,6 +32,12 @@ mobile 只显示 Anland KDE，GNOME 只显示 Anland GNOME；`none` 或未知桌
 卸载实际开始执行后，返回主菜单时会重新识别桌面并自动刷新一次。输入内容会显示并支持
 退格，Loading 使用原地重绘以避免反复清屏闪烁。
 
+“回收存储空间（稀疏镜像）”用于在正常启动的 `rootfs.img` 容器内回收已经删除文件所占的
+宿主物理空间。TUI 会先确认根文件系统是可写的 Ext4 loop 镜像，经用户确认后以 root 身份
+执行 `fstrim -v /`。该操作只修剪根文件系统，不会处理容器内的其他挂载；`fstrim` 报告的
+是提交给设备的 discard 范围，实际回收结果应在 Android 宿主端查看 `rootfs.img` 的已分配
+空间。稀疏文件的逻辑大小通常不会改变。
+
 安装器成功完成后会将精确的 Release 版本记录到 `/var/lib/droidspaces-tui/components`。
 卸载 Mesa、KWin 或 Mutter 补丁时会恢复发行版官方包，而不是直接删除系统图形栈；
 Hangover Wine 和 Wine 字体则会移除各自的软件包或受管目录。
