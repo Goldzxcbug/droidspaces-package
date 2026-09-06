@@ -19,6 +19,7 @@ readonly TUI_GITHUB_API_URL="${DROIDSPACES_TUI_API_URL:-https://api.github.com}"
 readonly TUI_GITHUB_DOWNLOAD_BASE="${DROIDSPACES_TUI_GITHUB_BASE:-https://github.com/$TUI_RELEASE_REPOSITORY/releases/download}"
 readonly TUI_PROXY_DOWNLOAD_BASE="${DROIDSPACES_TUI_PROXY_BASE:-https://gh-proxy.com/https://github.com/$TUI_RELEASE_REPOSITORY/releases/download}"
 readonly TUI_CNB_DOWNLOAD_BASE="${DROIDSPACES_TUI_CNB_BASE:-https://cnb.cool/goldzxcbug/droidspaces-package/-/releases/download}"
+readonly LINUXMIRRORS_SCRIPT_URL="https://linuxmirrors.cn/main.sh"
 
 UI_LANG="en"
 DOWNLOAD_SOURCE=""
@@ -29,6 +30,7 @@ ARCHITECTURE="unknown"
 CACHE_ACTION=""
 UPDATE_WORK_DIR=""
 UPDATE_UPDATER_PATH=""
+MIRROR_WORK_DIR=""
 COMPONENT_VERSION_WORK_DIR=""
 COMPONENT_VERSION_DEADLINE=0
 COMPONENT_STATUS_CHANGED=false
@@ -431,6 +433,13 @@ clean_cache_as_root() {
             find "$HANGOVER_CACHE_DIR" -mindepth 1 -delete
             ;;
     esac
+}
+
+cleanup_mirror_files() {
+    if [[ -n "$MIRROR_WORK_DIR" && -d "$MIRROR_WORK_DIR" ]]; then
+        rm -rf -- "$MIRROR_WORK_DIR"
+    fi
+    MIRROR_WORK_DIR=""
 }
 
 draw_header() {
@@ -1292,6 +1301,92 @@ manage_cache() {
     done
 }
 
+switch_system_mirrors() {
+    local script_path status
+
+    clear_screen
+    draw_header
+    printf '\n%b%s%b\n\n' "$COLOR_BOLD" \
+        "$(msg '切换系统软件源' 'Switch system software mirrors')" "$COLOR_RESET"
+    printf '%s\n' "$(msg \
+        '此操作使用 LinuxMirrors 为当前容器选择并配置发行版软件源。' \
+        'This uses LinuxMirrors to select and configure repositories for the current container.')"
+    printf '%s\n' "$(msg \
+        '来源脚本：' 'Source script:')"
+    printf '  %s\n\n' "$LINUXMIRRORS_SCRIPT_URL"
+    printf '%b%s%b\n\n' "$COLOR_YELLOW" \
+        "$(msg \
+            '远程脚本将以 root 身份运行，并可能修改系统软件源配置。' \
+            'The remote script will run as root and may modify system repository configuration.')" \
+        "$COLOR_RESET"
+
+    if ((EUID != 0)) && ! command -v sudo >/dev/null 2>&1; then
+        printf '%b%s%b\n' "$COLOR_RED" \
+            "$(msg '该操作需要 root 权限，且系统未安装 sudo。' \
+                'This operation requires root access, and sudo is unavailable.')" "$COLOR_RESET"
+        pause_menu
+        return
+    fi
+    command -v curl >/dev/null 2>&1 || {
+        printf '%b%s%b\n' "$COLOR_RED" \
+            "$(msg '缺少 curl，无法下载 LinuxMirrors 脚本。' \
+                'curl is unavailable, so the LinuxMirrors script cannot be downloaded.')" "$COLOR_RESET"
+        pause_menu
+        return
+    }
+    confirm_run "$(msg '切换系统软件源' 'switch system software mirrors')" || return 0
+
+    MIRROR_WORK_DIR="$(mktemp -d -t droidspaces-linuxmirrors.XXXXXXXX)" || {
+        printf '%b%s%b\n' "$COLOR_RED" \
+            "$(msg '无法创建临时目录。' 'Could not create a temporary directory.')" "$COLOR_RESET"
+        pause_menu
+        return
+    }
+    chmod 0700 "$MIRROR_WORK_DIR" || true
+    script_path="$MIRROR_WORK_DIR/main.sh"
+    printf '\n%b%s%b\n' "$COLOR_BLUE" \
+        "$(msg '正在下载并检查 LinuxMirrors 脚本。' \
+            'Downloading and checking the LinuxMirrors script.')" "$COLOR_RESET"
+    if ! curl --fail --silent --show-error --location \
+        --retry 2 --retry-all-errors --connect-timeout 15 --max-time 180 \
+        "$LINUXMIRRORS_SCRIPT_URL" --output "$script_path" || \
+        [[ ! -s "$script_path" ]] || ! bash -n "$script_path"; then
+        cleanup_mirror_files
+        printf '%b%s%b\n' "$COLOR_RED" \
+            "$(msg 'LinuxMirrors 脚本下载或语法检查失败。' \
+                'The LinuxMirrors script failed to download or pass syntax checking.')" "$COLOR_RESET"
+        pause_menu
+        return
+    fi
+
+    printf '\n%b%s%b\n\n' "$COLOR_BLUE" \
+        "$(msg 'LinuxMirrors 脚本即将启动。' 'Starting the LinuxMirrors script.')" "$COLOR_RESET"
+    if ((EUID == 0)); then
+        if bash "$script_path"; then
+            status=0
+        else
+            status=$?
+        fi
+    else
+        if sudo -- bash "$script_path"; then
+            status=0
+        else
+            status=$?
+        fi
+    fi
+    cleanup_mirror_files
+
+    if ((status == 0)); then
+        printf '\n%b%s%b\n' "$COLOR_GREEN" \
+            "$(msg '系统软件源切换完成。' 'System software mirror switching completed.')" "$COLOR_RESET"
+    else
+        printf '\n%b%s%b\n' "$COLOR_RED" \
+            "$(msg "系统软件源切换失败，退出码：$status。" \
+                "System software mirror switching failed with exit code $status.")" "$COLOR_RESET"
+    fi
+    pause_menu
+}
+
 reclaim_sparse_storage() {
     local root_info root_source root_fstype root_options status
 
@@ -1672,6 +1767,8 @@ main_menu() {
             printf '  %b[C]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '清理下载缓存' 'Clean download cache')"
             printf '  %b[R]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" \
                 "$(msg '回收存储空间（稀疏镜像）' 'Reclaim storage (sparse image)')"
+            printf '  %b[M]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" \
+                "$(msg '切换系统软件源' 'Switch system software mirrors')"
             printf '  %b[U]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '检查与安装更新' 'Check for and install updates')"
             printf '  %b[A]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '关于与支持范围' 'About and support')"
             printf '  %b[Q]%b %s\n\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '退出' 'Quit')"
@@ -1687,7 +1784,7 @@ main_menu() {
         choice="$MENU_CHOICE"
         [[ -n "$choice" ]] || continue
         case "${choice,,}" in
-            0|1|2|3|4|q|s|c|r|u|a) restore_dynamic_menu_echo ;;
+            0|1|2|3|4|q|s|c|r|m|u|a) restore_dynamic_menu_echo ;;
             *) continue ;;
         esac
         case "${choice,,}" in
@@ -1704,6 +1801,7 @@ main_menu() {
             s) select_download_source ;;
             c) manage_cache ;;
             r) reclaim_sparse_storage ;;
+            m) switch_system_mirrors ;;
             u) manage_updates ;;
             a) show_about ;;
             q|0) return ;;
@@ -1720,6 +1818,7 @@ main_menu() {
 handle_signal() {
     restore_dynamic_menu_echo
     stop_component_version_workers
+    cleanup_mirror_files
     cleanup_update_files
     printf '\n'
     exit 130
@@ -1728,6 +1827,7 @@ handle_signal() {
 cleanup_all() {
     restore_dynamic_menu_echo
     stop_component_version_workers
+    cleanup_mirror_files
     cleanup_update_files
 }
 

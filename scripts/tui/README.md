@@ -38,6 +38,10 @@ mobile 只显示 Anland KDE，GNOME 只显示 Anland GNOME；`none` 或未知桌
 是提交给设备的 discard 范围，实际回收结果应在 Android 宿主端查看 `rootfs.img` 的已分配
 空间。稀疏文件的逻辑大小通常不会改变。
 
+“切换系统软件源”使用 [LinuxMirrors](https://github.com/SuperManito/LinuxMirrors) 的
+`https://linuxmirrors.cn/main.sh`。TUI 会先下载并执行 `bash -n` 语法检查，确认后以 root
+身份运行脚本；该脚本会交互式选择并修改当前容器的系统软件源配置。
+
 安装器成功完成后会将精确的 Release 版本记录到 `/var/lib/droidspaces-tui/components`。
 卸载 Mesa、KWin 或 Mutter 补丁时会恢复发行版官方包，而不是直接删除系统图形栈；
 Hangover Wine 和 Wine 字体则会移除各自的软件包或受管目录。
