@@ -92,7 +92,7 @@ jobs:
         id: resolve
         env:
           ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/superturtlee/anland.git' }}
-          ANLAND_REF: ${{ inputs.anland_ref || 'main' }}
+          ANLAND_REF: ${{ inputs.anland_ref || 'legacy' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -244,6 +244,36 @@ jobs:
               git -C /tmp/anland remote add origin "$ANLAND_REPO"
               git -C /tmp/anland fetch --quiet --depth=1 origin "$ANLAND_COMMIT"
               git -C /tmp/anland checkout --quiet --detach FETCH_HEAD
+
+              producer_source=/tmp/anland/libdisplay_producer
+              case "$BUILD_TARGET" in
+                ubuntu2604) backend_dir=/tmp/anland/producers/kde/anland_backend_v5/src/backends/anland ;;
+                Debian13) backend_dir=/tmp/anland/producers/kde/anland_backend_debian13_v5/src/backends/anland ;;
+                Fedora43|Fedora44) backend_dir=/tmp/anland/producers/kde/anland_backend_fedora43_v5/src/backends/anland ;;
+                Arch) backend_dir=/tmp/anland/producers/kde/anland_backend_Arch_v5/src/backends/anland ;;
+                *) echo "不支持的构建目标：$BUILD_TARGET" >&2; exit 1 ;;
+              esac
+              producer_dir="$backend_dir/libdisplay_producer"
+
+              if [ ! -f "$producer_source/display_producer.h" ]; then
+                echo "Anland 源码缺少共享头文件：$producer_source/display_producer.h" >&2
+                exit 1
+              fi
+              if [ -L "$producer_dir" ]; then
+                rm -f -- "$producer_dir"
+                mkdir -p "$producer_dir"
+                cp -aL -- "$producer_source/." "$producer_dir/"
+              fi
+              if [ -L "$producer_dir" ] || [ ! -d "$producer_dir" ]; then
+                echo "KWin backend 的 display producer 目录无效：$producer_dir" >&2
+                exit 1
+              fi
+              for required_file in display_producer.h display_producer.c protocol.h; do
+                if [ ! -f "$producer_dir/$required_file" ]; then
+                  echo "KWin backend 缺少 display producer 文件：$producer_dir/$required_file" >&2
+                  exit 1
+                fi
+              done
 
               # Debian 13 使用 DEB822 源；上游构建脚本要求 deb-src。
               if [ "$BUILD_TARGET" = Debian13 ] && [ -f /etc/apt/sources.list.d/debian.sources ]; then
@@ -400,7 +430,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/superturtlee/anland.git' }}
-          ANLAND_REF: ${{ inputs.anland_ref || 'main' }}
+          ANLAND_REF: ${{ inputs.anland_ref || 'legacy' }}
           ANLAND_COMMIT: ${{ needs.prepare.outputs.anland_commit }}
           REQUEST_ID: ${{ inputs.request_id || format('自动-{0}', github.run_id) }}
           BUILD_TARGET_INPUT: ${{ inputs.build_target || 'all' }}

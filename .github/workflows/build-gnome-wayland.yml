@@ -89,7 +89,7 @@ jobs:
         id: resolve
         env:
           ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/superturtlee/anland.git' }}
-          ANLAND_REF: ${{ inputs.anland_ref || 'main' }}
+          ANLAND_REF: ${{ inputs.anland_ref || 'legacy' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -337,7 +337,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/superturtlee/anland.git' }}
-          ANLAND_REF: ${{ inputs.anland_ref || 'main' }}
+          ANLAND_REF: ${{ inputs.anland_ref || 'legacy' }}
           ANLAND_COMMIT: ${{ needs.prepare.outputs.anland_commit }}
           REQUEST_ID: ${{ inputs.request_id || format('自动-{0}', github.run_id) }}
           BUILD_TARGET_INPUT: ${{ inputs.build_target || 'all' }}
