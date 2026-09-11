@@ -23,7 +23,7 @@ on:
         description: 要构建的 Anland 分支、标签或提交
         required: true
         type: string
-        default: main
+        default: legacy
       anland_repo:
         description: Anland 仓库地址
         required: true
