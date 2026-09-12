@@ -1,0 +1,86 @@
+name: 清理过期 Actions 运行记录
+
+on:
+  workflow_dispatch:
+    inputs:
+      retention_days:
+        description: 保留最近多少天的已完成运行记录
+        required: true
+        type: number
+        default: 30
+      dry_run:
+        description: 仅列出将删除的运行记录，不执行删除
+        required: true
+        type: boolean
+        default: true
+
+# 删除运行记录会同时移除其日志和关联的 artifact。
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    name: 删除过期运行记录
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RETENTION_DAYS: ${{ inputs.retention_days || '30' }}
+      DRY_RUN: ${{ inputs.dry_run || 'false' }}
+    steps:
+      - name: 删除过期的已完成运行
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! [[ "$RETENTION_DAYS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "保留天数必须是大于零的整数：$RETENTION_DAYS" >&2
+            exit 1
+          fi
+          case "$DRY_RUN" in
+            true|false) ;;
+            *)
+              echo "dry_run 必须是 true 或 false：$DRY_RUN" >&2
+              exit 1
+              ;;
+          esac
+
+          cutoff="$(date -u -d "$RETENTION_DAYS days ago" '+%Y-%m-%dT%H:%M:%SZ')"
+          runs_file="$(mktemp)"
+          trap 'rm -f "$runs_file"' EXIT
+
+          # API 删除运行记录时会一并删除日志及该运行关联的 artifact。
+          # 只选择已完成任务，绝不取消仍在执行或排队的工作流。
+          gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" \
+            --jq '.workflow_runs[] | select(.status == "completed") | [.id, .created_at] | @tsv' \
+            > "$runs_file"
+
+          scanned=0
+          selected=0
+          deleted=0
+          while IFS=$'\t' read -r run_id created_at; do
+            [ -n "$run_id" ] || continue
+            scanned=$((scanned + 1))
+
+            # GitHub 返回固定格式的 UTC ISO-8601 时间，可安全进行字典序比较。
+            [[ "$created_at" < "$cutoff" ]] || continue
+            selected=$((selected + 1))
+            printf '过期运行：%s（创建于 %s）\n' "$run_id" "$created_at"
+
+            if [ "$DRY_RUN" = true ]; then
+              continue
+            fi
+
+            gh api --method DELETE \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
+            deleted=$((deleted + 1))
+          done < "$runs_file"
+
+          printf '已扫描 %d 个已完成运行；匹配 %d 个早于 %s 的运行。\n' \
+            "$scanned" "$selected" "$cutoff"
+          if [ "$DRY_RUN" = true ]; then
+            echo '预演完成：未删除任何运行记录。'
+          else
+            printf '已删除 %d 个运行记录。\n' "$deleted"
+          fi
