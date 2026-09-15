@@ -77,7 +77,8 @@ install_build_dependencies() {
       ;;
     arch)
       pacman -Syu --noconfirm --needed \
-        bash base-devel binutils dbus libx11 libxcomposite xorg-xwayland
+        bash base-devel binutils dbus shadow util-linux \
+        libx11 libxcomposite xorg-xwayland
       ;;
   esac
 }
@@ -151,6 +152,7 @@ build_rpm() {
   mkdir -p "$rpm_top"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
   tar -C "$stage" -czf "$rpm_top/SOURCES/anland-session.tar.gz" .
   cat > "$spec" <<EOF
+%global debug_package %{nil}
 Name:           anland-session
 Version:        $PACKAGE_VERSION
 Release:        1.droidspaces1%{?dist}
@@ -202,7 +204,7 @@ build_arch() {
   local stage="$1"
   local arch_root="$WORK_ROOT/arch"
   local pkgbuild="$arch_root/PKGBUILD"
-  local package_path
+  local package_path builder_user builder_home
 
   mkdir -p "$arch_root"
   tar -C "$stage" -czf "$arch_root/anland-session-${PACKAGE_VERSION}.tar.gz" .
@@ -231,7 +233,30 @@ package() {
 }
 EOF
 
-  (cd "$arch_root" && makepkg --syncdeps --noconfirm --nocheck --skippgpcheck >/dev/null)
+  if (( EUID == 0 )); then
+    command -v useradd >/dev/null 2>&1 || die 'useradd is required to run makepkg safely'
+    command -v userdel >/dev/null 2>&1 || die 'userdel is required to clean up the Arch builder'
+    command -v runuser >/dev/null 2>&1 || die 'runuser is required to run makepkg as a non-root user'
+    builder_user="anland-builder-${BASHPID}"
+    builder_home="$arch_root/home"
+    useradd --system --create-home --user-group \
+      --home-dir "$builder_home" --shell /usr/bin/nologin "$builder_user" || \
+      die 'could not create the temporary Arch builder user'
+    # WORK_ROOT is created mode 0700 for root. Grant only directory traversal
+    # so the temporary builder can reach its owned Arch build directory.
+    chmod o+x "$WORK_ROOT"
+    chown -R "$builder_user:$builder_user" "$arch_root"
+    if ! runuser -u "$builder_user" -- env HOME="$builder_home" \
+        bash -c 'cd "$1" && exec makepkg --noconfirm --nocheck --skippgpcheck >/dev/null' \
+        anland-makepkg "$arch_root"; then
+      userdel --remove "$builder_user" >/dev/null 2>&1 || true
+      die 'makepkg failed while building the Arch package'
+    fi
+    userdel --remove "$builder_user" >/dev/null 2>&1 || \
+      die 'could not remove the temporary Arch builder user'
+  else
+    (cd "$arch_root" && makepkg --noconfirm --nocheck --skippgpcheck >/dev/null)
+  fi
   package_path="$(find "$arch_root" -maxdepth 1 -type f -name 'anland-session-*.pkg.tar.*' -print -quit)"
   [[ -n "$package_path" ]] || die 'makepkg produced no anland-session package'
   cp -a "$package_path" "$OUTPUT_DIR/"
