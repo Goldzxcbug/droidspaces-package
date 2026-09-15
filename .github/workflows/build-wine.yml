@@ -1,5 +1,5 @@
 name: 构建 Hangover Wine 软件包
-run-name: Hangover Wine 软件包 ${{ inputs.request_id || github.run_number }}
+run-name: Hangover Wine 软件包 ${{ github.run_number }}
 
 on:
   schedule:
@@ -31,11 +31,6 @@ on:
         required: true
         type: string
         default: https://github.com/mikugirls/hangover.git
-      request_id:
-        description: 可选的调用方请求 ID
-        required: false
-        type: string
-        default: ''
       publish_cnb:
         description: 同步发布到 CNB 国内镜像
         required: true
@@ -844,7 +839,6 @@ jobs:
           HANGOVER_COMMIT: ${{ needs.prepare.outputs.hangover_commit }}
           HANGOVER_VERSION: ${{ needs.prepare.outputs.hangover_version }}
           BUILD_TARGET_INPUT: ${{ inputs.build_target || 'all' }}
-          REQUEST_ID: ${{ inputs.request_id || format('自动-{0}', github.run_id) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -996,8 +990,6 @@ jobs:
           - 本次新构建：$(join_labels "${updated_targets[@]}")
           - 沿用上一版发布：$(join_labels "${reused_targets[@]}")
           - 当前尚未提供：$(join_labels "${unavailable_targets[@]}")
-          - 请求 ID：${REQUEST_ID:-自动-${GITHUB_RUN_ID}}
-
           内置 DXVK：ARM64EC DLL 自动安装到 Wine 前缀的 system32，x32 DLL 自动安装到 syswow64，并默认启用 native 覆盖。
           每个压缩包只包含一个发行版的软件包。使用 \`install-hangover-wine.sh\` 自动选择、校验，并通过 APT、DNF 或 Pacman 安装匹配的软件包。
           EOF

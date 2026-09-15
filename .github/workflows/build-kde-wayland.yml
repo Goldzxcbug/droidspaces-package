@@ -1,5 +1,5 @@
 name: 构建 Anland KDE Wayland 软件包
-run-name: Anland KDE 软件包 ${{ inputs.request_id || github.run_number }}
+run-name: Anland KDE 软件包 ${{ github.run_number }}
 
 on:
   schedule:
@@ -29,11 +29,6 @@ on:
         required: true
         type: string
         default: https://github.com/superturtlee/anland.git
-      request_id:
-        description: 可选的调用方请求 ID
-        required: false
-        type: string
-        default: ''
       publish_cnb:
         description: 同步发布到 CNB 国内镜像
         required: true
@@ -450,7 +445,6 @@ jobs:
           ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/superturtlee/anland.git' }}
           ANLAND_REF: ${{ inputs.anland_ref || 'legacy' }}
           ANLAND_COMMIT: ${{ needs.prepare.outputs.anland_commit }}
-          REQUEST_ID: ${{ inputs.request_id || format('自动-{0}', github.run_id) }}
           BUILD_TARGET_INPUT: ${{ inputs.build_target || 'all' }}
         shell: bash
         run: |
@@ -791,7 +785,6 @@ jobs:
             "- ${replacement_note}" \
             "- 发布生成时间：${build_time}" \
             '- 构建时间取自压缩包内的构建元数据；缺失时显示固定发布的时间。' \
-            "- 软件包请求 ID：${REQUEST_ID:-自动-${GITHUB_RUN_ID}}" \
             "- 软件包工作流运行号：${GITHUB_RUN_ID}" \
             "- 本次构建源码（仅更新资产）：\`${ANLAND_REPO}\` @ \`${ANLAND_COMMIT}\`（请求：\`${ANLAND_REF}\`）" \
             "- 工作流提交：\`${GITHUB_SHA}\`" \
