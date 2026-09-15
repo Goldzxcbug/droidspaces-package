@@ -310,7 +310,24 @@ install_and_validate() {
       rpm -q anland-session "$XWAYLAND_PACKAGE" >/dev/null
       ;;
     arch)
-      pacman -U --noconfirm "$package_path" >/dev/null
+      # The package is built locally and is intentionally not signed. Keep
+      # the system pacman configuration unchanged and allow this one local
+      # installation to proceed with a temporary configuration instead.
+      local pacman_conf="$WORK_ROOT/pacman.conf"
+      [[ -r /etc/pacman.conf ]] || die 'cannot read /etc/pacman.conf'
+      cp /etc/pacman.conf "$pacman_conf"
+      if grep -Eq '^[[:space:]]*#?[[:space:]]*LocalFileSigLevel[[:space:]]*=' \
+        "$pacman_conf"; then
+        sed -i -E \
+          's/^[[:space:]]*#?[[:space:]]*LocalFileSigLevel[[:space:]]*=.*/LocalFileSigLevel = Optional/' \
+          "$pacman_conf"
+      elif grep -qE '^\[options\][[:space:]]*$' "$pacman_conf"; then
+        sed -i '/^\[options\][[:space:]]*$/a LocalFileSigLevel = Optional' \
+          "$pacman_conf"
+      else
+        die 'pacman.conf has no [options] section'
+      fi
+      pacman --config "$pacman_conf" -U --noconfirm "$package_path" >/dev/null
       pacman -Q anland-session "$XWAYLAND_PACKAGE" >/dev/null
       ;;
   esac
