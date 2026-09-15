@@ -46,7 +46,7 @@ MENU_ESCAPE_SEQUENCE=""
 MENU_TTY_ECHO_DISABLED=false
 DYNAMIC_MENU_DRAWN=false
 
-readonly -a COMPONENT_NAMES=(mesa hangover fonts kde gnome)
+readonly -a COMPONENT_NAMES=(mesa hangover fonts kde gnome anland-next)
 readonly -a SPINNER_FRAMES=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
 declare -A COMPONENT_CURRENT_VERSIONS=()
 declare -A COMPONENT_UPSTREAM_VERSIONS=()
@@ -460,6 +460,7 @@ installer_names() {
         fonts) printf '%s\n%s\n' "install-winefonts.sh" "install-winefonts" ;;
         kde) printf '%s\n%s\n' "install-anland-kde.sh" "install-anland-kde" ;;
         gnome) printf '%s\n%s\n' "install-anland-gnome.sh" "install-anland-gnome" ;;
+        anland-next) printf '%s\n%s\n' "install-anland-next.sh" "install-anland-next" ;;
         *) return 1 ;;
     esac
 }
@@ -525,6 +526,12 @@ component_supported() {
         gnome)
             case "$SYSTEM_ID:$SYSTEM_VERSION" in
                 debian:13*|ubuntu:26.04*) return 0 ;;
+                *) return 1 ;;
+            esac
+            ;;
+        anland-next)
+            case "$SYSTEM_ID:$SYSTEM_VERSION" in
+                arch:*|archarm:*|debian:13*|ubuntu:26.04*|fedora:43*|fedora:44*) return 0 ;;
                 *) return 1 ;;
             esac
             ;;
@@ -610,6 +617,9 @@ detected_component_package_version() {
         gnome)
             version="$(installed_package_version mutter-common mutter)" || true
             ;;
+        anland-next)
+            version="$(installed_package_version anland-session)" || true
+            ;;
     esac
     if [[ -n "$version" ]]; then
         printf '%s' "$version"
@@ -663,6 +673,9 @@ managed_component_installed() {
         gnome)
             [[ -s /var/lib/anland-gnome/apt-holds ]]
             ;;
+        anland-next)
+            detected_component_package_version anland-next >/dev/null 2>&1
+            ;;
         *) return 1 ;;
     esac
 }
@@ -682,6 +695,11 @@ component_versions_match() {
         kde|gnome)
             current="${current#*:}"
             [[ "$current" == "$upstream"-* ]]
+            ;;
+        anland-next)
+            # Debian uses the bare package version; RPM and pacman append
+            # their package-release suffixes to the same upstream version.
+            [[ "$current" == "$upstream" || "$current" == "$upstream"-* ]]
             ;;
         *) return 1 ;;
     esac
@@ -738,6 +756,32 @@ component_release_parts() {
             case "$SYSTEM_ID:$SYSTEM_VERSION" in
                 debian:13*) prefix="anland-gnome-debian13-mutter-"; suffix="-arm64.tar.gz" ;;
                 ubuntu:26.04*) prefix="anland-gnome-ubuntu2604-mutter-"; suffix="-arm64.tar.gz" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        anland-next)
+            tag="anland-session-packages"
+            case "$SYSTEM_ID:$SYSTEM_VERSION" in
+                arch:*|archarm:*|archlinux:*)
+                    prefix="anland-session-arch-anland-session-"
+                    suffix="-aarch64.pkg.tar.zst"
+                    ;;
+                debian:13*)
+                    prefix="anland-session-debian13-anland-session_"
+                    suffix="_arm64.deb"
+                    ;;
+                ubuntu:26.04*)
+                    prefix="anland-session-ubuntu2604-anland-session_"
+                    suffix="_arm64.deb"
+                    ;;
+                fedora:43*)
+                    prefix="anland-session-fedora43-anland-session-"
+                    suffix=".aarch64.rpm"
+                    ;;
+                fedora:44*)
+                    prefix="anland-session-fedora44-anland-session-"
+                    suffix=".aarch64.rpm"
+                    ;;
                 *) return 1 ;;
             esac
             ;;
@@ -843,7 +887,7 @@ component_versions_pending() {
 
 component_visible() {
     case "$1" in
-        mesa|hangover|fonts) return 0 ;;
+        mesa|hangover|fonts|anland-next) return 0 ;;
         kde|gnome)
             [[ "$DESKTOP_COMPONENT_MODE" == choose || "$DESKTOP_COMPONENT" == "$1" ]]
             ;;
@@ -1729,11 +1773,14 @@ show_about() {
     draw_header
     printf '\n%b%s%b\n\n' "$COLOR_BOLD" "$(msg '关于' 'About')" "$COLOR_RESET"
     printf '%s\n' "$(msg \
-        '此工具统一调用仓库内的五个独立安装器；下载、校验、安装和软件包锁定仍由各安装器负责。' \
-        'This tool dispatches the five standalone installers. Each installer still owns download, verification, installation, and package locking.')"
+        '此工具统一调用仓库内的六个独立安装器；下载、校验、安装和软件包管理仍由各安装器负责。' \
+        'This tool dispatches the six standalone installers. Each installer still owns download, verification, installation, and package management.')"
     printf '\n%s\n' "$(msg \
         'GNOME Anland 仅支持 Debian 13 和 Ubuntu 26.04；KDE Anland 还支持 Fedora 43/44 与 Arch Linux。' \
         'GNOME Anland supports Debian 13 and Ubuntu 26.04. KDE Anland also supports Fedora 43/44 and Arch Linux.')"
+    printf '\n%s\n' "$(msg \
+        'Anland Next session 支持 Debian 13、Ubuntu 26.04、Fedora 43/44 和 Arch Linux。' \
+        'Anland Next session supports Debian 13, Ubuntu 26.04, Fedora 43/44, and Arch Linux.')"
     printf '\n%s\n' "$(msg \
         '桌面更新项根据 /etc/droidspaces-desktop.conf 中的 DESKTOP 字段选择。' \
         'The desktop update entry is selected by the DESKTOP field in /etc/droidspaces-desktop.conf.')"
@@ -1762,6 +1809,7 @@ main_menu() {
                     "$(msg 'Anland 桌面组件' 'Anland desktop components')" \
                     "$(desktop_selection_status_display)"
             fi
+            print_component_status "5" "Anland Next session" "anland-next"
             printf '\n'
             printf '  %b[S]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '切换下载源' 'Change download source')"
             printf '  %b[C]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '清理下载缓存' 'Clean download cache')"
@@ -1784,7 +1832,7 @@ main_menu() {
         choice="$MENU_CHOICE"
         [[ -n "$choice" ]] || continue
         case "${choice,,}" in
-            0|1|2|3|4|q|s|c|r|m|u|a) restore_dynamic_menu_echo ;;
+            0|1|2|3|4|5|q|s|c|r|m|u|a) restore_dynamic_menu_echo ;;
             *) continue ;;
         esac
         case "${choice,,}" in
@@ -1798,6 +1846,7 @@ main_menu() {
                     desktop_component_selection_menu
                 fi
                 ;;
+            5) component_menu "anland-next" "Anland Next session" ;;
             s) select_download_source ;;
             c) manage_cache ;;
             r) reclaim_sparse_storage ;;

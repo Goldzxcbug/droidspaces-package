@@ -23,7 +23,8 @@ RootFS 使用的一次性引导器，不会安装到容器；TUI 更新时只会
 主菜单只显示组件状态：黄色“检测到更新”、绿色“当前已是最新版本”或红色“未安装”。
 后台查询期间显示动态 Braille 符号，菜单输入不会等待网络；单项在 10 秒内未取得有效
 版本时显示“超时”。选择组件进入二级菜单后才显示当前/上游版本，并提供“更新/安装”
-和“卸载”。桌面更新项读取 `/etc/droidspaces-desktop.conf` 的 `DESKTOP` 字段：KDE/KDE
+和“卸载”。Anland Next session 作为独立组件管理，不会改变桌面选择。桌面更新项读取
+`/etc/droidspaces-desktop.conf` 的 `DESKTOP` 字段：KDE/KDE
 mobile 只显示 Anland KDE，GNOME 只显示 Anland GNOME；`none` 或未知桌面进入选择页，可
 选择 Anland KWin 或 GNOME。旧 RootFS 缺少配置时按已安装组件兜底，无法判断时同样进入
 选择页。成功安装 Anland KDE 或 GNOME 后，安装器只把 `DESKTOP=none` 原子更新为对应桌面，
