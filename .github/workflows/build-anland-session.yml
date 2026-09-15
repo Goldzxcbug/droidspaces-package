@@ -97,6 +97,7 @@ jobs:
           git init --quiet "$source_dir"
           git -C "$source_dir" remote add origin "$ANLAND_REPO"
           git -C "$source_dir" fetch --quiet --depth=1 origin "$ANLAND_REF"
+          git -C "$source_dir" checkout --quiet --detach FETCH_HEAD
           anland_commit="$(git -C "$source_dir" rev-parse FETCH_HEAD)"
           git -C "$source_dir" cat-file -e "${anland_commit}^{commit}"
           for required in \
