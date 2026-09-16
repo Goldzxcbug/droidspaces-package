@@ -374,6 +374,14 @@ jobs:
           missing_targets=()
           for target in "${release_targets[@]}"; do
             artifact_dir="$release_dir/anland-session-${target}-arm64"
+            # actions/download-artifact 在匹配到的 artifact 只有一个时不建
+            # 子目录，而是直接解到 path 下（与 merge-multiple 无关）。单目标
+            # dispatch 就会走到这个分支，此时用 manifest 里的 target 认领它。
+            if [ ! -f "$artifact_dir/manifest.env" ] && \
+               [ -f "$release_dir/manifest.env" ] && \
+               [ "$(sed -n 's/^target=//p' "$release_dir/manifest.env" | sed -n '1p')" = "$target" ]; then
+              artifact_dir="$release_dir"
+            fi
             manifest="$artifact_dir/manifest.env"
             if [ -f "$manifest" ]; then
               package_name="$(sed -n 's/^package=//p' "$manifest" | sed -n '1p')"
