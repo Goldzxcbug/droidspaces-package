@@ -251,10 +251,15 @@ runtime_dependency_packages() {
     ldd "$stage/usr/lib/anland/bwrap" 2>/dev/null
   } | awk '/=> \//{ print $3 }' | sort -u | while IFS= read -r file; do
     [ -n "$file" ] || continue
+    # ldd reports the path the loader opened; on Debian/Ubuntu that is the /lib
+    # alias while the package database records the merged-usr path.
+    file="$(readlink -f "$file" 2>/dev/null || printf '%s' "$file")"
+    # Every branch stays non-fatal: an unresolved file is skipped, not fatal,
+    # and a failing lookup must not take the loop down with it.
     case "$PACKAGE_MANAGER" in
-      apt)    package="$(dpkg -S "$file" 2>/dev/null | sed -n '1{s/:.*//;s/,.*//;}p')" ;;
-      dnf)    package="$(rpm -qf --qf '%{NAME}' "$file" 2>/dev/null || true)" ;;
-      pacman) package="$(pacman -Qoq "$file" 2>/dev/null || true)" ;;
+      apt)    package="$(dpkg -S "$file" 2>/dev/null | sed -n '1{s/:.*//;s/,.*//;}p')" || true ;;
+      dnf)    package="$(rpm -qf --qf '%{NAME}' "$file" 2>/dev/null)" || true ;;
+      pacman) package="$(pacman -Qoq "$file" 2>/dev/null)" || true ;;
     esac
     if [ -z "$package" ]; then
       # e.g. a file installed by the Mesa for Android archive, which no
@@ -275,9 +280,14 @@ adapt_session_path() {
   local session_script="$1"
   local anchor="printf 'PATH=%s\\n' \"\$APP_PATH\" >> \"\$ENVF\""
   local temporary="$session_script.new"
+  local mode
 
   grep -Fqx "$anchor" "$session_script" || \
     die 'the Anland session script has no PATH publication line to adapt'
+  # awk writes through a shell redirect, so the replacement would come out mode
+  # 0644 and the launcher has to stay executable.
+  mode="$(stat -c '%a' "$session_script")" || \
+    die "cannot read the mode of $session_script"
   # The anchor goes through the environment: awk -v would expand its \n escape.
   if ! ANLAND_SESSION_ANCHOR="$anchor" \
       awk -v prefix="$ANLAND_LIBEXEC_DIR" '
@@ -292,10 +302,13 @@ adapt_session_path() {
     die 'failed to adapt the session PATH for the packaged binaries'
   fi
   mv -f -- "$temporary" "$session_script"
+  chmod "$mode" "$session_script"
 
   grep -Fq "APP_PATH=\"$ANLAND_LIBEXEC_DIR:\$APP_PATH\"" "$session_script" || \
     die 'the session PATH adaptation did not take'
   bash -n "$session_script" || die 'the adapted session script is not valid bash'
+  [[ -x "$session_script" ]] || \
+    die 'the adapted session script lost its executable bit'
 }
 
 prepare_stage() {
