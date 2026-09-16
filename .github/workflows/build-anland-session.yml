@@ -134,6 +134,7 @@ jobs:
           name: anland-session-vendor
           path: ${{ runner.temp }}/anland-vendor/
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 1
 
   build:
