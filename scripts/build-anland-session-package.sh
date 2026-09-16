@@ -259,6 +259,7 @@ runtime_dependency_packages() {
     # ldd reports the path the loader opened; on Debian/Ubuntu that is the /lib
     # alias while the package database records the merged-usr path.
     file="$(readlink -f "$file" 2>/dev/null || printf '%s' "$file")"
+    [ -n "$file" ] || continue
     # Every branch stays non-fatal: an unresolved file is skipped, not fatal,
     # and a failing lookup must not take the loop down with it.
     case "$PACKAGE_MANAGER" in
