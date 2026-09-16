@@ -341,6 +341,17 @@ prepare_stage() {
   build_bwrap "$stage$ANLAND_LIBEXEC_DIR/bwrap"
   build_xwayland "$stage$ANLAND_LIBEXEC_DIR/Xwayland"
 
+  # Xwayland is built 'debugoptimized' (-O2 -g), so it carries its debug
+  # information. rpmbuild and makepkg strip their payloads, dpkg-deb does not,
+  # which left the .deb three times the size of the other two; strip here so
+  # all three formats ship the same binaries.
+  local binary
+  for binary in "$stage/usr/bin/anland-miniwm" \
+                "$stage$ANLAND_LIBEXEC_DIR/Xwayland" \
+                "$stage$ANLAND_LIBEXEC_DIR/bwrap"; do
+    strip "$binary" || die "could not strip $(basename "$binary")"
+  done
+
   install -m 0755 "$source_dir/anland-session.sh" \
     "$stage/usr/bin/anland-session"
   adapt_session_path "$stage/usr/bin/anland-session"
