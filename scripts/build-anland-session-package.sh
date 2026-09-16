@@ -29,6 +29,11 @@ die() {
   exit 1
 }
 
+# For use inside functions whose stdout is captured by the caller.
+warn() {
+  printf '[anland-session] %s\n' "$*" >&2
+}
+
 comma_join() {
   local joined="" item
   for item in "$@"; do
@@ -257,14 +262,16 @@ runtime_dependency_packages() {
     # Every branch stays non-fatal: an unresolved file is skipped, not fatal,
     # and a failing lookup must not take the loop down with it.
     case "$PACKAGE_MANAGER" in
-      apt)    package="$(dpkg -S "$file" 2>/dev/null | sed -n '1{s/:.*//;s/,.*//;}p')" || true ;;
+      # dpkg -S prints "<package>[:<arch>]: <path>" (several names on
+      # diversions), so take the first name before the colon.
+      apt)    package="$(dpkg -S "$file" 2>/dev/null | head -n1 | cut -d: -f1 | cut -d, -f1)" || true ;;
       dnf)    package="$(rpm -qf --qf '%{NAME}' "$file" 2>/dev/null)" || true ;;
       pacman) package="$(pacman -Qoq "$file" 2>/dev/null)" || true ;;
     esac
     if [ -z "$package" ]; then
       # e.g. a file installed by the Mesa for Android archive, which no
       # distribution package owns
-      log "skipping $file — no distribution package owns it"
+      warn "skipping $file — no distribution package owns it"
       continue
     fi
     printf '%s\n' "$package" | tr ' ' '\n'
