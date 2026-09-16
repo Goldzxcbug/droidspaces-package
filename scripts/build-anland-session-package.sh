@@ -205,6 +205,11 @@ build_arch() {
   local arch_root="$WORK_ROOT/arch"
   local pkgbuild="$arch_root/PKGBUILD"
   local package_path builder_user builder_home
+  # Arch Linux ARM ships makepkg.conf with PKGEXT='.pkg.tar.xz' while x86_64
+  # Arch uses '.pkg.tar.zst'. The release assets and the Anland Next installer
+  # both expect the zstd name, so pin the extension. makepkg preserves PKGEXT
+  # from the environment and re-applies it after sourcing makepkg.conf.
+  local arch_pkgext=".$PACKAGE_FORMAT"
 
   mkdir -p "$arch_root"
   tar -C "$stage" -czf "$arch_root/anland-session-${PACKAGE_VERSION}.tar.gz" .
@@ -246,7 +251,8 @@ EOF
     # so the temporary builder can reach its owned Arch build directory.
     chmod o+x "$WORK_ROOT"
     chown -R "$builder_user:$builder_user" "$arch_root"
-    if ! runuser -u "$builder_user" -- env HOME="$builder_home" \
+    if ! runuser -u "$builder_user" -- \
+        env HOME="$builder_home" PKGEXT="$arch_pkgext" \
         bash -c 'cd "$1" && exec makepkg --noconfirm --nocheck --skippgpcheck >/dev/null' \
         anland-makepkg "$arch_root"; then
       userdel --remove "$builder_user" >/dev/null 2>&1 || true
@@ -255,10 +261,13 @@ EOF
     userdel --remove "$builder_user" >/dev/null 2>&1 || \
       die 'could not remove the temporary Arch builder user'
   else
-    (cd "$arch_root" && makepkg --noconfirm --nocheck --skippgpcheck >/dev/null)
+    (cd "$arch_root" && PKGEXT="$arch_pkgext" \
+      makepkg --noconfirm --nocheck --skippgpcheck >/dev/null)
   fi
   package_path="$(find "$arch_root" -maxdepth 1 -type f -name 'anland-session-*.pkg.tar.*' -print -quit)"
   [[ -n "$package_path" ]] || die 'makepkg produced no anland-session package'
+  [[ "$package_path" == *"$arch_pkgext" ]] || \
+    die "makepkg produced ${package_path##*/} instead of a ${arch_pkgext#.} package"
   cp -a "$package_path" "$OUTPUT_DIR/"
   printf '%s\n' "$OUTPUT_DIR/${package_path##*/}"
 }
