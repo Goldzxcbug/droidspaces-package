@@ -5,8 +5,15 @@ set -euo pipefail
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly TARGET="${TARGET:?TARGET is required}"
 readonly ANLAND_SOURCE_DIR="${ANLAND_SOURCE_DIR:?ANLAND_SOURCE_DIR is required}"
+# The patched bubblewrap and Xwayland sources, staged by
+# stage-anland-session-vendor.sh (the same job, before this one runs).
+readonly ANLAND_VENDOR_DIR="${ANLAND_VENDOR_DIR:?ANLAND_VENDOR_DIR is required}"
 readonly PACKAGE_VERSION="${PACKAGE_VERSION:-0.1.0}"
 readonly SOURCE_COMMIT="${SOURCE_COMMIT:-unknown}"
+# Where the session resolves the private Xwayland and bwrap builds from; the
+# session script prepends this to PATH, so the distribution binaries it falls
+# back on are never replaced on disk.
+readonly ANLAND_LIBEXEC_DIR=/usr/lib/anland
 
 OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/out/$TARGET}"
 if [[ "$OUTPUT_DIR" != /* ]]; then
@@ -22,12 +29,26 @@ die() {
   exit 1
 }
 
+comma_join() {
+  local joined="" item
+  for item in "$@"; do
+    joined="${joined}${joined:+, }${item}"
+  done
+  printf '%s\n' "$joined"
+}
+
 [[ "$OUTPUT_DIR" == "$REPO_ROOT/out/"* ]] || \
   die "OUTPUT_DIR must be below $REPO_ROOT/out: $OUTPUT_DIR"
 [[ "$PACKAGE_VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]] || \
   die "PACKAGE_VERSION must be numeric (for example 0.1.0)"
 [[ "$ANLAND_SOURCE_DIR" == /* && -d "$ANLAND_SOURCE_DIR" ]] || \
   die "Anland source directory is missing: $ANLAND_SOURCE_DIR"
+[[ "$ANLAND_VENDOR_DIR" == /* && -d "$ANLAND_VENDOR_DIR" ]] || \
+  die "Anland vendor directory is missing: $ANLAND_VENDOR_DIR"
+[[ -f "$ANLAND_VENDOR_DIR/bubblewrap/bubblewrap.c" ]] || \
+  die "the staged bubblewrap tree is missing: $ANLAND_VENDOR_DIR/bubblewrap"
+[[ -f "$ANLAND_VENDOR_DIR/xserver/hw/xwayland/meson.build" ]] || \
+  die "the staged xserver tree is missing: $ANLAND_VENDOR_DIR/xserver"
 case "$(uname -m)" in
   aarch64|arm64) ;;
   *) die "this workflow must build natively on ARM64, got $(uname -m)" ;;
@@ -59,6 +80,42 @@ case "$TARGET" in
     ;;
 esac
 
+# Xwayland's build dependencies come from the distribution's own list (the
+# vendored tree is xserver's xwayland-24.1, so the -dev versions match the
+# libraries that end up linked). That needs the source index, which is off by
+# default; the deb-src/dnf-source entries are index metadata only — no
+# distribution source code is fetched and no system package is replaced.
+enable_apt_source_packages() {
+  if grep -rqsE '^Types:.*deb-src|^[[:space:]]*deb-src ' \
+      /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
+    return 0
+  fi
+  local suite_file
+  for suite_file in /etc/apt/sources.list.d/ubuntu.sources \
+                    /etc/apt/sources.list.d/debian.sources; do
+    [ -f "$suite_file" ] || continue
+    log "enabling deb-src entries in $suite_file"
+    sed -i 's/^Types: deb$/Types: deb deb-src/' "$suite_file"
+  done
+  if [ -f /etc/apt/sources.list ] && \
+      ! grep -qE '^[[:space:]]*deb-src ' /etc/apt/sources.list; then
+    sed -i 's|^deb \(.*\)$|deb \1\ndeb-src \1|' /etc/apt/sources.list
+  fi
+  apt-get update
+}
+
+enable_dnf_source_packages() {
+  if dnf repolist --enabled 2>/dev/null | grep -q 'fedora-source'; then
+    return 0
+  fi
+  log 'enabling the fedora-source repository'
+  dnf config-manager --set-enabled fedora-source >/dev/null 2>&1 || \
+    dnf config-manager setopt fedora-source.enabled=1 >/dev/null 2>&1 || \
+    die 'could not enable the fedora-source repository'
+  dnf repolist --enabled | grep -q 'fedora-source' || \
+    die 'the fedora-source repository is still disabled'
+}
+
 install_build_dependencies() {
   case "$TARGET" in
     ubuntu2604|debian13)
@@ -67,20 +124,159 @@ install_build_dependencies() {
       apt-get install -y --no-install-recommends \
         bash build-essential dpkg-dev \
         dbus-x11 xwayland libx11-6 libxcomposite1 \
-        libx11-dev libxcomposite-dev
+        libx11-dev libxcomposite-dev \
+        meson ninja-build pkg-config patch ca-certificates \
+        libcap-dev
+      enable_apt_source_packages
+      log 'installing the Xwayland build dependencies'
+      apt-get build-dep -y xwayland || die 'apt-get build-dep xwayland failed'
       ;;
     fedora43|fedora44)
       dnf install -y --setopt=install_weak_deps=False \
         bash gcc binutils rpm-build rpmdevtools \
         dbus-x11 xorg-x11-server-Xwayland libX11 libXcomposite \
-        libX11-devel libXcomposite-devel
+        libX11-devel libXcomposite-devel \
+        meson ninja-build pkgconf-pkg-config patch ca-certificates \
+        libcap-devel dnf-plugins-core
+      enable_dnf_source_packages
+      log 'installing the Xwayland build dependencies'
+      dnf builddep -y --setopt=install_weak_deps=False \
+        xorg-x11-server-Xwayland || \
+        die 'dnf builddep xorg-x11-server-Xwayland failed'
       ;;
     arch)
+      # Arch has no builddep equivalent, so the Xwayland list is spelled out:
+      # everything hw/xwayland needs that has no meson fallback (xtrans,
+      # libxcvt, libxkbfile, libxfont2, wayland-protocols).
       pacman -Syu --noconfirm --needed \
         bash base-devel binutils dbus shadow util-linux \
-        libx11 libxcomposite xorg-xwayland
+        libx11 libxcomposite xorg-xwayland \
+        meson ninja pkgconf patch ca-certificates libcap \
+        xorgproto xtrans pixman libxkbfile libxfont2 libxcvt \
+        wayland wayland-protocols libxshmfence libdrm libepoxy mesa libgcrypt
       ;;
   esac
+}
+
+# ---- vendored components ---------------------------------------------------
+# bubblewrap and Xwayland are built from the tree staged by
+# stage-anland-session-vendor.sh, which has the Anland patches applied.
+
+bwrap_sandbox_selfcheck() {
+  local bwrap="$1"
+  # The distribution bubblewrap sizes its mountinfo index as
+  # xcalloc(max_id + 1). KernelSU+SuSFS counts every mount a KernelSU-domain
+  # process creates from 2e9, i.e. 16 GB, which is what makes glycin's
+  # sandboxed loaders die under the RLIMIT_AS they set before exec'ing bwrap
+  # (patches/bubblewrap/README.anland.md). Starting a sandbox under a 2 GB cap
+  # is the regression test — the patched lookup is proportional to the mount
+  # count instead. Both lib/ and lib64/ get a symlink so the dynamic loader is
+  # reachable whichever layout the distribution uses.
+  ( ulimit -v 2000000 && \
+    "$bwrap" --unshare-all --ro-bind /usr /usr \
+      --symlink usr/lib /lib --symlink usr/lib64 /lib64 --dev /dev \
+      /usr/bin/true ) >/dev/null 2>&1
+}
+
+build_bwrap() {
+  local output="$1"
+  local src="$ANLAND_VENDOR_DIR/bubblewrap"
+
+  log 'building the patched bubblewrap'
+  cc -O2 -Wall -D_GNU_SOURCE -I "$src" -o "$output" "$src"/*.c -lcap
+  chmod 0755 "$output"
+
+  bwrap_sandbox_selfcheck "$output" || \
+    die 'the built bubblewrap cannot start a sandbox under a 2 GB address-space limit'
+  "$output" --version | grep -Fq 'anland' || \
+    die 'the built bubblewrap is not identified as the anland build'
+  log "bwrap: $("$output" --version)"
+}
+
+build_xwayland() {
+  local output="$1"
+  local src="$ANLAND_VENDOR_DIR/xserver"
+  local build_src="$WORK_ROOT/xserver"
+  local version
+
+  log 'building the patched Xwayland (this takes a few minutes)'
+  rm -rf -- "$build_src"
+  cp -a "$src" "$build_src"
+  (
+    cd "$build_src"
+    meson setup build -Dxvfb=false
+    meson compile -C build
+  ) || die 'the Xwayland build failed'
+  [ -x "$build_src/build/hw/xwayland/Xwayland" ] || \
+    die 'the Xwayland build produced no binary'
+  install -m 0755 "$build_src/build/hw/xwayland/Xwayland" "$output"
+
+  version="$("$output" -version 2>&1 || true)"
+  printf '%s\n' "$version" | grep -Fq 'Xwayland' || \
+    die 'the built Xwayland does not run'
+  log "Xwayland: $(printf '%s\n' "$version" | sed -n '1p')"
+}
+
+# The meson-built Xwayland links whatever libraries this distribution provided,
+# which is not something to hard-code: resolve the shared libraries of the
+# packaged binaries back to the packages that own them and declare those.
+# (rpmbuild derives the same Requires from the ELF headers on Fedora, so this
+# only feeds the deb and pacman metadata.)
+runtime_dependency_packages() {
+  local stage="$1"
+  local file package
+
+  {
+    ldd "$stage/usr/bin/anland-miniwm" 2>/dev/null
+    ldd "$stage/usr/lib/anland/Xwayland" 2>/dev/null
+    ldd "$stage/usr/lib/anland/bwrap" 2>/dev/null
+  } | awk '/=> \//{ print $3 }' | sort -u | while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    case "$PACKAGE_MANAGER" in
+      apt)    package="$(dpkg -S "$file" 2>/dev/null | sed -n '1{s/:.*//;s/,.*//;}p')" ;;
+      dnf)    package="$(rpm -qf --qf '%{NAME}' "$file" 2>/dev/null || true)" ;;
+      pacman) package="$(pacman -Qoq "$file" 2>/dev/null || true)" ;;
+    esac
+    if [ -z "$package" ]; then
+      # e.g. a file installed by the Mesa for Android archive, which no
+      # distribution package owns
+      log "skipping $file — no distribution package owns it"
+      continue
+    fi
+    printf '%s\n' "$package" | tr ' ' '\n'
+  done | sort -u
+}
+
+# The session resolves both Xwayland and bwrap through PATH: it exports
+# APP_PATH into its own environment and into the systemd user manager, which is
+# also what glycin's `bwrap` lookup sees. Upstream prepends ~/.local/bin there
+# for the on-device build; a system package points at its private directory
+# instead, leaving the distribution binaries in place as the fallback.
+adapt_session_path() {
+  local session_script="$1"
+  local anchor="printf 'PATH=%s\\n' \"\$APP_PATH\" >> \"\$ENVF\""
+  local temporary="$session_script.new"
+
+  grep -Fqx "$anchor" "$session_script" || \
+    die 'the Anland session script has no PATH publication line to adapt'
+  # The anchor goes through the environment: awk -v would expand its \n escape.
+  if ! ANLAND_SESSION_ANCHOR="$anchor" \
+      awk -v prefix="$ANLAND_LIBEXEC_DIR" '
+        $0 == ENVIRON["ANLAND_SESSION_ANCHOR"] && !inserted {
+          print "APP_PATH=\"" prefix ":$APP_PATH\""
+          inserted = 1
+        }
+        { print }
+        END { exit inserted ? 0 : 1 }
+      ' "$session_script" > "$temporary"; then
+    rm -f -- "$temporary"
+    die 'failed to adapt the session PATH for the packaged binaries'
+  fi
+  mv -f -- "$temporary" "$session_script"
+
+  grep -Fq "APP_PATH=\"$ANLAND_LIBEXEC_DIR:\$APP_PATH\"" "$session_script" || \
+    die 'the session PATH adaptation did not take'
+  bash -n "$session_script" || die 'the adapted session script is not valid bash'
 }
 
 prepare_stage() {
@@ -93,6 +289,7 @@ prepare_stage() {
   [[ -f "$ANLAND_SOURCE_DIR/LICENSE" ]] || die "missing Anland LICENSE"
 
   mkdir -p "$stage/usr/bin" "$stage/usr/lib/systemd/user"
+  mkdir -p "$stage$ANLAND_LIBEXEC_DIR"
   mkdir -p "$stage/usr/share/doc/anland-session" \
            "$stage/usr/share/licenses/anland-session"
 
@@ -101,8 +298,12 @@ prepare_stage() {
     "$source_dir/miniwm.c" -lX11 -lXcomposite
   chmod 0755 "$stage/usr/bin/anland-miniwm"
 
+  build_bwrap "$stage$ANLAND_LIBEXEC_DIR/bwrap"
+  build_xwayland "$stage$ANLAND_LIBEXEC_DIR/Xwayland"
+
   install -m 0755 "$source_dir/anland-session.sh" \
     "$stage/usr/bin/anland-session"
+  adapt_session_path "$stage/usr/bin/anland-session"
 
   # The source tarball's unit targets the per-user setup.sh layout. A system
   # package installs the executable in /usr/bin instead.
@@ -133,7 +334,7 @@ Section: x11
 Priority: optional
 Architecture: arm64
 Maintainer: Anland Next maintainers <noreply@anland.invalid>
-Depends: bash, dbus-x11, xwayland, libx11-6, libxcomposite1
+Depends: bash, dbus-x11, xwayland, libpam-systemd, $(comma_join "${RUNTIME_PACKAGES[@]}")
 Description: Anland Next rootfs session and Xwayland mini window manager
  Provides the D-Bus/Wayland/Xwayland session launcher and the precompiled
  mini-wm used by Anland Next.
@@ -166,6 +367,9 @@ Requires:       dbus-x11
 Requires:       xorg-x11-server-Xwayland
 Requires:       libX11
 Requires:       libXcomposite
+# pam_systemd.so: without it the systemd user manager exits with
+# "XDG_RUNTIME_DIR is not set" and the session service never starts.
+Requires:       systemd-pam
 
 %description
 Provides the D-Bus/Wayland/Xwayland session launcher and the precompiled
@@ -186,6 +390,8 @@ cp -a ./* %{buildroot}/
 /usr/bin/anland-miniwm
 /usr/bin/anland-session
 /usr/lib/systemd/user/anland-session.service
+/usr/lib/anland/Xwayland
+/usr/lib/anland/bwrap
 /usr/share/doc/anland-session/copyright
 
 %changelog
@@ -220,7 +426,7 @@ pkgrel=1
 pkgdesc='Anland Next rootfs session and Xwayland mini window manager'
 arch=('aarch64')
 license=('GPL-3.0-only')
-depends=('bash' 'dbus' 'xorg-xwayland' 'libx11' 'libxcomposite')
+depends=('bash' 'dbus' 'xorg-xwayland' 'systemd' $RUNTIME_DEPENDS_ARCH)
 source=("anland-session-\${pkgver}.tar.gz")
 sha256sums=('SKIP')
 
@@ -229,6 +435,10 @@ package() {
     "\$pkgdir/usr/bin/anland-miniwm"
   install -Dm755 "\$srcdir/usr/bin/anland-session" \\
     "\$pkgdir/usr/bin/anland-session"
+  install -Dm755 "\$srcdir/usr/lib/anland/Xwayland" \\
+    "\$pkgdir/usr/lib/anland/Xwayland"
+  install -Dm755 "\$srcdir/usr/lib/anland/bwrap" \\
+    "\$pkgdir/usr/lib/anland/bwrap"
   install -Dm644 "\$srcdir/usr/lib/systemd/user/anland-session.service" \\
     "\$pkgdir/usr/lib/systemd/user/anland-session.service"
   install -Dm644 "\$srcdir/usr/share/doc/anland-session/copyright" \\
@@ -273,28 +483,48 @@ EOF
 }
 
 probe_installed_runtime() {
-  local xwayland_bin xwayland_version
+  local xwayland_bin xwayland_version binary session_path
 
   [[ -x /usr/bin/anland-miniwm ]] || die 'installed miniwm is missing'
   [[ -x /usr/bin/anland-session ]] || die 'installed session launcher is missing'
   [[ -f /usr/lib/systemd/user/anland-session.service ]] || \
     die 'installed user service is missing'
+  [[ -x "$ANLAND_LIBEXEC_DIR/Xwayland" ]] || die 'installed Xwayland is missing'
+  [[ -x "$ANLAND_LIBEXEC_DIR/bwrap" ]] || die 'installed bwrap is missing'
   bash -n /usr/bin/anland-session
 
-  if ldd /usr/bin/anland-miniwm | grep -Fq 'not found'; then
-    die 'installed miniwm has unresolved shared libraries'
-  fi
+  for binary in /usr/bin/anland-miniwm "$ANLAND_LIBEXEC_DIR/Xwayland" \
+                "$ANLAND_LIBEXEC_DIR/bwrap"; do
+    if ldd "$binary" | grep -Fq 'not found'; then
+      die "$(basename "$binary") has unresolved shared libraries"
+    fi
+  done
 
-  xwayland_bin="$(command -v Xwayland || true)"
-  [[ -n "$xwayland_bin" ]] || die 'package manager did not install Xwayland'
+  # The session exports a PATH that starts with the package-private directory,
+  # so that is what both its own Xwayland launch and glycin's `bwrap` lookup
+  # must resolve to — never the distribution builds.
+  session_path="$ANLAND_LIBEXEC_DIR:$PATH"
+  xwayland_bin="$(PATH="$session_path" command -v Xwayland || true)"
+  [[ "$xwayland_bin" == "$ANLAND_LIBEXEC_DIR/Xwayland" ]] || \
+    die "the session PATH does not resolve Xwayland to the packaged build: ${xwayland_bin:-none}"
+  [[ "$(PATH="$session_path" command -v bwrap || true)" == "$ANLAND_LIBEXEC_DIR/bwrap" ]] || \
+    die 'the session PATH does not resolve bwrap to the packaged build'
+
   # Anland Next's rootless X path needs the upstream xwayland-shell-v1
-  # association protocol and its WL_SURFACE_SERIAL X-side message.
+  # association protocol and its WL_SURFACE_SERIAL X-side message; the patched
+  # build must keep both.
   grep -aFq 'xwayland_shell_v1' "$xwayland_bin" || \
     die "Xwayland lacks xwayland_shell_v1: $xwayland_bin"
   grep -aFq 'WL_SURFACE_SERIAL' "$xwayland_bin" || \
     die "Xwayland lacks WL_SURFACE_SERIAL: $xwayland_bin"
-  xwayland_version="$(Xwayland -version 2>&1 || true)"
+  xwayland_version="$("$xwayland_bin" -version 2>&1 || true)"
   log "Xwayland probe: $(printf '%s\n' "$xwayland_version" | sed -n '1p')"
+
+  bwrap_sandbox_selfcheck "$ANLAND_LIBEXEC_DIR/bwrap" || \
+    die 'installed bwrap cannot start a sandbox under a 2 GB address-space limit'
+  "$ANLAND_LIBEXEC_DIR/bwrap" --version | grep -Fq 'anland' || \
+    die 'installed bwrap is not the anland build'
+  log "bwrap probe: $("$ANLAND_LIBEXEC_DIR/bwrap" --version)"
 
   if command -v systemd-analyze >/dev/null 2>&1; then
     systemd-analyze verify /usr/lib/systemd/user/anland-session.service >/dev/null
@@ -352,6 +582,13 @@ trap 'rm -rf -- "$WORK_ROOT"' EXIT
 STAGE="$WORK_ROOT/stage"
 prepare_stage "$STAGE"
 
+log 'resolving the runtime dependencies of the packaged binaries'
+mapfile -t RUNTIME_PACKAGES < <(runtime_dependency_packages "$STAGE")
+[[ "${#RUNTIME_PACKAGES[@]}" -gt 0 ]] || \
+  die 'could not resolve the runtime dependencies of the packaged binaries'
+RUNTIME_DEPENDS_ARCH="$(printf "'%s' " "${RUNTIME_PACKAGES[@]}")"
+log "runtime packages: ${RUNTIME_PACKAGES[*]}"
+
 case "$PACKAGE_FORMAT" in
   deb) PACKAGE_PATH="$(build_deb "$STAGE")" ;;
   rpm) PACKAGE_PATH="$(build_rpm "$STAGE")" ;;
@@ -362,6 +599,11 @@ install_and_validate "$PACKAGE_PATH"
 
 PACKAGE_NAME="${PACKAGE_PATH##*/}"
 BUILD_TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+# "<vendor commit>/<patch series md5>" — the exact input each vendored
+# component was built from (same identity the Anland setup script stamps).
+vendor_source_identity() {
+  awk 'NR == 1 { commit = $1 } NR == 2 { print commit "/" $1 }' "$1"
+}
 {
   printf 'format=1\n'
   printf 'target=%s\n' "$TARGET"
@@ -371,7 +613,11 @@ BUILD_TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   printf 'package_manager=%s\n' "$PACKAGE_MANAGER"
   printf 'package=%s\n' "$PACKAGE_NAME"
   printf 'xwayland_package=%s\n' "$XWAYLAND_PACKAGE"
-  printf 'xwayland_provided_by_distribution=true\n'
+  printf 'xwayland_provided_by_distribution=false\n'
+  printf 'xwayland_source=%s\n' \
+    "$(vendor_source_identity "$ANLAND_VENDOR_DIR/xserver/ANLAND-SOURCE")"
+  printf 'bwrap_source=%s\n' \
+    "$(vendor_source_identity "$ANLAND_VENDOR_DIR/bubblewrap/ANLAND-SOURCE")"
   printf 'xwayland_probe=xwayland_shell_v1,WL_SURFACE_SERIAL\n'
   printf 'build_time=%s\n' "$BUILD_TIME"
 } > "$OUTPUT_DIR/manifest.env"
