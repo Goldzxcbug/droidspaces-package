@@ -105,15 +105,25 @@ enable_apt_source_packages() {
 }
 
 enable_dnf_source_packages() {
-  if dnf repolist --enabled 2>/dev/null | grep -q 'fedora-source'; then
+  if dnf repolist --enabled 2>/dev/null | grep -q -- '-source'; then
     return 0
   fi
-  log 'enabling the fedora-source repository'
-  dnf config-manager --set-enabled fedora-source >/dev/null 2>&1 || \
-    dnf config-manager setopt fedora-source.enabled=1 >/dev/null 2>&1 || \
-    die 'could not enable the fedora-source repository'
-  dnf repolist --enabled | grep -q 'fedora-source' || \
-    die 'the fedora-source repository is still disabled'
+  # Fedora splits its source repos (fedora-source, updates-source, …) and the
+  # Xwayland BuildRequires can live in any of them, so enable every one the
+  # image knows about rather than guessing a name.
+  local repo
+  local -a repos=()
+  mapfile -t repos < <(grep -rhoE '^\[[^]]*-source\]' /etc/yum.repos.d 2>/dev/null | \
+    tr -d '[]' | sort -u)
+  [ "${#repos[@]}" -gt 0 ] || die 'no *-source repositories are configured'
+  for repo in "${repos[@]}"; do
+    log "enabling $repo"
+    dnf config-manager --set-enabled "$repo" >/dev/null 2>&1 || \
+      dnf config-manager setopt "$repo.enabled=1" >/dev/null 2>&1 || \
+      die "could not enable $repo"
+  done
+  dnf repolist --enabled | grep -q -- '-source' || \
+    die 'no *-source repository ended up enabled'
 }
 
 install_build_dependencies() {
