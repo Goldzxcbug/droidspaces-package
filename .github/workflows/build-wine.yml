@@ -638,6 +638,7 @@ jobs:
           URL:            https://github.com/mikugirls/hangover
           BuildArch:      aarch64
           Provides:       wine
+          Provides:       wine-common
           Conflicts:      wine-core
 
           %description
@@ -651,6 +652,9 @@ jobs:
           rm -rf %{buildroot}
           mkdir -p %{buildroot}
           cp -a /opt/package/. %{buildroot}/
+          for d in usr/bin usr/lib usr/lib64; do
+            [ -d "%{buildroot}/$d" ] && chmod 0555 "%{buildroot}/$d"
+          done
 
           %files
           /usr/*
