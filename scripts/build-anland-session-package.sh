@@ -228,12 +228,28 @@ build_xwayland() {
   cp -a "$src" "$build_src"
   (
     cd "$build_src"
-    meson setup build -Dxvfb=false
+    # The package is installed below /usr even though its private Xwayland
+    # binary lives in /usr/lib/anland.  Keep Xwayland's compiled-in helper and
+    # data paths aligned with the distribution: xkbcomp is /usr/bin/xkbcomp
+    # and xkeyboard-config lives below /usr/share/X11/xkb.  Meson's default
+    # /usr/local prefix makes the server look for both under /usr/local and
+    # prevents it from starting on Fedora (and other normal RootFS layouts).
+    meson setup build --prefix=/usr -Dxvfb=false
     meson compile -C build
   ) || die 'the Xwayland build failed'
   [ -x "$build_src/build/hw/xwayland/Xwayland" ] || \
     die 'the Xwayland build produced no binary'
   install -m 0755 "$build_src/build/hw/xwayland/Xwayland" "$output"
+
+  # Guard the two paths that caused the Fedora 44 regression.  The server
+  # invokes xkbcomp through its compiled-in prefix and loads xkeyboard-config
+  # from the same prefix, so a /usr/local build cannot run in our RootFSes.
+  grep -aFq '/usr/share/X11/xkb' "$output" || \
+    die 'the built Xwayland has no /usr/share XKB data path'
+  if grep -aFq '/usr/local/share/X11/xkb' "$output" || \
+     grep -aFq '/usr/local/bin' "$output"; then
+    die 'the built Xwayland still embeds /usr/local runtime paths'
+  fi
 
   version="$("$output" -version 2>&1 || true)"
   printf '%s\n' "$version" | grep -Fq 'Xwayland' || \
@@ -385,7 +401,7 @@ Section: x11
 Priority: optional
 Architecture: arm64
 Maintainer: Anland Next maintainers <noreply@anland.invalid>
-Depends: bash, dbus-x11, xwayland, libpam-systemd, $(comma_join "${RUNTIME_PACKAGES[@]}")
+Depends: bash, dbus-x11, x11-xkb-utils, xwayland, libpam-systemd, $(comma_join "${RUNTIME_PACKAGES[@]}")
 Description: Anland Next rootfs session and Xwayland mini window manager
  Provides the D-Bus/Wayland/Xwayland session launcher and the precompiled
  mini-wm used by Anland Next.
@@ -416,6 +432,7 @@ BuildArch:      aarch64
 Requires:       bash
 Requires:       dbus-x11
 Requires:       xorg-x11-server-Xwayland
+Requires:       xkbcomp
 Requires:       libX11
 Requires:       libXcomposite
 # pam_systemd.so: without it the systemd user manager exits with
@@ -477,7 +494,7 @@ pkgrel=1
 pkgdesc='Anland Next rootfs session and Xwayland mini window manager'
 arch=('aarch64')
 license=('GPL-3.0-only')
-depends=('bash' 'dbus' 'xorg-xwayland' 'systemd' $RUNTIME_DEPENDS_ARCH)
+depends=('bash' 'dbus' 'xorg-xwayland' 'xorg-xkbcomp' 'systemd' $RUNTIME_DEPENDS_ARCH)
 source=("anland-session-\${pkgver}.tar.gz")
 sha256sums=('SKIP')
 
@@ -542,6 +559,8 @@ probe_installed_runtime() {
     die 'installed user service is missing'
   [[ -x "$ANLAND_LIBEXEC_DIR/Xwayland" ]] || die 'installed Xwayland is missing'
   [[ -x "$ANLAND_LIBEXEC_DIR/bwrap" ]] || die 'installed bwrap is missing'
+  command -v xkbcomp >/dev/null 2>&1 || \
+    die 'installed runtime has no xkbcomp for Xwayland keyboard setup'
   bash -n /usr/bin/anland-session
 
   for binary in /usr/bin/anland-miniwm "$ANLAND_LIBEXEC_DIR/Xwayland" \

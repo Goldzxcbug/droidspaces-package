@@ -154,7 +154,7 @@ jobs:
       ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/SuperTurtleDev/anland.git' }}
       ANLAND_COMMIT: ${{ needs.prepare.outputs.anland_commit }}
       OUTPUT_DIR: out/${{ matrix.target }}
-      PACKAGE_VERSION: 0.1.0
+      PACKAGE_VERSION: 0.1.1
     steps:
       - name: 安装检出工具
         shell: bash
