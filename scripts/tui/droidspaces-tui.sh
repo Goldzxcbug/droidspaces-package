@@ -10,6 +10,8 @@ readonly HANGOVER_MANIFEST_NAME="hangover-wine-manifest"
 readonly COMPONENT_STATE_DIR="${DROIDSPACES_COMPONENT_STATE_DIR:-/var/lib/droidspaces-tui/components}"
 readonly COMPONENT_RELEASE_REPOSITORY="${DROIDSPACES_COMPONENT_REPOSITORY:-Goldzxcbug/droidspaces-package}"
 readonly COMPONENT_API_URL="${DROIDSPACES_COMPONENT_API_URL:-https://api.github.com}"
+readonly COMPONENT_CNB_DOWNLOAD_BASE="${DROIDSPACES_COMPONENT_CNB_BASE:-https://cnb.cool/goldzxcbug/droidspaces-package/-/releases/download}"
+readonly COMPONENT_CNB_MANIFEST_MAX_BYTES=$((1024 * 1024))
 readonly COMPONENT_VERSION_TIMEOUT=10
 readonly INSTALLED_TUI_PATH="/usr/local/bin/droidspaces-tui"
 readonly TUI_RELEASE_REPOSITORY="${DROIDSPACES_TUI_REPOSITORY:-Goldzxcbug/droidspaces-package}"
@@ -798,6 +800,18 @@ component_release_parts() {
     printf '%s\n%s\n%s\n' "$tag" "$prefix" "$suffix"
 }
 
+component_release_manifest_name() {
+    case "$1" in
+        mesa) printf '%s' 'mesa-distribution-manifest' ;;
+        hangover) printf '%s' 'hangover-wine-manifest' ;;
+        fonts) printf '%s' 'winefonts-manifest' ;;
+        kde) printf '%s' 'anland-kde-manifest' ;;
+        gnome) printf '%s' 'anland-gnome-manifest' ;;
+        anland-next) printf '%s' 'anland-session-manifest' ;;
+        *) return 1 ;;
+    esac
+}
+
 release_asset_names() {
     local metadata="$1" expected_tag="$2"
     if command -v jq >/dev/null 2>&1; then
@@ -850,6 +864,74 @@ parse_component_release_version() {
     printf '%s' "$selected"
 }
 
+cnb_manifest_asset_names() {
+    local manifest="$1"
+
+    awk -F '\t' '
+        $0 == "sha256\tsize\tasset" {
+            in_assets = 1
+            next
+        }
+        in_assets && NF == 3 {
+            print $3
+            next
+        }
+        !in_assets && $0 ~ /^[A-Za-z][A-Za-z0-9_]*=/ {
+            value = $0
+            sub(/^[^=]*=/, "", value)
+            print value
+        }
+    ' "$manifest"
+}
+
+validate_cnb_component_manifest() {
+    local manifest="$1" expected_tag="$2"
+
+    awk -F '=' -v expected_tag="$expected_tag" '
+        $0 == "format=1" {
+            format_count += 1
+            next
+        }
+        $1 == "format" {
+            invalid = 1
+            next
+        }
+        $1 == "release_tag" {
+            release_tag_count += 1
+            if ($2 != expected_tag) {
+                invalid = 1
+            }
+        }
+        END {
+            exit !(format_count == 1 && release_tag_count == 1 && !invalid)
+        }
+    ' "$manifest"
+}
+
+parse_component_cnb_manifest_version() {
+    local component="$1" manifest="$2"
+    local parts prefix suffix name version selected="" count=0
+
+    parts="$(component_release_parts "$component")" || return 1
+    parts="${parts#*$'\n'}"
+    prefix="${parts%%$'\n'*}"
+    suffix="${parts#*$'\n'}"
+
+    while IFS= read -r name; do
+        case "$name" in
+            "$prefix"*"$suffix")
+                version="${name#"$prefix"}"
+                version="${version%"$suffix"}"
+                valid_component_version "$version" || continue
+                selected="$version"
+                ((count += 1))
+                ;;
+        esac
+    done < <(cnb_manifest_asset_names "$manifest")
+    ((count == 1)) || return 1
+    printf '%s' "$selected"
+}
+
 fetch_component_release_version() {
     local component="$1" result_file="$2"
     local parts tag metadata version temporary_result curl_pid curl_status
@@ -881,6 +963,43 @@ fetch_component_release_version() {
     trap - HUP INT TERM
     ((curl_status == 0)) || return 1
     version="$(parse_component_release_version "$component" "$metadata")" || return 1
+    printf '%s\n' "$version" > "$temporary_result" || return 1
+    mv -f -- "$temporary_result" "$result_file"
+}
+
+fetch_component_cnb_release_version() {
+    local component="$1" result_file="$2"
+    local parts tag manifest_name manifest manifest_size version temporary_result
+    local curl_pid curl_status
+
+    command -v curl >/dev/null 2>&1 || return 1
+    parts="$(component_release_parts "$component")" || return 1
+    tag="${parts%%$'\n'*}"
+    manifest_name="$(component_release_manifest_name "$component")" || return 1
+    manifest="$COMPONENT_VERSION_WORK_DIR/$component.cnb-manifest"
+    temporary_result="$result_file.tmp.$BASHPID"
+
+    curl --fail --silent --show-error --location \
+        --connect-timeout 3 --max-time 9 \
+        --header 'User-Agent: droidspaces-tui-components' \
+        "$COMPONENT_CNB_DOWNLOAD_BASE/$tag/$manifest_name" \
+        --output "$manifest" >/dev/null 2>&1 &
+    curl_pid=$!
+    trap 'kill "$curl_pid" 2>/dev/null || true; wait "$curl_pid" 2>/dev/null || true; exit 1' \
+        HUP INT TERM
+    if wait "$curl_pid"; then
+        curl_status=0
+    else
+        curl_status=$?
+    fi
+    trap - HUP INT TERM
+    ((curl_status == 0)) || return 1
+
+    manifest_size="$(stat -c '%s' "$manifest")" || return 1
+    [[ "$manifest_size" =~ ^[0-9]+$ && "$manifest_size" -gt 0 && \
+       "$manifest_size" -le "$COMPONENT_CNB_MANIFEST_MAX_BYTES" ]] || return 1
+    validate_cnb_component_manifest "$manifest" "$tag" || return 1
+    version="$(parse_component_cnb_manifest_version "$component" "$manifest")" || return 1
     printf '%s\n' "$version" > "$temporary_result" || return 1
     mv -f -- "$temporary_result" "$result_file"
 }
@@ -923,28 +1042,6 @@ stop_component_version_workers() {
 start_component_version_checks() {
     local component result_file current_version
     stop_component_version_workers
-    if [[ "$DOWNLOAD_SOURCE" == "3" ]]; then
-        for component in "${COMPONENT_NAMES[@]}"; do
-            if ! component_visible "$component"; then
-                COMPONENT_INSTALLED[$component]=false
-                COMPONENT_CURRENT_VERSIONS[$component]=hidden
-                COMPONENT_UPSTREAM_VERSIONS[$component]=hidden
-                continue
-            fi
-            if managed_component_installed "$component"; then
-                COMPONENT_INSTALLED[$component]=true
-                COMPONENT_CURRENT_VERSIONS[$component]="$(detect_current_component_version "$component")"
-            else
-                COMPONENT_INSTALLED[$component]=false
-                COMPONENT_CURRENT_VERSIONS[$component]="$(msg '未安装' 'not installed')"
-            fi
-            # CNB-only operation must not turn a non-blocking version hint
-            # into a hidden GitHub API dependency. Installers verify their
-            # selected CNB artifacts from the CNB Release manifests instead.
-            COMPONENT_UPSTREAM_VERSIONS[$component]=cnb
-        done
-        return
-    fi
     COMPONENT_VERSION_WORK_DIR="$(mktemp -d -t droidspaces-component-versions.XXXXXXXX)" || {
         for component in "${COMPONENT_NAMES[@]}"; do
             if ! component_visible "$component"; then
@@ -987,7 +1084,11 @@ start_component_version_checks() {
     for component in "${COMPONENT_NAMES[@]}"; do
         [[ "${COMPONENT_UPSTREAM_VERSIONS[$component]}" == hidden ]] && continue
         result_file="$COMPONENT_VERSION_WORK_DIR/$component.result"
-        fetch_component_release_version "$component" "$result_file" &
+        if [[ "$DOWNLOAD_SOURCE" == "3" ]]; then
+            fetch_component_cnb_release_version "$component" "$result_file" &
+        else
+            fetch_component_release_version "$component" "$result_file" &
+        fi
         COMPONENT_VERSION_PIDS[$component]=$!
     done
 }
@@ -1034,9 +1135,6 @@ component_status_display() {
     local component="$1" upstream="${COMPONENT_UPSTREAM_VERSIONS[$1]:-}"
     if [[ "${COMPONENT_INSTALLED[$component]:-false}" == false ]]; then
         printf '%b%s%b' "$COLOR_RED" "$(msg '未安装' 'not installed')" "$COLOR_RESET"
-    elif [[ "$upstream" == cnb ]]; then
-        printf '%b%s%b' "$COLOR_DIM" \
-            "$(msg 'CNB 模式（不查询 GitHub）' 'CNB mode (no GitHub check)')" "$COLOR_RESET"
     elif [[ "$upstream" == pending ]]; then
         component_upstream_display "$component"
     elif [[ "$upstream" == "$(msg '超时' 'timeout')" ]]; then
@@ -1061,14 +1159,6 @@ desktop_selection_status_display() {
         printf '%b%s%b' "$COLOR_RED" "$(msg '未安装' 'not installed')" "$COLOR_RESET"
         return
     fi
-    for component in kde gnome anland-next; do
-        [[ "${COMPONENT_INSTALLED[$component]:-false}" == true ]] || continue
-        if [[ "${COMPONENT_UPSTREAM_VERSIONS[$component]:-}" == cnb ]]; then
-            printf '%b%s%b' "$COLOR_DIM" \
-                "$(msg 'CNB 模式（不查询 GitHub）' 'CNB mode (no GitHub check)')" "$COLOR_RESET"
-            return
-        fi
-    done
     for component in kde gnome anland-next; do
         [[ "${COMPONENT_INSTALLED[$component]:-false}" == true ]] || continue
         upstream="${COMPONENT_UPSTREAM_VERSIONS[$component]:-}"
@@ -1722,6 +1812,7 @@ download_tui_bootstrap() {
 prepare_updater() {
     local candidate metadata_before metadata_after row_before row_after metadata_source
     local asset_id expected_sha expected_size updated_at command_name
+    local manifest_before_sha manifest_after_sha
 
     cleanup_update_files
     candidate="$SCRIPT_DIR/install-tui.sh"
@@ -1760,6 +1851,12 @@ prepare_updater() {
         row_before="$(tui_bootstrap_row "$metadata_before")" || { cleanup_update_files; return 1; }
     fi
     if [[ "$metadata_source" == cnb ]]; then
+        manifest_before_sha="$(sha256sum "$metadata_before" | awk '{print $1}')" || {
+            cleanup_update_files
+            return 1
+        }
+    fi
+    if [[ "$metadata_source" == cnb ]]; then
         IFS=$'\t' read -r expected_sha expected_size <<< "$row_before"
     else
         IFS=$'\t' read -r asset_id expected_sha expected_size updated_at <<< "$row_before"
@@ -1775,6 +1872,23 @@ prepare_updater() {
         if [[ "$row_before" != "$row_after" ]]; then
             printf '%s\n' "$(msg '下载期间 Release 已变化，请重试。' \
                 'The Release changed during download; try again.')" >&2
+            cleanup_update_files
+            return 1
+        fi
+    else
+        download_tui_cnb_manifest "$metadata_after" || { cleanup_update_files; return 1; }
+        row_after="$(tui_cnb_bootstrap_row "$metadata_after")" || {
+            cleanup_update_files
+            return 1
+        }
+        manifest_after_sha="$(sha256sum "$metadata_after" | awk '{print $1}')" || {
+            cleanup_update_files
+            return 1
+        }
+        if [[ "$manifest_before_sha" != "$manifest_after_sha" || \
+              "$row_before" != "$row_after" ]]; then
+            printf '%s\n' "$(msg '下载期间 CNB Release 清单发生变化，请重试。' \
+                'The CNB Release manifest changed during download; please retry.')" >&2
             cleanup_update_files
             return 1
         fi

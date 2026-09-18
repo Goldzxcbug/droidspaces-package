@@ -190,14 +190,18 @@ PY
     fi
 }
 
-download_cnb_manifest() {
-    local manifest_size
+download_cnb_manifest_to() {
+    local output="$1" manifest_size
 
     log "从 CNB 下载 $MANIFEST_NAME"
-    download_from_url "$CNB_DOWNLOAD_BASE/$RELEASE_TAG/$MANIFEST_NAME" "$MANIFEST_PATH" || return 1
-    manifest_size="$(stat -c '%s' "$MANIFEST_PATH")" || return 1
+    download_from_url "$CNB_DOWNLOAD_BASE/$RELEASE_TAG/$MANIFEST_NAME" "$output" || return 1
+    manifest_size="$(stat -c '%s' "$output")" || return 1
     [[ "$manifest_size" =~ ^[0-9]+$ && "$manifest_size" -gt 0 && \
        "$manifest_size" -le $((1024 * 1024)) ]]
+}
+
+download_cnb_manifest() {
+    download_cnb_manifest_to "$MANIFEST_PATH"
 }
 
 safe_asset_name() {
@@ -486,7 +490,7 @@ install_updates() {
 }
 
 main() {
-    local index asset_sha asset_size
+    local index asset_sha asset_size manifest_after before_sha after_sha
 
     parse_arguments "$@"
     require_commands
@@ -543,6 +547,14 @@ main() {
     if [[ "$METADATA_SOURCE" == github ]]; then
         fetch_release_metadata "$API_AFTER"
         verify_release_unchanged "${SELECTED_INDEXES[@]}"
+    else
+        manifest_after="$WORK_DIR/${MANIFEST_NAME}.after"
+        download_cnb_manifest_to "$manifest_after" || \
+            die '无法重新读取 CNB TUI 清单。'
+        before_sha="$(sha256sum "$MANIFEST_PATH" | awk '{print $1}')"
+        after_sha="$(sha256sum "$manifest_after" | awk '{print $1}')"
+        [[ "$before_sha" == "$after_sha" ]] || \
+            die '下载期间 CNB TUI 清单发生变化，请重试。'
     fi
     install_updates
     log "安装完成。运行 dstui 或 ds-tui 即可打开工具箱。"
