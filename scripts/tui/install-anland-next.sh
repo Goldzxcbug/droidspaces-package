@@ -472,7 +472,7 @@ validate_package_file() {
 
 require_runtime_dependencies() {
     local command_name
-    for command_name in awk find mktemp realpath sed sort stat sha256sum; do
+    for command_name in awk find grep mktemp realpath sed sort stat sha256sum; do
         command -v "$command_name" >/dev/null 2>&1 || \
             die "缺少运行安装器所需的命令：${command_name}。" \
                 "The installer requires the missing command: ${command_name}."
@@ -585,6 +585,31 @@ package_installed_version() {
         rpm) rpm -q --queryformat '%{VERSION}-%{RELEASE}' anland-session 2>/dev/null ;;
         pkg.tar.*) pacman -Q anland-session 2>/dev/null | awk '{print $2}' ;;
     esac
+}
+
+verify_installed_package_version() {
+    local installed_version
+
+    installed_version="$(package_installed_version || true)"
+    [[ "$installed_version" == "$PACKAGE_VERSION" ]] || \
+        die "安装后的 anland-session 版本与下载包不一致（期望 ${PACKAGE_VERSION:-unknown}，实际 ${installed_version:-unknown}）。" \
+            "The installed anland-session version does not match the downloaded package (expected ${PACKAGE_VERSION:-unknown}, got ${installed_version:-unknown})."
+}
+
+verify_installed_xwayland_paths() {
+    local xwayland_binary=/usr/lib/anland/Xwayland
+
+    [[ -x "$xwayland_binary" ]] || \
+        die "已安装的 anland-session 缺少 Xwayland：$xwayland_binary。" \
+            "The installed anland-session package is missing Xwayland: $xwayland_binary."
+    grep -aFq '/usr/share/X11/xkb' "$xwayland_binary" || \
+        die "已安装的 Xwayland 没有正确的 /usr XKB 数据路径。请更新 Anland Next 软件包。" \
+            "The installed Xwayland has no correct /usr XKB data path. Update the Anland Next package."
+    if grep -aFq '/usr/local/share/X11/xkb' "$xwayland_binary" || \
+       grep -aFq '/usr/local/bin' "$xwayland_binary"; then
+        die "已安装的 Xwayland 仍含错误的 /usr/local 运行时路径。请更新 Anland Next 软件包。" \
+            "The installed Xwayland still embeds incorrect /usr/local runtime paths. Update the Anland Next package."
+    fi
 }
 
 install_deb_package() {
@@ -714,8 +739,9 @@ main() {
         rpm) install_rpm_package ;;
         pkg.tar.*) install_arch_package ;;
     esac
+    verify_installed_package_version
+    verify_installed_xwayland_paths
     refresh_user_service
-    PACKAGE_VERSION="$(package_installed_version || true)"
     record_component_version "$PACKAGE_VERSION"
     log "Anland Next session 安装完成（${PACKAGE_VERSION:-unknown}）。" \
         "Anland Next session installation completed (${PACKAGE_VERSION:-unknown})."
