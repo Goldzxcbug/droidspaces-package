@@ -23,15 +23,21 @@ RootFS 使用的一次性引导器，不会安装到容器；TUI 更新时只会
 主菜单只显示组件状态：黄色“检测到更新”、绿色“当前已是最新版本”或红色“未安装”。
 后台查询期间显示动态 Braille 符号，菜单输入不会等待网络；单项在 10 秒内未取得有效
 版本时显示“超时”。选择组件进入二级菜单后才显示当前/上游版本，并提供“更新/安装”
-和“卸载”。Anland Next session 作为独立组件管理，不会改变桌面选择。桌面更新项读取
+和“卸载”。Anland Next session 与 KDE、GNOME 一样由桌面/会话组件入口统一管理。桌面更新项读取
 `/etc/droidspaces-desktop.conf` 的 `DESKTOP` 字段：KDE/KDE
-mobile 只显示 Anland KDE，GNOME 只显示 Anland GNOME；`none` 或未知桌面进入选择页，可
-选择 Anland KWin 或 GNOME。旧 RootFS 缺少配置时按已安装组件兜底，无法判断时同样进入
-选择页。成功安装 Anland KDE 或 GNOME 后，安装器只把 `DESKTOP=none` 原子更新为对应桌面，
+mobile 只显示 Anland KDE，GNOME 只显示 Anland GNOME，Anland Next 只显示其 session；`none`
+或未知桌面进入选择页，可选择 Anland KDE、GNOME 或 Next session。旧 RootFS 缺少配置时按已
+安装组件兜底，无法判断时同样进入选择页。成功安装 Anland KDE 或 GNOME 后，安装器只把
+`DESKTOP=none` 原子更新为对应桌面，
 不会修改显示后端或桌面环境变量；配置文件不存在时会创建桌面标记，已有明确桌面则保持
 不变。版本检测在启动 TUI 时运行，进入菜单、返回或输入无效内容不会重新检测；安装或
 卸载实际开始执行后，返回主菜单时会重新识别桌面并自动刷新一次。输入内容会显示并支持
 退格，Loading 使用原地重绘以避免反复清屏闪烁。
+
+选择 CNB 下载源时，TUI 不查询 GitHub API；安装器从同一 CNB Release 的清单读取附件
+名称、SHA-256 和大小（旧发布缺少摘要时会明确提示并仅保留归档结构与包元数据校验）。
+GitHub 与代理模式仍使用 GitHub Release API 交叉核验。这样只能访问 CNB 的环境可以完整
+使用 CNB 安装和更新，不会因 GitHub 不可达而被阻塞。
 
 “回收存储空间（稀疏镜像）”用于在正常启动的 `rootfs.img` 容器内回收已经删除文件所占的
 宿主物理空间。TUI 会先确认根文件系统是可写的 Ext4 loop 镜像，经用户确认后以 root 身份

@@ -972,6 +972,7 @@ jobs:
             for target in "${targets[@]}"; do
               [ -n "${assets[$target]:-}" ] || continue
               echo "$target=${assets[$target]}"
+              echo "${target}_sha256=$(sha256sum "$release_dir/${assets[$target]}" | awk '{print $1}')"
               echo "${target}_build_time=${build_times[$target]}"
               echo "${target}_source=${sources[$target]}"
             done

@@ -9,7 +9,9 @@ readonly RELEASE_REPOSITORY="${ANLAND_NEXT_RELEASE_REPOSITORY:-$DEFAULT_REPOSITO
 RELEASE_TAG="${ANLAND_NEXT_RELEASE_TAG:-}"
 readonly ROLLING_RELEASE_TAG="anland-session-packages"
 readonly MANIFEST_NAME="anland-session-manifest"
+readonly CHECKSUMS_NAME="SHA256SUMS"
 readonly MAX_MANIFEST_BYTES=$((1024 * 1024))
+readonly MAX_CHECKSUMS_BYTES=$((1024 * 1024))
 readonly MAX_PACKAGE_BYTES=$((128 * 1024 * 1024))
 readonly SOURCE_PROBE_TIMEOUT_SECONDS=2
 readonly GITHUB_RELEASE_URL="https://github.com"
@@ -32,6 +34,7 @@ PACKAGE_FILE=""
 PACKAGE_VERSION=""
 DOWNLOAD_SOURCE=""
 SKIP_SOURCE_PROBE=false
+CHECKSUMS_FILE=""
 EXPECTED_MANIFEST_SHA256=""
 EXPECTED_PACKAGE_SHA256=""
 OFFICIAL_RELEASE_METADATA=""
@@ -411,6 +414,53 @@ resolve_official_package_sha256() {
     }
 }
 
+checksum_sha256_for_asset() {
+    local checksums_file="$1" asset_name="$2"
+
+    awk -v asset_name="$asset_name" '
+        $1 ~ /^[0-9A-Fa-f]+$/ && length($1) == 64 && NF == 2 {
+            name = $2
+            sub(/^\*/, "", name)
+            if (name == asset_name) {
+                digest = tolower($1)
+                count += 1
+            }
+        }
+        END {
+            if (count == 1) {
+                print digest
+            } else {
+                exit 1
+            }
+        }
+    ' "$checksums_file"
+}
+
+prepare_cnb_checksums() {
+    local base_url="$1" checksum_size
+
+    [[ "$DOWNLOAD_SOURCE" == 3 ]] || return 0
+    CHECKSUMS_FILE="$WORK_DIR/$CHECKSUMS_NAME"
+    download_file "$base_url/$CHECKSUMS_NAME" "$CHECKSUMS_FILE" || return 1
+    checksum_size="$(stat -c '%s' "$CHECKSUMS_FILE")" || return 1
+    [[ "$checksum_size" =~ ^[0-9]+$ && "$checksum_size" -gt 0 && \
+       "$checksum_size" -le "$MAX_CHECKSUMS_BYTES" ]] || return 1
+    EXPECTED_MANIFEST_SHA256="$(checksum_sha256_for_asset "$CHECKSUMS_FILE" "$MANIFEST_NAME")" || {
+        log "CNB Release 的 ${CHECKSUMS_NAME} 缺少 ${MANIFEST_NAME} 的唯一 SHA-256 校验值。" \
+            "The CNB Release ${CHECKSUMS_NAME} has no unique SHA-256 digest for ${MANIFEST_NAME}."
+        return 1
+    }
+}
+
+resolve_cnb_package_sha256() {
+    [[ "$DOWNLOAD_SOURCE" == 3 ]] || return 0
+    EXPECTED_PACKAGE_SHA256="$(checksum_sha256_for_asset "$CHECKSUMS_FILE" "$PACKAGE_NAME")" || {
+        log "CNB Release 的 ${CHECKSUMS_NAME} 缺少 ${PACKAGE_NAME} 的唯一 SHA-256 校验值。" \
+            "The CNB Release ${CHECKSUMS_NAME} has no unique SHA-256 digest for ${PACKAGE_NAME}."
+        return 1
+    }
+}
+
 validate_package_name() {
     [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._+~-]*$ && "$1" != *..* ]]
 }
@@ -507,7 +557,11 @@ download_packages_once() {
     base_url="$(release_download_base)"
     manifest_file="$WORK_DIR/$MANIFEST_NAME"
     OFFICIAL_RELEASE_METADATA=""
-    resolve_official_manifest_sha256 || return 1
+    if [[ "$DOWNLOAD_SOURCE" == 3 ]]; then
+        prepare_cnb_checksums "$base_url" || return 1
+    else
+        resolve_official_manifest_sha256 || return 1
+    fi
 
     log "正在从 $(download_source_name "$DOWNLOAD_SOURCE") 下载 ${TARGET} Anland Next 包..." \
         "Downloading the Anland Next package for ${TARGET} from $(download_source_name "$DOWNLOAD_SOURCE")..."
@@ -522,7 +576,11 @@ download_packages_once() {
             "The Release manifest has no matching native package for ${TARGET}."
         return 1
     }
-    resolve_official_package_sha256 || return 1
+    if [[ "$DOWNLOAD_SOURCE" == 3 ]]; then
+        resolve_cnb_package_sha256 || return 1
+    else
+        resolve_official_package_sha256 || return 1
+    fi
     PACKAGE_FILE="$WORK_DIR/$PACKAGE_NAME"
     download_file "$base_url/$PACKAGE_NAME" "$PACKAGE_FILE" || return 1
     if [[ -n "$EXPECTED_PACKAGE_SHA256" ]]; then

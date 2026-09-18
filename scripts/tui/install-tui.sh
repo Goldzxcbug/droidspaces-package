@@ -19,6 +19,7 @@ WORK_DIR=""
 API_BEFORE=""
 API_AFTER=""
 MANIFEST_PATH=""
+METADATA_SOURCE=""
 CHANGED_COUNT=0
 
 declare -a ORIGINAL_ARGUMENTS=("$@")
@@ -102,7 +103,12 @@ parse_arguments() {
     done
 
     case "$DOWNLOAD_SOURCE" in
-        auto|github|proxy|cnb|1|2|3) ;;
+        1) DOWNLOAD_SOURCE=github ;;
+        2) DOWNLOAD_SOURCE=proxy ;;
+        3) DOWNLOAD_SOURCE=cnb ;;
+    esac
+    case "$DOWNLOAD_SOURCE" in
+        auto|github|proxy|cnb) ;;
         *) die "不支持的下载源：$DOWNLOAD_SOURCE" ;;
     esac
     case "$UPDATE_SCOPE" in
@@ -116,9 +122,10 @@ require_commands() {
     for command_name in awk bash chmod cp curl date dirname install ln mkdir mktemp mv readlink rm rmdir sha256sum stat; do
         command -v "$command_name" >/dev/null 2>&1 || die "缺少命令：$command_name"
     done
-    if ! command -v jq >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1; then
-        die '缺少 JSON 解析器：请安装 jq 或 python3。'
-    fi
+}
+
+json_parser_available() {
+    command -v jq >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1
 }
 
 ensure_root() {
@@ -181,6 +188,16 @@ if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9A-Fa-f]{64}", di
 print("\t".join((str(asset["id"]), digest[7:].lower(), str(asset["size"]), asset["updated_at"])))
 PY
     fi
+}
+
+download_cnb_manifest() {
+    local manifest_size
+
+    log "从 CNB 下载 $MANIFEST_NAME"
+    download_from_url "$CNB_DOWNLOAD_BASE/$RELEASE_TAG/$MANIFEST_NAME" "$MANIFEST_PATH" || return 1
+    manifest_size="$(stat -c '%s' "$MANIFEST_PATH")" || return 1
+    [[ "$manifest_size" =~ ^[0-9]+$ && "$manifest_size" -gt 0 && \
+       "$manifest_size" -le $((1024 * 1024)) ]]
 }
 
 safe_asset_name() {
@@ -290,6 +307,48 @@ parse_manifest() {
     ((${#ASSET_NAMES[@]} >= 3)) || die 'TUI 清单没有包含必要脚本。'
     [[ "${seen_assets[droidspaces-tui.sh]:-}" == 1 && \
        "${seen_assets[install-tui.sh]:-}" == 1 ]] || die 'TUI 清单缺少核心脚本。'
+}
+
+reset_manifest_state() {
+    ASSET_NAMES=()
+    ASSET_SHA256=()
+    ASSET_SIZES=()
+    ASSET_ROLES=()
+    ASSET_TARGETS=()
+    SELECTED_INDEXES=()
+    CHANGED_COUNT=0
+}
+
+load_github_manifest() {
+    local manifest_row manifest_id manifest_sha manifest_size manifest_updated
+    local index row asset_id asset_sha asset_size asset_updated
+
+    reset_manifest_state
+    json_parser_available || return 1
+    log "读取 GitHub Release：$RELEASE_TAG"
+    fetch_release_metadata "$API_BEFORE" || return 1
+    manifest_row="$(release_asset_row "$API_BEFORE" "$MANIFEST_NAME")" || return 1
+    IFS=$'\t' read -r manifest_id manifest_sha manifest_size manifest_updated <<< "$manifest_row"
+    download_asset "$MANIFEST_NAME" "$manifest_sha" "$manifest_size" "$MANIFEST_PATH" || return 1
+    parse_manifest
+    select_updates
+
+    for index in "${SELECTED_INDEXES[@]}"; do
+        row="$(release_asset_row "$API_BEFORE" "${ASSET_NAMES[$index]}")" || return 1
+        IFS=$'\t' read -r asset_id asset_sha asset_size asset_updated <<< "$row"
+        [[ "$asset_sha" == "${ASSET_SHA256[$index]}" && \
+           "$asset_size" == "${ASSET_SIZES[$index]}" ]] || \
+            die "Release API 与 TUI 清单不一致：${ASSET_NAMES[$index]}"
+    done
+    METADATA_SOURCE=github
+}
+
+load_cnb_manifest() {
+    reset_manifest_state
+    download_cnb_manifest || return 1
+    parse_manifest
+    select_updates
+    METADATA_SOURCE=cnb
 }
 
 asset_selected() {
@@ -427,8 +486,7 @@ install_updates() {
 }
 
 main() {
-    local manifest_row manifest_id manifest_sha manifest_size manifest_updated
-    local index row asset_id asset_sha asset_size asset_updated
+    local index asset_sha asset_size
 
     parse_arguments "$@"
     require_commands
@@ -442,22 +500,21 @@ main() {
     API_AFTER="$WORK_DIR/release-after.json"
     MANIFEST_PATH="$WORK_DIR/$MANIFEST_NAME"
 
-    log "读取 GitHub Release：$RELEASE_TAG"
-    fetch_release_metadata "$API_BEFORE"
-    manifest_row="$(release_asset_row "$API_BEFORE" "$MANIFEST_NAME")"
-    IFS=$'\t' read -r manifest_id manifest_sha manifest_size manifest_updated <<< "$manifest_row"
-    download_asset "$MANIFEST_NAME" "$manifest_sha" "$manifest_size" "$MANIFEST_PATH" || \
-        die '无法下载并校验 TUI 清单。'
-    parse_manifest
-    select_updates
-
-    for index in "${SELECTED_INDEXES[@]}"; do
-        row="$(release_asset_row "$API_BEFORE" "${ASSET_NAMES[$index]}")"
-        IFS=$'\t' read -r asset_id asset_sha asset_size asset_updated <<< "$row"
-        [[ "$asset_sha" == "${ASSET_SHA256[$index]}" && \
-           "$asset_size" == "${ASSET_SIZES[$index]}" ]] || \
-            die "Release API 与 TUI 清单不一致：${ASSET_NAMES[$index]}"
-    done
+    case "$DOWNLOAD_SOURCE" in
+        cnb)
+            load_cnb_manifest || die '无法从 CNB 下载并解析 TUI 清单。'
+            ;;
+        auto)
+            if ! load_github_manifest; then
+                log 'GitHub Release 元数据不可用，改用 CNB 清单。'
+                DOWNLOAD_SOURCE=cnb
+                load_cnb_manifest || die '无法从 GitHub 或 CNB 取得 TUI 清单。'
+            fi
+            ;;
+        github|proxy)
+            load_github_manifest || die '无法取得经过 GitHub Release API 校验的 TUI 清单。'
+            ;;
+    esac
 
     if ((CHANGED_COUNT == 0)); then
         log "所选范围已经是 $RELEASE_TAG 的最新版本。"
@@ -483,8 +540,10 @@ main() {
             die "脚本语法检查失败：${ASSET_NAMES[$index]}"
     done
 
-    fetch_release_metadata "$API_AFTER"
-    verify_release_unchanged "${SELECTED_INDEXES[@]}"
+    if [[ "$METADATA_SOURCE" == github ]]; then
+        fetch_release_metadata "$API_AFTER"
+        verify_release_unchanged "${SELECTED_INDEXES[@]}"
+    fi
     install_updates
     log "安装完成。运行 dstui 或 ds-tui 即可打开工具箱。"
 }

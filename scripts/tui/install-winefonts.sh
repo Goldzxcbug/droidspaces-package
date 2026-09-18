@@ -192,12 +192,19 @@ require_root() {
 
 require_commands() {
     local command_name
-    for command_name in awk chmod chown cp curl fc-cache find install jq mkdir mktemp mv \
+    for command_name in awk chmod chown cp curl fc-cache find install mkdir mktemp mv \
         rm rmdir sha256sum stat tar xz; do
         command -v "$command_name" >/dev/null 2>&1 || \
             die "缺少命令：$command_name。安装器不会自动运行包管理器。" \
                 "Missing command: $command_name. The installer does not run a package manager automatically."
     done
+}
+
+require_release_metadata_parser() {
+    [[ "$DOWNLOAD_SOURCE" == 3 ]] && return 0
+    command -v jq >/dev/null 2>&1 || \
+        die "未找到 jq，无法校验 GitHub Release 元数据。" \
+            "jq was not found; GitHub Release metadata cannot be verified."
 }
 
 download_source_name() {
@@ -504,8 +511,8 @@ download_and_extract() {
         log "正在从 $(download_source_name "$DOWNLOAD_SOURCE") 下载 Release 清单..." \
             "Downloading the Release manifest from $(download_source_name "$DOWNLOAD_SOURCE")..."
         if ! download_file "$base/$MANIFEST_NAME" "$manifest" || \
-            ! fetch_release_metadata || \
-            ! verify_official_asset "$manifest" "$MANIFEST_NAME" $((1024 * 1024)) || \
+            { [[ "$DOWNLOAD_SOURCE" != 3 ]] && \
+              { ! fetch_release_metadata || ! verify_official_asset "$manifest" "$MANIFEST_NAME" $((1024 * 1024)); }; } || \
             ! resolve_manifest "$manifest"; then
             log "Release 正在更新或网络暂时失败，准备重试（$attempt/3）。" \
                 "The Release is updating or the network failed; retrying ($attempt/3)."
@@ -515,8 +522,8 @@ download_and_extract() {
         archive="$WORK_DIR/$ARCHIVE_NAME"
         log "正在下载开源字体包：$ARCHIVE_NAME" "Downloading open-source fonts: $ARCHIVE_NAME"
         if ! download_file "$base/$ARCHIVE_NAME" "$archive" || \
-            ! fetch_release_metadata || \
-            ! verify_official_asset "$archive" "$ARCHIVE_NAME" "$MAX_ARCHIVE_BYTES"; then
+            { [[ "$DOWNLOAD_SOURCE" != 3 ]] && \
+              { ! fetch_release_metadata || ! verify_official_asset "$archive" "$ARCHIVE_NAME" "$MAX_ARCHIVE_BYTES"; }; }; then
             log "Release 正在更新或网络暂时失败，准备重试（$attempt/3）。" \
                 "The Release is updating or the network failed; retrying ($attempt/3)."
             continue
@@ -631,6 +638,7 @@ main() {
     fi
     require_commands
     select_download_source
+    require_release_metadata_parser
     log "下载源：$(download_source_name "$DOWNLOAD_SOURCE")" \
         "Download source: $(download_source_name "$DOWNLOAD_SOURCE")"
     download_and_extract

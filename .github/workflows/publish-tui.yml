@@ -139,7 +139,7 @@ jobs:
 
           $managed_scripts
 
-          所有脚本均通过 GitHub Release API 提供的 SHA-256 和 \`$MANIFEST_NAME\` 双重校验；CNB 仅作为附件镜像，可信校验值仍来自 GitHub。
+          GitHub/代理模式使用 GitHub Release API 与 \`$MANIFEST_NAME\` 交叉校验；CNB 模式只访问 CNB，同步后的 \`$MANIFEST_NAME\` 提供附件 SHA-256 与大小校验。
           EOF
 
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then

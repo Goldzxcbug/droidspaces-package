@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-readonly TUI_VERSION="1.3"
+readonly TUI_VERSION="1.4"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 readonly DESKTOP_CONFIG="${DROIDSPACES_DESKTOP_CONFIG:-/etc/droidspaces-desktop.conf}"
@@ -15,6 +15,7 @@ readonly INSTALLED_TUI_PATH="/usr/local/bin/droidspaces-tui"
 readonly TUI_RELEASE_REPOSITORY="${DROIDSPACES_TUI_REPOSITORY:-Goldzxcbug/droidspaces-package}"
 readonly TUI_RELEASE_TAG="Gold-bug-tui"
 readonly TUI_BOOTSTRAP_NAME="install-tui.sh"
+readonly TUI_MANIFEST_NAME="Gold-bug-tui-manifest"
 readonly TUI_GITHUB_API_URL="${DROIDSPACES_TUI_API_URL:-https://api.github.com}"
 readonly TUI_GITHUB_DOWNLOAD_BASE="${DROIDSPACES_TUI_GITHUB_BASE:-https://github.com/$TUI_RELEASE_REPOSITORY/releases/download}"
 readonly TUI_PROXY_DOWNLOAD_BASE="${DROIDSPACES_TUI_PROXY_BASE:-https://gh-proxy.com/https://github.com/$TUI_RELEASE_REPOSITORY/releases/download}"
@@ -203,6 +204,11 @@ set_desktop_component() {
             DESKTOP_COMPONENT_LABEL="Anland GNOME (Mutter/Xwayland)"
             DESKTOP_COMPONENT_MODE="direct"
             ;;
+        anland-next)
+            DESKTOP_COMPONENT="anland-next"
+            DESKTOP_COMPONENT_LABEL="Anland Next session"
+            DESKTOP_COMPONENT_MODE="direct"
+            ;;
     esac
 }
 
@@ -234,6 +240,8 @@ detect_desktop_component() {
         set_desktop_component kde
     elif managed_component_installed gnome; then
         set_desktop_component gnome
+    elif managed_component_installed anland-next; then
+        set_desktop_component anland-next
     else
         set_desktop_component none
     fi
@@ -887,8 +895,8 @@ component_versions_pending() {
 
 component_visible() {
     case "$1" in
-        mesa|hangover|fonts|anland-next) return 0 ;;
-        kde|gnome)
+        mesa|hangover|fonts) return 0 ;;
+        kde|gnome|anland-next)
             [[ "$DESKTOP_COMPONENT_MODE" == choose || "$DESKTOP_COMPONENT" == "$1" ]]
             ;;
         *) return 1 ;;
@@ -915,6 +923,28 @@ stop_component_version_workers() {
 start_component_version_checks() {
     local component result_file current_version
     stop_component_version_workers
+    if [[ "$DOWNLOAD_SOURCE" == "3" ]]; then
+        for component in "${COMPONENT_NAMES[@]}"; do
+            if ! component_visible "$component"; then
+                COMPONENT_INSTALLED[$component]=false
+                COMPONENT_CURRENT_VERSIONS[$component]=hidden
+                COMPONENT_UPSTREAM_VERSIONS[$component]=hidden
+                continue
+            fi
+            if managed_component_installed "$component"; then
+                COMPONENT_INSTALLED[$component]=true
+                COMPONENT_CURRENT_VERSIONS[$component]="$(detect_current_component_version "$component")"
+            else
+                COMPONENT_INSTALLED[$component]=false
+                COMPONENT_CURRENT_VERSIONS[$component]="$(msg '未安装' 'not installed')"
+            fi
+            # CNB-only operation must not turn a non-blocking version hint
+            # into a hidden GitHub API dependency. Installers verify their
+            # selected CNB artifacts from the CNB Release manifests instead.
+            COMPONENT_UPSTREAM_VERSIONS[$component]=cnb
+        done
+        return
+    fi
     COMPONENT_VERSION_WORK_DIR="$(mktemp -d -t droidspaces-component-versions.XXXXXXXX)" || {
         for component in "${COMPONENT_NAMES[@]}"; do
             if ! component_visible "$component"; then
@@ -1004,6 +1034,9 @@ component_status_display() {
     local component="$1" upstream="${COMPONENT_UPSTREAM_VERSIONS[$1]:-}"
     if [[ "${COMPONENT_INSTALLED[$component]:-false}" == false ]]; then
         printf '%b%s%b' "$COLOR_RED" "$(msg '未安装' 'not installed')" "$COLOR_RESET"
+    elif [[ "$upstream" == cnb ]]; then
+        printf '%b%s%b' "$COLOR_DIM" \
+            "$(msg 'CNB 模式（不查询 GitHub）' 'CNB mode (no GitHub check)')" "$COLOR_RESET"
     elif [[ "$upstream" == pending ]]; then
         component_upstream_display "$component"
     elif [[ "$upstream" == "$(msg '超时' 'timeout')" ]]; then
@@ -1019,7 +1052,7 @@ component_status_display() {
 desktop_selection_status_display() {
     local component upstream installed_any=false
 
-    for component in kde gnome; do
+    for component in kde gnome anland-next; do
         if [[ "${COMPONENT_INSTALLED[$component]:-false}" == true ]]; then
             installed_any=true
         fi
@@ -1028,7 +1061,15 @@ desktop_selection_status_display() {
         printf '%b%s%b' "$COLOR_RED" "$(msg '未安装' 'not installed')" "$COLOR_RESET"
         return
     fi
-    for component in kde gnome; do
+    for component in kde gnome anland-next; do
+        [[ "${COMPONENT_INSTALLED[$component]:-false}" == true ]] || continue
+        if [[ "${COMPONENT_UPSTREAM_VERSIONS[$component]:-}" == cnb ]]; then
+            printf '%b%s%b' "$COLOR_DIM" \
+                "$(msg 'CNB 模式（不查询 GitHub）' 'CNB mode (no GitHub check)')" "$COLOR_RESET"
+            return
+        fi
+    done
+    for component in kde gnome anland-next; do
         [[ "${COMPONENT_INSTALLED[$component]:-false}" == true ]] || continue
         upstream="${COMPONENT_UPSTREAM_VERSIONS[$component]:-}"
         if [[ "$upstream" == pending ]]; then
@@ -1036,7 +1077,7 @@ desktop_selection_status_display() {
             return
         fi
     done
-    for component in kde gnome; do
+    for component in kde gnome anland-next; do
         [[ "${COMPONENT_INSTALLED[$component]:-false}" == true ]] || continue
         upstream="${COMPONENT_UPSTREAM_VERSIONS[$component]:-}"
         if [[ "$upstream" == "$(msg '超时' 'timeout')" ]]; then
@@ -1184,6 +1225,7 @@ desktop_component_selection_menu() {
                 "$(msg '选择桌面组件' 'Select desktop component')" "$COLOR_RESET"
             print_component_status "1" "Anland KDE (KWin/Xwayland)" "kde"
             print_component_status "2" "Anland GNOME (Mutter/Xwayland)" "gnome"
+            print_component_status "3" "Anland Next session" "anland-next"
             printf '  %b[0]%b %s\n\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '返回' 'Back')"
         fi
         draw_dynamic_menu_prompt
@@ -1205,6 +1247,11 @@ desktop_component_selection_menu() {
             2)
                 restore_dynamic_menu_echo
                 component_menu "gnome" "Anland GNOME (Mutter/Xwayland)"
+                return
+                ;;
+            3)
+                restore_dynamic_menu_echo
+                component_menu "anland-next" "Anland Next session"
                 return
                 ;;
             0|q)
@@ -1599,6 +1646,42 @@ PY
     fi
 }
 
+download_tui_cnb_manifest() {
+    local output="$1" manifest_size
+
+    if ! curl --fail --silent --show-error --location \
+        --retry 2 --retry-all-errors --connect-timeout 15 --max-time 120 \
+        --output "$output" "$TUI_CNB_DOWNLOAD_BASE/$TUI_RELEASE_TAG/$TUI_MANIFEST_NAME"; then
+        return 1
+    fi
+    manifest_size="$(stat -c '%s' "$output")" || return 1
+    [[ "$manifest_size" =~ ^[0-9]+$ && "$manifest_size" -gt 0 && \
+       "$manifest_size" -le $((1024 * 1024)) ]]
+}
+
+tui_cnb_bootstrap_row() {
+    local manifest="$1"
+
+    awk -F '\t' -v expected_tag="$TUI_RELEASE_TAG" -v expected_name="$TUI_BOOTSTRAP_NAME" '
+        NR == 1 && $0 == "format=1" { format = 1; next }
+        $0 == "release_tag=" expected_tag { tag = 1; next }
+        $0 == "sha256\tsize\trole\ttarget\tasset" { header = 1; next }
+        header && NF == 5 && $1 ~ /^[0-9a-f]{64}$/ && $2 ~ /^[0-9]+$/ &&
+            $3 == "bootstrap" && $4 == "-" && $5 == expected_name {
+            digest = $1
+            size = $2
+            count += 1
+        }
+        END {
+            if (format && tag && header && count == 1 && size > 0) {
+                print digest "\t" size
+            } else {
+                exit 1
+            }
+        }
+    ' "$manifest"
+}
+
 download_tui_bootstrap() {
     local expected_sha="$1" expected_size="$2" output="$3"
     local source_name base actual_sha actual_size
@@ -1637,7 +1720,7 @@ download_tui_bootstrap() {
 }
 
 prepare_updater() {
-    local candidate metadata_before metadata_after row_before row_after
+    local candidate metadata_before metadata_after row_before row_after metadata_source
     local asset_id expected_sha expected_size updated_at command_name
 
     cleanup_update_files
@@ -1657,21 +1740,44 @@ prepare_updater() {
     metadata_before="$UPDATE_WORK_DIR/release-before.json"
     metadata_after="$UPDATE_WORK_DIR/release-after.json"
     UPDATE_UPDATER_PATH="$UPDATE_WORK_DIR/$TUI_BOOTSTRAP_NAME"
-    fetch_tui_release_metadata "$metadata_before" || { cleanup_update_files; return 1; }
-    row_before="$(tui_bootstrap_row "$metadata_before")" || { cleanup_update_files; return 1; }
-    IFS=$'\t' read -r asset_id expected_sha expected_size updated_at <<< "$row_before"
+    metadata_source=github
+    if [[ "$DOWNLOAD_SOURCE" == 3 ]]; then
+        download_tui_cnb_manifest "$metadata_before" || { cleanup_update_files; return 1; }
+        row_before="$(tui_cnb_bootstrap_row "$metadata_before")" || { cleanup_update_files; return 1; }
+        metadata_source=cnb
+    elif [[ "$DOWNLOAD_SOURCE" == auto ]]; then
+        if fetch_tui_release_metadata "$metadata_before" && \
+            row_before="$(tui_bootstrap_row "$metadata_before")"; then
+            :
+        else
+            download_tui_cnb_manifest "$metadata_before" || { cleanup_update_files; return 1; }
+            row_before="$(tui_cnb_bootstrap_row "$metadata_before")" || { cleanup_update_files; return 1; }
+            metadata_source=cnb
+            DOWNLOAD_SOURCE=3
+        fi
+    else
+        fetch_tui_release_metadata "$metadata_before" || { cleanup_update_files; return 1; }
+        row_before="$(tui_bootstrap_row "$metadata_before")" || { cleanup_update_files; return 1; }
+    fi
+    if [[ "$metadata_source" == cnb ]]; then
+        IFS=$'\t' read -r expected_sha expected_size <<< "$row_before"
+    else
+        IFS=$'\t' read -r asset_id expected_sha expected_size updated_at <<< "$row_before"
+    fi
     download_tui_bootstrap "$expected_sha" "$expected_size" "$UPDATE_UPDATER_PATH" || {
         cleanup_update_files
         return 1
     }
     bash -n "$UPDATE_UPDATER_PATH" || { cleanup_update_files; return 1; }
-    fetch_tui_release_metadata "$metadata_after" || { cleanup_update_files; return 1; }
-    row_after="$(tui_bootstrap_row "$metadata_after")" || { cleanup_update_files; return 1; }
-    if [[ "$row_before" != "$row_after" ]]; then
-        printf '%s\n' "$(msg '下载期间 Release 已变化，请重试。' \
-            'The Release changed during download; try again.')" >&2
-        cleanup_update_files
-        return 1
+    if [[ "$metadata_source" == github ]]; then
+        fetch_tui_release_metadata "$metadata_after" || { cleanup_update_files; return 1; }
+        row_after="$(tui_bootstrap_row "$metadata_after")" || { cleanup_update_files; return 1; }
+        if [[ "$row_before" != "$row_after" ]]; then
+            printf '%s\n' "$(msg '下载期间 Release 已变化，请重试。' \
+                'The Release changed during download; try again.')" >&2
+            cleanup_update_files
+            return 1
+        fi
     fi
     return 0
 }
@@ -1691,6 +1797,7 @@ run_update_check() {
         return
     fi
     updater="$UPDATE_UPDATER_PATH"
+    source_argument=(--source "$DOWNLOAD_SOURCE")
     if ! "$updater" "${source_argument[@]}" --check --only all; then
         printf '\n%b%s%b\n' "$COLOR_RED" \
             "$(msg '检查更新失败。' 'The update check failed.')" "$COLOR_RESET"
@@ -1715,6 +1822,7 @@ run_update() {
         return
     fi
     updater="$UPDATE_UPDATER_PATH"
+    source_argument=(--source "$DOWNLOAD_SOURCE")
     printf '\n'
     if "$updater" "${source_argument[@]}" --only "$scope" --yes; then
         status=0
@@ -1806,10 +1914,9 @@ main_menu() {
             else
                 printf '  %b[4]%b %s - %s\n' \
                     "$COLOR_CYAN" "$COLOR_RESET" \
-                    "$(msg 'Anland 桌面组件' 'Anland desktop components')" \
+                    "$(msg 'Anland 桌面/会话组件' 'Anland desktop/session components')" \
                     "$(desktop_selection_status_display)"
             fi
-            print_component_status "5" "Anland Next session" "anland-next"
             printf '\n'
             printf '  %b[S]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '切换下载源' 'Change download source')"
             printf '  %b[C]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '清理下载缓存' 'Clean download cache')"
@@ -1832,7 +1939,7 @@ main_menu() {
         choice="$MENU_CHOICE"
         [[ -n "$choice" ]] || continue
         case "${choice,,}" in
-            0|1|2|3|4|5|q|s|c|r|m|u|a) restore_dynamic_menu_echo ;;
+            0|1|2|3|4|q|s|c|r|m|u|a) restore_dynamic_menu_echo ;;
             *) continue ;;
         esac
         case "${choice,,}" in
@@ -1846,7 +1953,6 @@ main_menu() {
                     desktop_component_selection_menu
                 fi
                 ;;
-            5) component_menu "anland-next" "Anland Next session" ;;
             s) select_download_source ;;
             c) manage_cache ;;
             r) reclaim_sparse_storage ;;

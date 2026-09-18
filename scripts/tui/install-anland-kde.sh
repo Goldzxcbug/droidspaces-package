@@ -418,7 +418,7 @@ resolve_release_tag() {
 
 resolve_archive_name() {
     local manifest_file="$1"
-    local manifest_format manifest_release_tag selected_name
+    local manifest_format manifest_release_tag selected_name checksum_key checksum_count checksum
 
     manifest_format="$(awk -F= '$1 == "format" { print substr($0, index($0, "=") + 1) }' "$manifest_file")"
     manifest_release_tag="$(awk -F= '$1 == "release_tag" { print substr($0, index($0, "=") + 1) }' "$manifest_file")"
@@ -442,6 +442,31 @@ resolve_archive_name() {
     fi
 
     ARCHIVE_NAME="$selected_name"
+    EXPECTED_ARCHIVE_SHA256=""
+    if [[ "$DOWNLOAD_SOURCE" == "3" ]]; then
+        checksum_key="${ARCHIVE_TARGET}_sha256"
+        checksum_count="$(awk -F= -v key="$checksum_key" '$1 == key { count += 1 } END { print count + 0 }' "$manifest_file")" || return 1
+        case "$checksum_count" in
+            0)
+                log "CNB 的旧 Release 清单没有 ${ARCHIVE_NAME} 的 SHA-256；将只执行归档结构和软件包元数据校验。" \
+                    "The legacy CNB Release manifest has no SHA-256 for ${ARCHIVE_NAME}; only archive structure and package metadata will be verified."
+                ;;
+            1)
+                checksum="$(awk -F= -v key="$checksum_key" '$1 == key { print substr($0, index($0, "=") + 1) }' "$manifest_file")" || return 1
+                [[ "$checksum" =~ ^[0-9A-Fa-f]{64}$ ]] || {
+                    log "CNB Release 清单中的 ${ARCHIVE_NAME} SHA-256 无效。" \
+                        "The CNB Release manifest has an invalid SHA-256 for ${ARCHIVE_NAME}."
+                    return 1
+                }
+                EXPECTED_ARCHIVE_SHA256="${checksum,,}"
+                ;;
+            *)
+                log "CNB Release 清单中的 ${ARCHIVE_NAME} SHA-256 不唯一。" \
+                    "The CNB Release manifest has multiple SHA-256 entries for ${ARCHIVE_NAME}."
+                return 1
+                ;;
+        esac
+    fi
     log "已选择 ${ARCHIVE_NAME}" "Selected ${ARCHIVE_NAME}"
 }
 
@@ -654,7 +679,7 @@ has_packages() {
 
 require_runtime_dependencies() {
     local command_name
-    for command_name in awk du find mktemp realpath sort stat tar; do
+    for command_name in awk du find mktemp realpath sha256sum sort stat tar; do
         command -v "$command_name" >/dev/null 2>&1 || \
             die "缺少运行安装器所需的命令：${command_name}。" \
                 "The installer requires the missing command: ${command_name}."
@@ -768,7 +793,9 @@ download_packages_once() {
     base_url="$(release_download_base)"
     manifest_file="$WORK_DIR/$MANIFEST_NAME"
     OFFICIAL_RELEASE_METADATA=""
-    resolve_official_manifest_sha256 || return 1
+    if [[ "$DOWNLOAD_SOURCE" != "3" ]]; then
+        resolve_official_manifest_sha256 || return 1
+    fi
 
     log "正在从 $(download_source_name "$DOWNLOAD_SOURCE") 下载 ${TARGET} 预编译包..." \
         "Downloading ${TARGET} prebuilt packages from $(download_source_name "$DOWNLOAD_SOURCE")..."
@@ -777,7 +804,9 @@ download_packages_once() {
         validate_release_asset_checksum "$manifest_file" "$EXPECTED_MANIFEST_SHA256" "$MANIFEST_NAME" || return 1
     fi
     resolve_archive_name "$manifest_file" || return 1
-    resolve_official_archive_sha256 || return 1
+    if [[ "$DOWNLOAD_SOURCE" != "3" ]]; then
+        resolve_official_archive_sha256 || return 1
+    fi
 
     archive_file="$WORK_DIR/$ARCHIVE_NAME"
     download_file "$base_url/$ARCHIVE_NAME" "$archive_file" || return 1

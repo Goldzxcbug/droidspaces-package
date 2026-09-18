@@ -188,6 +188,7 @@ jobs:
           manifest="$asset_dir/$MANIFEST_NAME"
           {
             printf 'format=1\n'
+            printf 'release_tag=%s\n' "$DISTRIBUTION_TAG"
             printf 'source_repository=%s\n' "$UPSTREAM_URL"
             printf 'source_release=%s/tag/%s\n' "$UPSTREAM_RELEASES_URL" "$MESA_TAG"
             printf 'source_tag=%s\n' "$MESA_TAG"

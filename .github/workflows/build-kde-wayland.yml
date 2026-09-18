@@ -722,7 +722,10 @@ jobs:
             printf 'revision=run-%s-%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
             printf 'generated_at=%s\n' "$build_time"
             for target in "${present_targets[@]}"; do
-              printf '%s=%s\n' "$(archive_target_for_target "$target")" "${asset_by_target[$target]}"
+              archive_target="$(archive_target_for_target "$target")"
+              printf '%s=%s\n' "$archive_target" "${asset_by_target[$target]}"
+              printf '%s_sha256=%s\n' "$archive_target" \
+                "$(sha256sum "$release_dir/${asset_by_target[$target]}" | awk '{print $1}')"
             done
           } > "$release_dir/anland-kde-manifest"
 

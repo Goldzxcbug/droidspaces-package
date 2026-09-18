@@ -23,6 +23,7 @@ TARGET_LABEL=""
 PACKAGE_KIND=""
 ARCHIVE_SUFFIX=""
 ARCHIVE_NAME=""
+EXPECTED_ARCHIVE_SHA256=""
 PACKAGE_DIR=""
 WORK_DIR=""
 RELEASE_METADATA=""
@@ -326,7 +327,9 @@ collect_bootstrap_packages() {
     [[ -s /etc/ssl/certs/ca-certificates.crt || -s /etc/pki/tls/certs/ca-bundle.crt ]] || \
         append_bootstrap_package ca-certificates
     require_command_package curl curl
-    require_command_package jq jq
+    if [[ "$DOWNLOAD_SOURCE" != 3 ]]; then
+        require_command_package jq jq
+    fi
     require_command_package sha256sum coreutils
     require_command_package stat coreutils
     require_command_package sort coreutils
@@ -598,7 +601,7 @@ verify_asset() {
 
 resolve_archive_name() {
     local manifest="$1"
-    local format manifest_tag selected
+    local format manifest_tag selected checksum_key checksum_count checksum
     format="$(awk -F= '$1 == "format" {print substr($0, index($0, "=") + 1)}' "$manifest")"
     manifest_tag="$(awk -F= '$1 == "release_tag" {print substr($0, index($0, "=") + 1)}' "$manifest")"
     selected="$(awk -F= -v key="$TARGET" '$1 == key {print substr($0, index($0, "=") + 1)}' "$manifest")"
@@ -615,11 +618,46 @@ resolve_archive_name() {
     [[ "$selected" =~ ^[A-Za-z0-9._+~_-]+$ && "$selected" != *..* ]] || \
         die "Release 清单中的资产名无效。" "The asset name in the Release manifest is invalid."
     ARCHIVE_NAME="$selected"
+    EXPECTED_ARCHIVE_SHA256=""
+    if [[ "$DOWNLOAD_SOURCE" == 3 ]]; then
+        checksum_key="${TARGET}_sha256"
+        checksum_count="$(awk -F= -v key="$checksum_key" '$1 == key { count += 1 } END { print count + 0 }' "$manifest")" || return 1
+        case "$checksum_count" in
+            0)
+                log "CNB 的旧 Release 清单没有 ${ARCHIVE_NAME} 的 SHA-256；将只执行归档结构和软件包元数据校验。" \
+                    "The legacy CNB Release manifest has no SHA-256 for ${ARCHIVE_NAME}; only archive structure and package metadata will be verified."
+                ;;
+            1)
+                checksum="$(awk -F= -v key="$checksum_key" '$1 == key { print substr($0, index($0, "=") + 1) }' "$manifest")" || return 1
+                [[ "$checksum" =~ ^[0-9A-Fa-f]{64}$ ]] || \
+                    die "CNB Release 清单中的 ${ARCHIVE_NAME} SHA-256 无效。" \
+                        "The CNB Release manifest has an invalid SHA-256 for ${ARCHIVE_NAME}."
+                EXPECTED_ARCHIVE_SHA256="${checksum,,}"
+                ;;
+            *)
+                die "CNB Release 清单中的 ${ARCHIVE_NAME} SHA-256 不唯一。" \
+                    "The CNB Release manifest has multiple SHA-256 entries for ${ARCHIVE_NAME}."
+                ;;
+        esac
+    fi
+}
+
+verify_cnb_archive() {
+    local archive="$1" actual_checksum
+
+    [[ -n "$EXPECTED_ARCHIVE_SHA256" ]] || return 0
+    actual_checksum="$(sha256sum "$archive" | awk '{print $1}')" || return 1
+    [[ "$actual_checksum" == "$EXPECTED_ARCHIVE_SHA256" ]]
 }
 
 validate_archive() {
     local archive="$1"
-    local members entry
+    local members entry archive_size
+    archive_size="$(stat -c '%s' "$archive")" || \
+        die "无法读取下载包大小。" "Unable to read the downloaded archive size."
+    [[ "$archive_size" =~ ^[0-9]+$ && "$archive_size" -gt 0 && \
+       "$archive_size" -le "$MAX_ARCHIVE_BYTES" ]] || \
+        die "下载包大小无效或超过限制。" "The downloaded archive size is invalid or exceeds the limit."
     members="$(tar -tzf "$archive")" || \
         die "下载文件不是有效的 tar.gz。" "The downloaded file is not a valid tar.gz archive."
     [[ -n "$members" ]] || die "下载压缩包为空。" "The downloaded archive is empty."
@@ -699,8 +737,8 @@ download_and_extract() {
         log "正在从 $(download_source_name "$DOWNLOAD_SOURCE") 下载 Release 清单..." \
             "Downloading the Release manifest from $(download_source_name "$DOWNLOAD_SOURCE")..."
         if ! download_file "$base/$MANIFEST_NAME" "$manifest" || \
-            ! fetch_release_metadata || \
-            ! verify_asset "$manifest" "$MANIFEST_NAME" $((1024 * 1024)); then
+            { [[ "$DOWNLOAD_SOURCE" != 3 ]] && \
+              { ! fetch_release_metadata || ! verify_asset "$manifest" "$MANIFEST_NAME" $((1024 * 1024)); }; }; then
             log "Release 正在更新或网络暂时失败，准备重试（$attempt/3）。" \
                 "The Release is updating or the network failed; retrying ($attempt/3)."
             continue
@@ -711,8 +749,9 @@ download_and_extract() {
         log "正在下载 $TARGET_LABEL 软件包：$ARCHIVE_NAME" \
             "Downloading $TARGET_LABEL packages: $ARCHIVE_NAME"
         if ! download_file "$base/$ARCHIVE_NAME" "$archive" || \
-            ! fetch_release_metadata || \
-            ! verify_asset "$archive" "$ARCHIVE_NAME" "$MAX_ARCHIVE_BYTES"; then
+            { [[ "$DOWNLOAD_SOURCE" == 3 ]] && ! verify_cnb_archive "$archive"; } || \
+            { [[ "$DOWNLOAD_SOURCE" != 3 ]] && \
+              { ! fetch_release_metadata || ! verify_asset "$archive" "$ARCHIVE_NAME" "$MAX_ARCHIVE_BYTES"; }; }; then
             log "Release 正在更新或网络暂时失败，准备重试（$attempt/3）。" \
                 "The Release is updating or the network failed; retrying ($attempt/3)."
             continue
@@ -749,8 +788,8 @@ install_packages() {
         arch)
             mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.pkg.tar.*' -print | sort)
             log "正在通过 Pacman 安装 Hangover Wine..." "Installing Hangover Wine through Pacman..."
-            log "软件包已通过 GitHub Release SHA-256 校验；将仅对本次安装允许未签名的本地包。" \
-                "Packages passed GitHub Release SHA-256 verification; unsigned local packages are allowed only for this transaction."
+            log "软件包已通过所选下载源的校验；将仅对本次安装允许未签名的本地包。" \
+                "Packages passed verification from the selected download source; unsigned local packages are allowed only for this transaction."
 
             pacman_conf="$WORK_DIR/pacman.conf"
             [[ -r /etc/pacman.conf ]] || die "无法读取 /etc/pacman.conf。" "Cannot read /etc/pacman.conf."
