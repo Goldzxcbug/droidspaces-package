@@ -34,6 +34,26 @@ warn() {
   printf '[anland-session] %s\n' "$*" >&2
 }
 
+# The Ubuntu ports mirror republishes its index files in place, so a fetch that
+# straddles a mirror sync dies with "File has unexpected size ... Mirror sync in
+# progress? [IP: ...]" and takes the whole build down with apt's exit 100. That
+# is transient: the same command succeeds on the next attempt. Retry a few times
+# before giving up, but let a real error (a bad repo, a missing package) fall
+# through to the caller and fail the build as before.
+retry_apt_update() {
+  local attempt
+  for attempt in 1 2 3; do
+    if apt-get update; then
+      return 0
+    fi
+    if [ "$attempt" -lt 3 ]; then
+      warn "apt-get update failed (attempt $attempt/3), retrying in $((attempt * 10))s"
+      sleep $((attempt * 10))
+    fi
+  done
+  die 'apt-get update failed after 3 attempts'
+}
+
 comma_join() {
   local joined="" item
   for item in "$@"; do
@@ -106,7 +126,7 @@ enable_apt_source_packages() {
       ! grep -qE '^[[:space:]]*deb-src ' /etc/apt/sources.list; then
     sed -i 's|^deb \(.*\)$|deb \1\ndeb-src \1|' /etc/apt/sources.list
   fi
-  apt-get update
+  retry_apt_update
 }
 
 enable_dnf_source_packages() {
@@ -135,7 +155,7 @@ install_build_dependencies() {
   case "$TARGET" in
     ubuntu2604|debian13)
       export DEBIAN_FRONTEND=noninteractive
-      apt-get update
+      retry_apt_update
       apt-get install -y --no-install-recommends \
         bash build-essential dpkg-dev \
         dbus-x11 xwayland libx11-6 libxcomposite1 \

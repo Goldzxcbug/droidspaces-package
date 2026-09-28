@@ -162,7 +162,10 @@ jobs:
           set -eux
           if command -v apt-get >/dev/null; then
             export DEBIAN_FRONTEND=noninteractive
-            apt-get update
+            # ports.ubuntu.com republishes its indexes in place, so an update
+            # that lands mid-sync dies with "File has unexpected size ...
+            # Mirror sync in progress?" — transient, and gone on the next try.
+            apt-get update || { sleep 10; apt-get update; }
             apt-get install -y --no-install-recommends ca-certificates git
           elif command -v dnf >/dev/null; then
             dnf install -y --setopt=install_weak_deps=False ca-certificates git
