@@ -186,7 +186,7 @@ jobs:
 
               apt-get update
               apt-get install -y --no-install-recommends \
-                git ca-certificates sudo \
+                git ca-certificates curl sudo \
                 build-essential devscripts dpkg-dev fakeroot patch
 
               git init --quiet /tmp/anland

@@ -125,6 +125,8 @@ jobs:
         run: |
           set -euo pipefail
 
+          build_xwayland=0
+          kwin_source=''
           case "$BUILD_TARGET" in
             ubuntu2604)
               image=ubuntu:26.04
@@ -145,6 +147,7 @@ jobs:
             Fedora43)
               image=fedora:43
               script=producers/kde/Fedora43_v5/build.sh
+              build_xwayland=1
               package_pattern='*.rpm'
               asset_prefix=anland-kde-fedora43-kwin-
               asset_arch=aarch64
@@ -152,8 +155,12 @@ jobs:
               ;;
             Fedora44)
               image=fedora:44
-              # Fedora 44 使用 Fedora 43 的构建脚本，配 Fedora 44 基础镜像。
+              # The shared upstream script defaults to Fedora 43's SRPM and
+              # skips Xwayland. Override both to match Fedora 44 and collect
+              # the same KWin + Xwayland package set as Fedora 43.
               script=producers/kde/Fedora43_v5/build.sh
+              build_xwayland=1
+              kwin_source=kwin
               package_pattern='*.rpm'
               asset_prefix=anland-kde-fedora44-kwin-
               asset_arch=aarch64
@@ -180,6 +187,8 @@ jobs:
             echo "asset_prefix=$asset_prefix"
             echo "asset_arch=$asset_arch"
             echo "archive_target=$archive_target"
+            echo "build_xwayland=$build_xwayland"
+            echo "kwin_source=$kwin_source"
           } >> "$GITHUB_OUTPUT"
 
       - name: 在对应的发行版中构建软件包
@@ -187,6 +196,8 @@ jobs:
           DISTRO_IMAGE: ${{ steps.target.outputs.image }}
           BUILD_SCRIPT: ${{ steps.target.outputs.script }}
           PKG_PATTERN: ${{ steps.target.outputs.package_pattern }}
+          BUILD_XWAYLAND: ${{ steps.target.outputs.build_xwayland }}
+          KWIN_SOURCE: ${{ steps.target.outputs.kwin_source }}
           OUTPUT_DIR: .kde-package-build/${{ matrix.target }}
         shell: bash
         run: |
@@ -201,6 +212,8 @@ jobs:
             -e ANLAND_COMMIT \
             -e BUILD_SCRIPT \
             -e BUILD_TARGET \
+            -e BUILD_XWAYLAND \
+            -e KWIN_SOURCE \
             -e PKG_PATTERN \
             -v "$PWD/$OUTPUT_DIR:/root/kde-packages" \
             -v "$PWD/$OUTPUT_DIR:/tmp/kde-packages" \
