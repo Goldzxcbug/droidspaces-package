@@ -39,7 +39,7 @@ env:
 jobs:
   distribute:
     name: 更新 Mesa 滚动发布
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     steps:
       - name: 检出分发脚本

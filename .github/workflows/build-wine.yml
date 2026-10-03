@@ -43,7 +43,7 @@ permissions:
 jobs:
   prepare:
     name: 解析 Hangover 源码
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       hangover_commit: ${{ steps.resolve.outputs.hangover_commit }}
       hangover_version: ${{ steps.resolve.outputs.hangover_version }}
@@ -122,7 +122,7 @@ jobs:
   dxvk:
     name: 构建并校验 ARM64EC DXVK
     needs: [prepare, runtime-foundation]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: 恢复运行库基础镜像缓存
         id: cache
@@ -208,7 +208,7 @@ jobs:
   runtime-foundation:
     name: 构建共享运行库基础镜像
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: 恢复运行库基础镜像缓存
         id: cache
@@ -243,7 +243,7 @@ jobs:
   runtime:
     name: 构建 ${{ matrix.component }} 运行库
     needs: [prepare, runtime-foundation]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -252,8 +252,16 @@ jobs:
       - name: 释放磁盘空间
         shell: bash
         run: |
+          # 关闭并删除镜像自带的交换文件。交换文件的名字和路径随镜像版本变化
+          # （24.04 是 /swapfile），写死路径在新镜像上会静默失效，因此枚举
+          # /proc/swaps 取出所有类型为 file 的条目。
           sudo swapoff -a || true
-          sudo rm -f /swapfile
+          while read -r swap_path swap_type _; do
+            [[ "$swap_type" == file ]] || continue
+            # /proc/swaps 会把路径里的空格等字符转义成 \040 这类八进制，
+            # printf %b 负责还原成真实路径。
+            sudo rm -f -- "$(printf '%b' "$swap_path")"
+          done < <(tail -n +2 /proc/swaps 2>/dev/null || true)
           sudo apt-get clean
           docker system prune -af || true
 
@@ -344,9 +352,10 @@ jobs:
   build:
     name: 构建 ${{ matrix.target }} 软件包
     needs: [prepare, runtime, dxvk]
-    # Ubuntu 24.04 和 Debian 13 使用仓库中的 x86_64 交叉构建定义；
-    # 其余目标在 ARM64 运行器上原生构建。
-    runs-on: ${{ (matrix.target == 'ubuntu2404' || matrix.target == 'debian13') && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
+    # Ubuntu 24.04 和 Debian 13 使用仓库中的 x86_64 交叉构建定义，因此需要
+    # x86_64 运行器；其余目标在 ARM64 运行器上原生构建。
+    # 两条分支都显式写死镜像版本，不跟随 ubuntu-latest 的版本漂移。
+    runs-on: ${{ (matrix.target == 'ubuntu2404' || matrix.target == 'debian13') && 'ubuntu-26.04' || 'ubuntu-24.04-arm' }}
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -361,8 +370,18 @@ jobs:
       - name: 释放磁盘空间
         shell: bash
         run: |
+          # 关闭并删除镜像自带的交换文件。交换文件的名字和路径随镜像版本变化
+          # （24.04 是 /swapfile），写死路径在新镜像上会静默失效，因此枚举
+          # /proc/swaps 取出所有类型为 file 的条目。
           sudo swapoff -a || true
-          sudo rm -f /swapfile
+          while read -r swap_path swap_type _; do
+            [[ "$swap_type" == file ]] || continue
+            # /proc/swaps 会把路径里的空格等字符转义成 \040 这类八进制，
+            # printf %b 负责还原成真实路径。
+            sudo rm -f -- "$(printf '%b' "$swap_path")"
+          done < <(tail -n +2 /proc/swaps 2>/dev/null || true)
+          # 以下是运行器镜像预装的大体积目录，删除用于腾出构建空间。镜像版本
+          # 不同时部分目录可能不存在，rm -rf 对缺失路径没有副作用。
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           sudo apt-get clean
           docker system prune -af || true
@@ -805,7 +824,7 @@ jobs:
       # 构建可以并行执行，但固定滚动发布必须原地串行更新。
       group: hangover-wine-package-release
       cancel-in-progress: false
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: 检出安装脚本
         uses: actions/checkout@v6

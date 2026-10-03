@@ -20,7 +20,7 @@ concurrency:
 jobs:
   sync:
     name: 同步 ${{ inputs.release_tag }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     steps:
       - name: 检出同步脚本

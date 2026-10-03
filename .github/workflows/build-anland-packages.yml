@@ -107,7 +107,7 @@ permissions:
 jobs:
   select:
     name: 解析本次构建的软件包
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       kde: ${{ steps.select.outputs.kde }}
       gnome: ${{ steps.select.outputs.gnome }}
@@ -160,7 +160,7 @@ jobs:
     name: 解析 Anland KDE 源码版本
     needs: select
     if: ${{ needs.select.outputs.kde == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       anland_commit: ${{ steps.resolve.outputs.anland_commit }}
       targets: ${{ steps.targets.outputs.targets }}
@@ -534,7 +534,7 @@ jobs:
     name: 更新 Anland KDE 滚动发布
     needs: [prepare-kde, build-kde]
     if: ${{ always() && !cancelled() && needs.prepare-kde.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # 固定发布会被原地重写，必须串行更新。三条流水线各自独立分组，
     # 因此 KDE 的发布排队时不会阻塞 GNOME 与 session 的发布。
     concurrency:
@@ -1100,7 +1100,7 @@ jobs:
     name: 解析 Anland GNOME 源码版本
     needs: select
     if: ${{ needs.select.outputs.gnome == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       anland_commit: ${{ steps.resolve.outputs.anland_commit }}
       targets: ${{ steps.targets.outputs.targets }}
@@ -1353,7 +1353,7 @@ jobs:
     name: 更新 Anland GNOME 滚动发布
     needs: [prepare-gnome, build-gnome]
     if: ${{ always() && !cancelled() && needs.prepare-gnome.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # 固定发布会被原地重写，必须串行更新。三条流水线各自独立分组，
     # 因此 GNOME 的发布排队时不会阻塞 KDE 与 session 的发布。
     concurrency:
@@ -1897,7 +1897,7 @@ jobs:
     name: 解析 Anland Next 源码版本
     needs: select
     if: ${{ needs.select.outputs.session == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       anland_commit: ${{ steps.resolve.outputs.anland_commit }}
       targets: ${{ steps.targets.outputs.targets }}
@@ -2075,7 +2075,7 @@ jobs:
     name: 更新 Anland Next session 滚动发布
     needs: [prepare-session, build-session]
     if: ${{ always() && !cancelled() && needs.prepare-session.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # 固定发布会被原地重写，必须串行更新。三条流水线各自独立分组，
     # 因此 session 的发布排队时不会阻塞 KDE 与 GNOME 的发布。
     concurrency:

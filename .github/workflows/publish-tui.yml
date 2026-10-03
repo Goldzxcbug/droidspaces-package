@@ -24,7 +24,7 @@ env:
 jobs:
   publish:
     name: 发布 TUI 与受管脚本
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - name: 检出发布源
