@@ -210,12 +210,26 @@ uninstall_gnome_arch() {
     [[ -f /etc/pacman.conf ]] || die "找不到 pacman.conf。" "pacman.conf was not found."
     if [[ -s "$PACMAN_PACKAGE_STATE" ]]; then
         mapfile -t packages < <(sed -nE 's/^([A-Za-z0-9@.+_-]+)$/\1/p' "$PACMAN_PACKAGE_STATE" | sort -u)
-    elif grep -Eq '^[[:space:]]*IgnorePkg[[:space:]]*=.*(^|[[:space:]])mutter([[:space:]]|$)' /etc/pacman.conf; then
-        packages=(mutter)
     else
-        rm -f -- "$COMPONENT_STATE_DIR/gnome.version"
-        log "没有 Anland GNOME 安装记录。" "No Anland GNOME installation record was found."
-        return 0
+        local ignored_package
+        for ignored_package in mutter xorg-xwayland; do
+            if awk -v package="$ignored_package" '
+                /^[[:space:]]*IgnorePkg[[:space:]]*=/ {
+                    value = $0
+                    sub(/^[^=]*=/, "", value)
+                    count = split(value, entries, /[[:space:]]+/)
+                    for (i = 1; i <= count; i++) if (entries[i] == package) found = 1
+                }
+                END { exit found ? 0 : 1 }
+            ' /etc/pacman.conf; then
+                packages+=("$ignored_package")
+            fi
+        done
+        if ((${#packages[@]} == 0)); then
+            rm -f -- "$COMPONENT_STATE_DIR/gnome.version"
+            log "没有 Anland GNOME 安装记录。" "No Anland GNOME installation record was found."
+            return 0
+        fi
     fi
     ((${#packages[@]} > 0)) || die "Arch 软件包恢复清单为空。" "The Arch package restore list is empty."
 
@@ -249,14 +263,14 @@ uninstall_gnome_arch() {
         ! pacman -S --noconfirm "${packages[@]}"; then
         install -m 0644 -- "$backup" /etc/pacman.conf || true
         rm -f -- "$backup" "$stripped"
-        die "恢复发行版 Mutter 失败。" "Failed to restore the distribution Mutter package."
+        die "恢复发行版 Mutter/Xwayland 失败。" "Failed to restore the distribution Mutter/Xwayland packages."
     fi
 
     rm -f -- "$backup" "$stripped" "$PACMAN_PACKAGE_STATE" \
         "$APT_HOLD_STATE" "$COMPONENT_STATE_DIR/gnome.version"
     rmdir -- "${PACMAN_PACKAGE_STATE%/*}" 2>/dev/null || true
-    log "Anland GNOME 已卸载，发行版 Mutter 已恢复。" \
-        "Anland GNOME was uninstalled and distribution Mutter was restored."
+    log "Anland GNOME 已卸载，发行版 Mutter/Xwayland 已恢复。" \
+        "Anland GNOME was uninstalled and distribution Mutter/Xwayland packages were restored."
 }
 
 uninstall_gnome() {
@@ -752,7 +766,7 @@ validate_release_asset_checksum() {
 
 validate_package_architecture() {
     local -a files=()
-    local file package_arch package_name mutter_count=0 package_info
+    local file package_arch package_name mutter_count=0 xwayland_count=0 package_info
 
     case "$PACKAGE_TYPE" in
         deb)
@@ -771,9 +785,13 @@ validate_package_architecture() {
                 package_arch="$(awk -F: '/^[[:space:]]*Architecture[[:space:]]*:/ { sub(/^[[:space:]]*/, "", $2); print $2; exit }' <<< "$package_info")"
                 [[ "$package_name" =~ ^[A-Za-z0-9@.+_-]+$ ]] || return 1
                 case "$package_arch" in aarch64|any) ;; *) return 1 ;; esac
-                [[ "$package_name" == mutter ]] && ((mutter_count += 1))
+                case "$package_name" in
+                    mutter) ((mutter_count += 1)) ;;
+                    xorg-xwayland) ((xwayland_count += 1)) ;;
+                    *) return 1 ;;
+                esac
             done
-            (( ${#files[@]} > 0 && mutter_count == 1 ))
+            (( ${#files[@]} == 2 && mutter_count == 1 && xwayland_count == 1 ))
             ;;
         *) return 1 ;;
     esac
@@ -952,16 +970,16 @@ write_pacman_package_state() {
     state_dir="${PACMAN_PACKAGE_STATE%/*}"
     install -d -m 0755 "$state_dir"
     temporary_file="$(mktemp "$PACMAN_PACKAGE_STATE.tmp.XXXXXXXX")" || \
-        die "无法记录 Arch Mutter 软件包。" "Could not record the Arch Mutter package."
+        die "无法记录 Arch Mutter/Xwayland 软件包。" "Could not record the Arch Mutter/Xwayland packages."
     if ! printf '%s\n' "$@" | sort -u > "$temporary_file" || \
         ! chmod 0644 "$temporary_file" || ! mv -f -- "$temporary_file" "$PACMAN_PACKAGE_STATE"; then
         rm -f -- "$temporary_file"
-        die "无法记录 Arch Mutter 软件包。" "Could not record the Arch Mutter package."
+        die "无法记录 Arch Mutter/Xwayland 软件包。" "Could not record the Arch Mutter/Xwayland packages."
     fi
 }
 
 install_arch_packages() {
-    local file package package_name pacman_conf
+    local file package_name pacman_conf mutter_count=0 xwayland_count=0
     local -a archive_files=() files=() packages=()
 
     command -v pacman >/dev/null 2>&1 || die "未找到 pacman。" "pacman was not found."
@@ -969,12 +987,25 @@ install_arch_packages() {
     for file in "${archive_files[@]}"; do
         package_name="$(LC_ALL=C pacman -Qp "$file" | awk 'NR == 1 { print $1 }')" || \
             die "无法读取 Arch 软件包名。" "Could not read an Arch package name."
-        if [[ "$package_name" == mutter ]]; then
-            files+=("$file")
-        fi
+        case "$package_name" in
+            mutter)
+                files+=("$file")
+                packages+=(mutter)
+                ((mutter_count += 1))
+                ;;
+            xorg-xwayland)
+                files+=("$file")
+                packages+=(xorg-xwayland)
+                ((xwayland_count += 1))
+                ;;
+            *)
+                die "Arch GNOME 归档包含不支持的软件包：$package_name。" "The Arch GNOME archive contains an unsupported package: $package_name."
+                ;;
+        esac
     done
-    ((${#files[@]} == 1)) || die "归档必须包含且仅包含一个 Mutter 运行时包。" \
-        "The archive must contain exactly one Mutter runtime package."
+    if ((${#files[@]} != 2 || mutter_count != 1 || xwayland_count != 1)); then
+        die "归档必须包含一个 Mutter 和一个 patched Xwayland 包。" "The archive must contain one Mutter and one patched Xwayland package."
+    fi
 
     pacman_conf="$(mktemp -t anland-gnome-pacman.XXXXXXXX)"
     cp /etc/pacman.conf "$pacman_conf"
@@ -988,13 +1019,13 @@ install_arch_packages() {
     fi
     if ! pacman --config "$pacman_conf" -U --noconfirm "${files[@]}"; then
         rm -f -- "$pacman_conf"
-        die "Arch Mutter 软件包安装失败。" "Failed to install the Arch Mutter package."
+        die "Arch Mutter/Xwayland 软件包安装失败。" "Failed to install the Arch Mutter/Xwayland packages."
     fi
     rm -f -- "$pacman_conf"
 
-    mapfile -t packages < <(pacman -Qp "${files[@]}" | awk '{ print $1 }' | sort -u)
-    ((${#packages[@]} == 1)) && [[ "${packages[0]}" == mutter ]] || \
-        die "无法确认安装的 Arch Mutter 软件包。" "Could not verify the installed Arch Mutter package."
+    if ! pacman -Q "${packages[@]}" >/dev/null; then
+        die "无法确认已安装 Arch Mutter/Xwayland 软件包。" "Could not verify that the Arch Mutter/Xwayland packages were installed."
+    fi
     append_pacman_ignore_packages "${packages[@]}"
     write_pacman_package_state "${packages[@]}"
     rm -f -- "$APT_HOLD_STATE"

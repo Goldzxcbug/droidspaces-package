@@ -3,7 +3,7 @@ run-name: Anland 软件包 ${{ github.run_number }}
 
 # 三条互相独立的流水线合并在这一个工作流里，各自的发布互不干扰：
 #   kde     —— Anland KDE Wayland（kwin + Xwayland），发布 anland-kde-packages
-#   gnome   —— Anland GNOME Wayland（Debian/Ubuntu: mutter + Xwayland；Arch: Mutter），发布 anland-gnome-packages
+#   gnome   —— Anland GNOME Wayland（Mutter + patched Xwayland），发布 anland-gnome-packages
 #   session —— Anland Next session 原生包，发布 anland-session-packages
 # 每条流水线由一个布尔开关控制，可以同时打开，构建与上传都并行进行；
 # 关闭的流水线不会产生任何 job，也不会触碰它自己的固定发布。
@@ -43,7 +43,7 @@ on:
         default: legacy
       # —— GNOME Wayland ——
       build_gnome:
-        description: 构建 Anland GNOME Wayland 软件包（Mutter；Arch 使用发行版 Xwayland）
+        description: 构建 Anland GNOME Wayland 软件包（Mutter + patched Xwayland）
         required: true
         type: boolean
         default: true
@@ -1095,7 +1095,7 @@ jobs:
         run: bash scripts/publish-cnb-release.sh anland-kde-packages
 
   # ==========================================================================
-  # Anland GNOME Wayland（mutter + Xwayland）
+  # Anland GNOME Wayland（Mutter + patched Xwayland）
   # ==========================================================================
   prepare-gnome:
     name: 解析 Anland GNOME 源码版本
@@ -1376,9 +1376,13 @@ jobs:
             echo "未为 $BUILD_TARGET 收集到任何可安装的软件包" >&2
             exit 1
           fi
-          if [ "$BUILD_TARGET" = Arch ] && [ "$package_count" -ne 1 ]; then
-            echo "Arch 归档必须且只能包含 Mutter 运行时包，当前为 $package_count 个" >&2
-            exit 1
+          if [ "$BUILD_TARGET" = Arch ]; then
+            mutter_package_count="$(find "$package_dir" -maxdepth 1 -type f -name 'mutter-[0-9]*.pkg.tar.*' | wc -l)"
+            xwayland_package_count="$(find "$package_dir" -maxdepth 1 -type f -name 'xorg-xwayland-*.pkg.tar.*' | wc -l)"
+            if [ "$package_count" -ne 2 ] || [ "$mutter_package_count" -ne 1 ] || [ "$xwayland_package_count" -ne 1 ]; then
+              echo "Arch 归档必须恰好包含一个 Mutter 和一个 patched Xwayland 包，当前总数=$package_count Mutter=$mutter_package_count Xwayland=$xwayland_package_count" >&2
+              exit 1
+            fi
           fi
 
           mutter_version="$(tr -d '[:space:]' < "$OUTPUT_DIR/.mutter-version")"
@@ -1775,7 +1779,7 @@ jobs:
             '' \
             '压缩包文件名中的 `mutter-版本` 来自该发行版实际生成的 Mutter 包；不同发行版的版本可以不同。' \
             '' \
-            '每个压缩包包含对应系统的已修补 Mutter 运行时包；Debian/Ubuntu 同时包含 patched Xwayland，Arch 使用发行版 Xwayland。anland-gnome-manifest 精确映射目标系统到资产。' \
+            '每个压缩包包含对应系统的已修补 Mutter 和 Xwayland 运行时包。anland-gnome-manifest 精确映射目标系统到资产。' \
             '' \
             '## 构建详情' \
             '' \
