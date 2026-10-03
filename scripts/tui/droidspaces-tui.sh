@@ -535,7 +535,7 @@ component_supported() {
             ;;
         gnome)
             case "$SYSTEM_ID:$SYSTEM_VERSION" in
-                debian:13*|ubuntu:26.04*) return 0 ;;
+                debian:13*|ubuntu:26.04*|arch:*|archarm:*|archlinux:*) return 0 ;;
                 *) return 1 ;;
             esac
             ;;
@@ -681,7 +681,15 @@ managed_component_installed() {
             esac
             ;;
         gnome)
-            [[ -s /var/lib/anland-gnome/apt-holds ]]
+            case "$SYSTEM_ID" in
+                debian|ubuntu) [[ -s /var/lib/anland-gnome/apt-holds ]] ;;
+                arch|archarm|archlinux)
+                    [[ -s /var/lib/anland-gnome/pacman-packages ]] || \
+                        grep -Eq '^[[:space:]]*IgnorePkg[[:space:]]*=.*(^|[[:space:]])mutter([[:space:]]|$)' \
+                            /etc/pacman.conf 2>/dev/null
+                    ;;
+                *) return 1 ;;
+            esac
             ;;
         anland-next)
             detected_component_package_version anland-next >/dev/null 2>&1
@@ -764,6 +772,7 @@ component_release_parts() {
         gnome)
             tag="anland-gnome-packages"
             case "$SYSTEM_ID:$SYSTEM_VERSION" in
+                arch:*|archarm:*|archlinux:*) prefix="anland-gnome-arch-mutter-"; suffix="-aarch64.tar.gz" ;;
                 debian:13*) prefix="anland-gnome-debian13-mutter-"; suffix="-arm64.tar.gz" ;;
                 ubuntu:26.04*) prefix="anland-gnome-ubuntu2604-mutter-"; suffix="-arm64.tar.gz" ;;
                 *) return 1 ;;
@@ -1998,8 +2007,8 @@ show_about() {
         '此工具统一调用仓库内的六个独立安装器；下载、校验、安装和软件包管理仍由各安装器负责。' \
         'This tool dispatches the six standalone installers. Each installer still owns download, verification, installation, and package management.')"
     printf '\n%s\n' "$(msg \
-        'GNOME Anland 仅支持 Debian 13 和 Ubuntu 26.04；KDE Anland 还支持 Fedora 43/44 与 Arch Linux。' \
-        'GNOME Anland supports Debian 13 and Ubuntu 26.04. KDE Anland also supports Fedora 43/44 and Arch Linux.')"
+        'GNOME Anland 支持 Debian 13、Ubuntu 26.04 和 Arch Linux ARM；KDE Anland 还支持 Fedora 43/44。' \
+        'GNOME Anland supports Debian 13, Ubuntu 26.04, and Arch Linux ARM. KDE Anland also supports Fedora 43/44.')"
     printf '\n%s\n' "$(msg \
         'Anland Next session 支持 Debian 13、Ubuntu 26.04、Fedora 43/44 和 Arch Linux。' \
         'Anland Next session supports Debian 13, Ubuntu 26.04, Fedora 43/44, and Arch Linux.')"

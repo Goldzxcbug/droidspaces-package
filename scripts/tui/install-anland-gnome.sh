@@ -4,7 +4,7 @@ set -euo pipefail
 # The package archives are deliberately kept out of Git. Override the
 # repository when installing packages published by a fork.
 readonly DEFAULT_REPOSITORY="Goldzxcbug/droidspaces-package"
-readonly RELEASE_REPOSITORY="${ANLAND_GNOME_RELEASE_REPOSITORY:-$DEFAULT_REPOSITORY}"
+readonly RELEASE_REPOSITORY="${ANLAND_GNOME_RELEASE_REPOSITORY:-${ANLAND_RELEASE_REPOSITORY:-$DEFAULT_REPOSITORY}}"
 RELEASE_TAG="${ANLAND_GNOME_RELEASE_TAG:-}"
 readonly ROLLING_RELEASE_TAG="anland-gnome-packages"
 readonly MANIFEST_NAME="anland-gnome-manifest"
@@ -16,6 +16,7 @@ readonly GITHUB_API_URL="https://api.github.com"
 readonly GH_PROXY_RELEASE_URL="https://gh-proxy.com/https://github.com"
 readonly CNB_RELEASE_URL="https://cnb.cool"
 readonly APT_HOLD_STATE="/var/lib/anland-gnome/apt-holds"
+readonly PACMAN_PACKAGE_STATE="/var/lib/anland-gnome/pacman-packages"
 readonly COMPONENT_STATE_DIR="/var/lib/droidspaces-tui/components"
 readonly DESKTOP_CONFIG="${DROIDSPACES_DESKTOP_CONFIG:-/etc/droidspaces-desktop.conf}"
 
@@ -28,6 +29,7 @@ ARCHIVE_PREFIX=""
 ARCHIVE_SUFFIX=""
 ARCHIVE_NAME=""
 ARCHIVE_TARGET=""
+PACKAGE_TYPE=""
 PACKAGE_DIR=""
 DOWNLOAD_SOURCE=""
 SKIP_SOURCE_PROBE=false
@@ -168,7 +170,7 @@ parse_arguments() {
     done
 }
 
-uninstall_gnome() {
+uninstall_gnome_deb() {
     local package candidate
     local -a packages=() package_specs=()
     [[ -s "$APT_HOLD_STATE" ]] || {
@@ -198,6 +200,71 @@ uninstall_gnome() {
     rmdir -- "${APT_HOLD_STATE%/*}" 2>/dev/null || true
     log "Anland GNOME 已卸载，发行版 Mutter/Xwayland 已恢复。" \
         "Anland GNOME was uninstalled and distribution Mutter/Xwayland packages were restored."
+}
+
+uninstall_gnome_arch() {
+    local package backup stripped
+    local -a packages=()
+
+    command -v pacman >/dev/null 2>&1 || die "未找到 pacman。" "pacman was not found."
+    [[ -f /etc/pacman.conf ]] || die "找不到 pacman.conf。" "pacman.conf was not found."
+    if [[ -s "$PACMAN_PACKAGE_STATE" ]]; then
+        mapfile -t packages < <(sed -nE 's/^([A-Za-z0-9@.+_-]+)$/\1/p' "$PACMAN_PACKAGE_STATE" | sort -u)
+    elif grep -Eq '^[[:space:]]*IgnorePkg[[:space:]]*=.*(^|[[:space:]])mutter([[:space:]]|$)' /etc/pacman.conf; then
+        packages=(mutter)
+    else
+        rm -f -- "$COMPONENT_STATE_DIR/gnome.version"
+        log "没有 Anland GNOME 安装记录。" "No Anland GNOME installation record was found."
+        return 0
+    fi
+    ((${#packages[@]} > 0)) || die "Arch 软件包恢复清单为空。" "The Arch package restore list is empty."
+
+    backup="$(mktemp -t anland-gnome-uninstall.XXXXXXXX)"
+    stripped="$(mktemp -t anland-gnome-uninstall.XXXXXXXX)"
+    cp -p -- /etc/pacman.conf "$backup"
+    if ! awk -v remove_list="${packages[*]}" '
+        BEGIN { remove_count = split(remove_list, remove_names, /[[:space:]]+/) }
+        /^[[:space:]]*IgnorePkg[[:space:]]*=/ {
+            equals = index($0, "=")
+            count = split(substr($0, equals + 1), items, /[[:space:]]+/)
+            output = ""
+            for (i = 1; i <= count; i++) {
+                remove = 0
+                for (j = 1; j <= remove_count; j++) {
+                    if (items[i] == remove_names[j]) remove = 1
+                }
+                if (items[i] != "" && !remove) {
+                    output = output (output == "" ? "" : " ") items[i]
+                }
+            }
+            if (output != "") print substr($0, 1, equals) " " output
+            next
+        }
+        { print }
+    ' /etc/pacman.conf > "$stripped" || {
+        rm -f -- "$backup" "$stripped"
+        die "无法处理 pacman.conf。" "Could not process pacman.conf."
+    }
+    if ! install -m 0644 -- "$stripped" /etc/pacman.conf || \
+        ! pacman -S --noconfirm "${packages[@]}"; then
+        install -m 0644 -- "$backup" /etc/pacman.conf || true
+        rm -f -- "$backup" "$stripped"
+        die "恢复发行版 Mutter 失败。" "Failed to restore the distribution Mutter package."
+    fi
+
+    rm -f -- "$backup" "$stripped" "$PACMAN_PACKAGE_STATE" \
+        "$APT_HOLD_STATE" "$COMPONENT_STATE_DIR/gnome.version"
+    rmdir -- "${PACMAN_PACKAGE_STATE%/*}" 2>/dev/null || true
+    log "Anland GNOME 已卸载，发行版 Mutter 已恢复。" \
+        "Anland GNOME was uninstalled and distribution Mutter was restored."
+}
+
+uninstall_gnome() {
+    case "$PACKAGE_TYPE" in
+        deb) uninstall_gnome_deb ;;
+        pkg.tar.*) uninstall_gnome_arch ;;
+        *) die "无法确定 GNOME 软件包类型。" "Could not determine the GNOME package type." ;;
+    esac
 }
 
 cleanup() {
@@ -242,23 +309,36 @@ detect_target() {
     local version_id="${VERSION_ID:-}"
     local system_name="${PRETTY_NAME:-$distro_id${version_id:+ $version_id}}"
 
-    [[ -n "$version_id" ]] || die "/etc/os-release 缺少 VERSION_ID。" "/etc/os-release does not contain VERSION_ID."
-    case "$distro_id:$version_id" in
-        debian:13*)
-            TARGET="Debian 13"
-            ARCHIVE_PREFIX="anland-gnome-debian13-mutter-"
-            ARCHIVE_SUFFIX="-arm64.tar.gz"
-            ARCHIVE_TARGET="debian13"
-            ;;
-        ubuntu:26.04*)
-            TARGET="Ubuntu 26.04"
-            ARCHIVE_PREFIX="anland-gnome-ubuntu2604-mutter-"
-            ARCHIVE_SUFFIX="-arm64.tar.gz"
-            ARCHIVE_TARGET="ubuntu2604"
+    case "$distro_id" in
+        arch|archarm|archlinux)
+            TARGET="Arch Linux"
+            PACKAGE_TYPE="pkg.tar.*"
+            ARCHIVE_PREFIX="anland-gnome-arch-mutter-"
+            ARCHIVE_SUFFIX="-aarch64.tar.gz"
+            ARCHIVE_TARGET="arch"
             ;;
         *)
-            die "不支持当前系统 ${system_name}。仅支持 Debian 13 和 Ubuntu 26.04。" \
-                "Unsupported system: ${system_name}. Supported systems are Debian 13 and Ubuntu 26.04."
+            [[ -n "$version_id" ]] || die "/etc/os-release 缺少 VERSION_ID。" "/etc/os-release does not contain VERSION_ID."
+            case "$distro_id:$version_id" in
+                debian:13*)
+                    TARGET="Debian 13"
+                    PACKAGE_TYPE="deb"
+                    ARCHIVE_PREFIX="anland-gnome-debian13-mutter-"
+                    ARCHIVE_SUFFIX="-arm64.tar.gz"
+                    ARCHIVE_TARGET="debian13"
+                    ;;
+                ubuntu:26.04*)
+                    TARGET="Ubuntu 26.04"
+                    PACKAGE_TYPE="deb"
+                    ARCHIVE_PREFIX="anland-gnome-ubuntu2604-mutter-"
+                    ARCHIVE_SUFFIX="-arm64.tar.gz"
+                    ARCHIVE_TARGET="ubuntu2604"
+                    ;;
+                *)
+                    die "不支持当前系统 ${system_name}。仅支持 Debian 13、Ubuntu 26.04 和 Arch Linux ARM。" \
+                        "Unsupported system: ${system_name}. Supported systems are Debian 13, Ubuntu 26.04, and Arch Linux ARM."
+                    ;;
+            esac
             ;;
     esac
 
@@ -584,7 +664,11 @@ select_download_source() {
 
 has_packages() {
     local directory="$1"
-    compgen -G "$directory/*.deb" >/dev/null
+    case "$PACKAGE_TYPE" in
+        deb) compgen -G "$directory/*.deb" >/dev/null ;;
+        pkg.tar.*) compgen -G "$directory/*.pkg.tar.*" >/dev/null ;;
+        *) return 1 ;;
+    esac
 }
 
 require_runtime_dependencies() {
@@ -595,7 +679,11 @@ require_runtime_dependencies() {
                 "The installer requires the missing command: ${command_name}."
     done
 
-    command -v dpkg-deb >/dev/null 2>&1 || die "未找到 dpkg-deb。" "dpkg-deb was not found."
+    case "$PACKAGE_TYPE" in
+        deb) command -v dpkg-deb >/dev/null 2>&1 || die "未找到 dpkg-deb。" "dpkg-deb was not found." ;;
+        pkg.tar.*) command -v pacman >/dev/null 2>&1 || die "未找到 pacman。" "pacman was not found." ;;
+        *) die "无法确定 GNOME 软件包类型。" "Could not determine the GNOME package type." ;;
+    esac
 }
 
 validate_archive_contents() {
@@ -664,15 +752,31 @@ validate_release_asset_checksum() {
 
 validate_package_architecture() {
     local -a files=()
-    local file package_arch
+    local file package_arch package_name mutter_count=0 package_info
 
-    mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.deb' -print | sort)
-    for file in "${files[@]}"; do
-        package_arch="$(dpkg-deb -f "$file" Architecture)"
-        case "$package_arch" in arm64|all) ;; *) return 1 ;; esac
-    done
-
-    ((${#files[@]} > 0))
+    case "$PACKAGE_TYPE" in
+        deb)
+            mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.deb' -print | sort)
+            for file in "${files[@]}"; do
+                package_arch="$(dpkg-deb -f "$file" Architecture)" || return 1
+                case "$package_arch" in arm64|all) ;; *) return 1 ;; esac
+            done
+            ((${#files[@]} > 0))
+            ;;
+        pkg.tar.*)
+            mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.pkg.tar.*' -print | sort)
+            for file in "${files[@]}"; do
+                package_info="$(LC_ALL=C pacman -Qip "$file")" || return 1
+                package_name="$(awk -F: '/^[[:space:]]*Name[[:space:]]*:/ { sub(/^[[:space:]]*/, "", $2); print $2; exit }' <<< "$package_info")"
+                package_arch="$(awk -F: '/^[[:space:]]*Architecture[[:space:]]*:/ { sub(/^[[:space:]]*/, "", $2); print $2; exit }' <<< "$package_info")"
+                [[ "$package_name" =~ ^[A-Za-z0-9@.+_-]+$ ]] || return 1
+                case "$package_arch" in aarch64|any) ;; *) return 1 ;; esac
+                [[ "$package_name" == mutter ]] && ((mutter_count += 1))
+            done
+            (( ${#files[@]} > 0 && mutter_count == 1 ))
+            ;;
+        *) return 1 ;;
+    esac
 }
 
 download_packages_once() {
@@ -820,6 +924,84 @@ install_deb_packages() {
     printf '  hold: %s\n' "${packages[@]}"
 }
 
+append_pacman_ignore_packages() {
+    local package
+    for package in "$@"; do
+        [[ "$package" =~ ^[A-Za-z0-9@.+_-]+$ ]] || \
+            die "Arch 软件包名无效。" "The Arch package name is invalid."
+        if awk -v package="$package" '
+            $1 == "IgnorePkg" {
+                for (i = 3; i <= NF; i++) if ($i == package) found = 1
+            }
+            END { exit found ? 0 : 1 }
+        ' /etc/pacman.conf; then
+            continue
+        fi
+        if grep -qE '^[[:space:]]*IgnorePkg[[:space:]]*=' /etc/pacman.conf; then
+            sed -i -E "0,/^[[:space:]]*IgnorePkg[[:space:]]*=/{s/^([[:space:]]*IgnorePkg[[:space:]]*=.*)$/\\1 ${package}/}" /etc/pacman.conf
+        elif grep -qE '^\[options\][[:space:]]*$' /etc/pacman.conf; then
+            sed -i "/^\[options\][[:space:]]*$/a IgnorePkg = ${package}" /etc/pacman.conf
+        else
+            die "pacman.conf 缺少 [options] 段。" "pacman.conf has no [options] section."
+        fi
+    done
+}
+
+write_pacman_package_state() {
+    local state_dir temporary_file
+    state_dir="${PACMAN_PACKAGE_STATE%/*}"
+    install -d -m 0755 "$state_dir"
+    temporary_file="$(mktemp "$PACMAN_PACKAGE_STATE.tmp.XXXXXXXX")" || \
+        die "无法记录 Arch Mutter 软件包。" "Could not record the Arch Mutter package."
+    if ! printf '%s\n' "$@" | sort -u > "$temporary_file" || \
+        ! chmod 0644 "$temporary_file" || ! mv -f -- "$temporary_file" "$PACMAN_PACKAGE_STATE"; then
+        rm -f -- "$temporary_file"
+        die "无法记录 Arch Mutter 软件包。" "Could not record the Arch Mutter package."
+    fi
+}
+
+install_arch_packages() {
+    local file package package_name pacman_conf
+    local -a archive_files=() files=() packages=()
+
+    command -v pacman >/dev/null 2>&1 || die "未找到 pacman。" "pacman was not found."
+    mapfile -t archive_files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.pkg.tar.*' -print | sort)
+    for file in "${archive_files[@]}"; do
+        package_name="$(LC_ALL=C pacman -Qp "$file" | awk 'NR == 1 { print $1 }')" || \
+            die "无法读取 Arch 软件包名。" "Could not read an Arch package name."
+        if [[ "$package_name" == mutter ]]; then
+            files+=("$file")
+        fi
+    done
+    ((${#files[@]} == 1)) || die "归档必须包含且仅包含一个 Mutter 运行时包。" \
+        "The archive must contain exactly one Mutter runtime package."
+
+    pacman_conf="$(mktemp -t anland-gnome-pacman.XXXXXXXX)"
+    cp /etc/pacman.conf "$pacman_conf"
+    if grep -Eq '^[[:space:]]*#?[[:space:]]*LocalFileSigLevel[[:space:]]*=' "$pacman_conf"; then
+        sed -i -E 's/^[[:space:]]*#?[[:space:]]*LocalFileSigLevel[[:space:]]*=.*/LocalFileSigLevel = Optional/' "$pacman_conf"
+    elif grep -qE '^\[options\][[:space:]]*$' "$pacman_conf"; then
+        sed -i '/^\[options\][[:space:]]*$/a LocalFileSigLevel = Optional' "$pacman_conf"
+    else
+        rm -f -- "$pacman_conf"
+        die "pacman.conf 缺少 [options] 段。" "pacman.conf has no [options] section."
+    fi
+    if ! pacman --config "$pacman_conf" -U --noconfirm "${files[@]}"; then
+        rm -f -- "$pacman_conf"
+        die "Arch Mutter 软件包安装失败。" "Failed to install the Arch Mutter package."
+    fi
+    rm -f -- "$pacman_conf"
+
+    mapfile -t packages < <(pacman -Qp "${files[@]}" | awk '{ print $1 }' | sort -u)
+    ((${#packages[@]} == 1)) && [[ "${packages[0]}" == mutter ]] || \
+        die "无法确认安装的 Arch Mutter 软件包。" "Could not verify the installed Arch Mutter package."
+    append_pacman_ignore_packages "${packages[@]}"
+    write_pacman_package_state "${packages[@]}"
+    rm -f -- "$APT_HOLD_STATE"
+    rmdir -- "${APT_HOLD_STATE%/*}" 2>/dev/null || true
+    printf '  IgnorePkg: %s\n' "${packages[@]}"
+}
+
 main() {
     local archive_version
     detect_language
@@ -841,14 +1023,22 @@ main() {
     fi
     require_root "$@"
 
-    install_deb_packages
+    case "$PACKAGE_TYPE" in
+        deb) install_deb_packages ;;
+        pkg.tar.*) install_arch_packages ;;
+        *) die "无法确定 GNOME 软件包类型。" "Could not determine the GNOME package type." ;;
+    esac
 
-    archive_version="${ARCHIVE_NAME#"$ARCHIVE_PREFIX"}"
-    archive_version="${archive_version%"$ARCHIVE_SUFFIX"}"
+    if [[ -n "$ARCHIVE_NAME" ]]; then
+        archive_version="${ARCHIVE_NAME#"$ARCHIVE_PREFIX"}"
+        archive_version="${archive_version%"$ARCHIVE_SUFFIX"}"
+    elif [[ "$PACKAGE_TYPE" == "pkg.tar.*" ]]; then
+        archive_version="$(pacman -Q mutter | awk 'NR == 1 { print $2 }')"
+    fi
     record_component_version "$archive_version"
     update_desktop_config
-    log "安装完成，patched Mutter/Xwayland 已锁定。" \
-        "Installation complete; patched Mutter/Xwayland packages are now locked."
+    log "安装完成，patched Mutter 已锁定。" \
+        "Installation complete; patched Mutter is now locked."
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
