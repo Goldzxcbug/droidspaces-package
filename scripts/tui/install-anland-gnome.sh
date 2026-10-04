@@ -255,10 +255,10 @@ uninstall_gnome_arch() {
             next
         }
         { print }
-    ' /etc/pacman.conf > "$stripped" || {
+    ' /etc/pacman.conf > "$stripped"; then
         rm -f -- "$backup" "$stripped"
         die "无法处理 pacman.conf。" "Could not process pacman.conf."
-    }
+    fi
     if ! install -m 0644 -- "$stripped" /etc/pacman.conf || \
         ! pacman -S --noconfirm "${packages[@]}"; then
         install -m 0644 -- "$backup" /etc/pacman.conf || true
