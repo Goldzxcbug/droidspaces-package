@@ -512,9 +512,11 @@ is_anland_kde_installed() {
 }
 
 refuse_kde_conflict() {
-    is_anland_kde_installed && die \
-        "检测到 Anland KDE。Niri 与 KDE 共用 patched xorg-xwayland；为避免覆盖或错误恢复，请先卸载 Anland KDE。" \
-        "Anland KDE is installed. Niri and KDE share patched xorg-xwayland; uninstall Anland KDE first to avoid replacing or restoring the wrong package."
+    if is_anland_kde_installed; then
+        die "检测到 Anland KDE。Niri 与 KDE 共用 patched xorg-xwayland；为避免覆盖或错误恢复，请先卸载 Anland KDE。" \
+            "Anland KDE is installed. Niri and KDE share patched xorg-xwayland; uninstall Anland KDE first to avoid replacing or restoring the wrong package."
+    fi
+    return 0
 }
 
 download_packages_once() {
@@ -677,6 +679,12 @@ install_packages() {
     local -a files=()
     mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f \( -name '*.pkg.tar.zst' -o -name '*.pkg.tar.xz' \) -print | sort)
     ((${#files[@]} == 2)) || die "安装包集合不完整。" "The package set is incomplete."
+    # pacman -U checks dependencies but does not fetch missing repository packages.
+    if ! pacman -S --noconfirm --needed \
+        glibc gcc-libs mesa libdrm libinput seatd libdisplay-info libxkbcommon \
+        pixman wayland pango cairo pipewire libpipewire systemd-libs xwayland-satellite; then
+        die "无法安装 Niri 所需的 Arch 依赖包。" "Could not install the Arch dependencies required by Niri."
+    fi
     pacman_conf="$(mktemp -t anland-niri-pacman.XXXXXXXX)"
     cp -p -- "$PACMAN_CONF" "$pacman_conf"
     if grep -Eq '^[[:space:]]*#?[[:space:]]*LocalFileSigLevel[[:space:]]*=' "$pacman_conf"; then
@@ -706,7 +714,7 @@ install_packages() {
 uninstall_packages() {
     command -v pacman >/dev/null 2>&1 || die "未找到 pacman。" "pacman was not found."
     local kde_present=false
-    is_anland_kde_installed && kde_present=true
+    if is_anland_kde_installed; then kde_present=true; fi
     if pacman -Q niri-anland >/dev/null 2>&1; then
         pacman -R --noconfirm niri-anland || die "卸载 niri-anland 失败。" "Failed to uninstall niri-anland."
     else
