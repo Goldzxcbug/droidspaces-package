@@ -48,6 +48,7 @@ detect_language() {
     local locale_name="${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}"
     locale_name="${locale_name,,}"
     [[ "$locale_name" == zh* ]] && UI_LANG="zh"
+    return 0
 }
 
 msg() {
