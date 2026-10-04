@@ -438,11 +438,11 @@ validate_archive_contents() {
         case "$entry" in
             anland-niri-packages/arch/) ;;
             anland-niri-packages/arch/.anland-niri-build-info) has_info=true ;;
-            anland-niri-packages/arch/*.pkg.tar.zst)
+            anland-niri-packages/arch/*.pkg.tar.zst|anland-niri-packages/arch/*.pkg.tar.xz)
                 local basename="${entry##*/}"
-                [[ "$basename" =~ ^[A-Za-z0-9][A-Za-z0-9._+~-]*\.pkg\.tar\.zst$ && "$basename" != *..* ]] || return 1
-                [[ "$basename" == niri-anland-*.pkg.tar.zst ]] && has_niri=true
-                [[ "$basename" == xorg-xwayland-*.pkg.tar.zst ]] && has_xwayland=true
+                [[ "$basename" =~ ^[A-Za-z0-9][A-Za-z0-9._+~-]*\.pkg\.tar\.(zst|xz)$ && "$basename" != *..* ]] || return 1
+                [[ "$basename" == niri-anland-*.pkg.tar.* ]] && has_niri=true
+                [[ "$basename" == xorg-xwayland-*.pkg.tar.* ]] && has_xwayland=true
                 ;;
             /*|.|./*|..|../*|*/.|*/./*|*/..|*/../*) return 1 ;;
             *) return 1 ;;
@@ -462,7 +462,7 @@ validate_package_set() {
     local file info name arch version count_niri=0 count_xwayland=0
     local niri_version=""
     local -a files=()
-    mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.pkg.tar.zst' -print | sort)
+    mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f \( -name '*.pkg.tar.zst' -o -name '*.pkg.tar.xz' \) -print | sort)
     ((${#files[@]} == 2)) || return 1
     for file in "${files[@]}"; do
         info="$(LC_ALL=C pacman -Qip "$file")" || return 1
@@ -472,11 +472,11 @@ validate_package_set() {
         [[ "$arch" == aarch64 && "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+:~_-]{0,63}$ ]] || return 1
         case "$name" in
             niri-anland)
-                [[ "$file" == */niri-anland-*.pkg.tar.zst ]] || return 1
+                [[ "$file" == */niri-anland-*.pkg.tar.zst || "$file" == */niri-anland-*.pkg.tar.xz ]] || return 1
                 count_niri=$((count_niri + 1)); niri_version="$version"
                 ;;
             xorg-xwayland)
-                [[ "$file" == */xorg-xwayland-*.pkg.tar.zst ]] || return 1
+                [[ "$file" == */xorg-xwayland-*.pkg.tar.zst || "$file" == */xorg-xwayland-*.pkg.tar.xz ]] || return 1
                 count_xwayland=$((count_xwayland + 1))
                 ;;
             *) return 1 ;;
@@ -675,7 +675,7 @@ remove_package_holds() {
 install_packages() {
     local pacman_conf installed_version
     local -a files=()
-    mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.pkg.tar.zst' -print | sort)
+    mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f \( -name '*.pkg.tar.zst' -o -name '*.pkg.tar.xz' \) -print | sort)
     ((${#files[@]} == 2)) || die "安装包集合不完整。" "The package set is incomplete."
     pacman_conf="$(mktemp -t anland-niri-pacman.XXXXXXXX)"
     cp -p -- "$PACMAN_CONF" "$pacman_conf"
