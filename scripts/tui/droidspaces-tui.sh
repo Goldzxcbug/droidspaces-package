@@ -49,7 +49,7 @@ MENU_ESCAPE_SEQUENCE=""
 MENU_TTY_ECHO_DISABLED=false
 DYNAMIC_MENU_DRAWN=false
 
-readonly -a COMPONENT_NAMES=(mesa hangover fonts kde gnome anland-next)
+readonly -a COMPONENT_NAMES=(mesa hangover fonts kde gnome niri anland-next)
 readonly -a SPINNER_FRAMES=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
 declare -A COMPONENT_CURRENT_VERSIONS=()
 declare -A COMPONENT_UPSTREAM_VERSIONS=()
@@ -201,6 +201,11 @@ set_desktop_component() {
             DESKTOP_COMPONENT_LABEL="Anland KDE (KWin/Xwayland)"
             DESKTOP_COMPONENT_MODE="direct"
             ;;
+        niri)
+            DESKTOP_COMPONENT="niri"
+            DESKTOP_COMPONENT_LABEL="Anland Niri (Niri/Xwayland)"
+            DESKTOP_COMPONENT_MODE="direct"
+            ;;
         gnome)
             DESKTOP_COMPONENT="gnome"
             DESKTOP_COMPONENT_LABEL="Anland GNOME (Mutter/Xwayland)"
@@ -240,6 +245,8 @@ detect_desktop_component() {
     # Compatibility for RootFS images built before the desktop config existed.
     if managed_component_installed kde; then
         set_desktop_component kde
+    elif managed_component_installed niri; then
+        set_desktop_component niri
     elif managed_component_installed gnome; then
         set_desktop_component gnome
     elif managed_component_installed anland-next; then
@@ -470,6 +477,7 @@ installer_names() {
         fonts) printf '%s\n%s\n' "install-winefonts.sh" "install-winefonts" ;;
         kde) printf '%s\n%s\n' "install-anland-kde.sh" "install-anland-kde" ;;
         gnome) printf '%s\n%s\n' "install-anland-gnome.sh" "install-anland-gnome" ;;
+        niri) printf '%s\n%s\n' "install-anland-niri.sh" "install-anland-niri" ;;
         anland-next) printf '%s\n%s\n' "install-anland-next.sh" "install-anland-next" ;;
         *) return 1 ;;
     esac
@@ -530,6 +538,12 @@ component_supported() {
         kde)
             case "$SYSTEM_ID:$SYSTEM_VERSION" in
                 arch:*|archarm:*|debian:13*|ubuntu:26.04*|fedora:43*|fedora:44*) return 0 ;;
+                *) return 1 ;;
+            esac
+            ;;
+        niri)
+            case "$SYSTEM_ID:$SYSTEM_VERSION" in
+                arch:*|archarm:*|archlinux:*) return 0 ;;
                 *) return 1 ;;
             esac
             ;;
@@ -624,6 +638,9 @@ detected_component_package_version() {
         kde)
             version="$(installed_package_version kwin-wayland kwin-x11 kwin-common kwin)" || true
             ;;
+        niri)
+            version="$(installed_package_version niri-anland)" || true
+            ;;
         gnome)
             version="$(installed_package_version mutter-common mutter)" || true
             ;;
@@ -680,6 +697,9 @@ managed_component_installed() {
                 *) return 1 ;;
             esac
             ;;
+        niri)
+            detected_component_package_version niri >/dev/null 2>&1
+            ;;
         gnome)
             case "$SYSTEM_ID" in
                 debian|ubuntu) [[ -s /var/lib/anland-gnome/apt-holds ]] ;;
@@ -713,6 +733,9 @@ component_versions_match() {
         kde|gnome)
             current="${current#*:}"
             [[ "$current" == "$upstream"-* ]]
+            ;;
+        niri)
+            [[ "$current" == "$upstream" || "$current" == "$upstream"-* || "$current" == "$upstream"+* ]]
             ;;
         anland-next)
             # Debian uses the bare package version; RPM and pacman append
@@ -769,6 +792,14 @@ component_release_parts() {
                 *) return 1 ;;
             esac
             ;;
+        niri)
+            is_arm64 || return 1
+            tag="anland-niri-packages"
+            case "$SYSTEM_ID:$SYSTEM_VERSION" in
+                arch:*|archarm:*|archlinux:*) prefix="anland-niri-arch-"; suffix="-aarch64.tar.gz" ;;
+                *) return 1 ;;
+            esac
+            ;;
         gnome)
             tag="anland-gnome-packages"
             case "$SYSTEM_ID:$SYSTEM_VERSION" in
@@ -816,6 +847,7 @@ component_release_manifest_name() {
         fonts) printf '%s' 'winefonts-manifest' ;;
         kde) printf '%s' 'anland-kde-manifest' ;;
         gnome) printf '%s' 'anland-gnome-manifest' ;;
+        niri) printf '%s' 'anland-niri-manifest' ;;
         anland-next) printf '%s' 'anland-session-manifest' ;;
         *) return 1 ;;
     esac
@@ -1024,7 +1056,7 @@ component_versions_pending() {
 component_visible() {
     case "$1" in
         mesa|hangover|fonts) return 0 ;;
-        kde|gnome|anland-next)
+        kde|gnome|niri|anland-next)
             [[ "$DESKTOP_COMPONENT_MODE" == choose || "$DESKTOP_COMPONENT" == "$1" ]]
             ;;
         *) return 1 ;;
@@ -1159,7 +1191,7 @@ component_status_display() {
 desktop_selection_status_display() {
     local component upstream installed_any=false
 
-    for component in kde gnome anland-next; do
+    for component in kde gnome niri anland-next; do
         if [[ "${COMPONENT_INSTALLED[$component]:-false}" == true ]]; then
             installed_any=true
         fi
@@ -1168,7 +1200,7 @@ desktop_selection_status_display() {
         printf '%b%s%b' "$COLOR_RED" "$(msg '未安装' 'not installed')" "$COLOR_RESET"
         return
     fi
-    for component in kde gnome anland-next; do
+    for component in kde gnome niri anland-next; do
         [[ "${COMPONENT_INSTALLED[$component]:-false}" == true ]] || continue
         upstream="${COMPONENT_UPSTREAM_VERSIONS[$component]:-}"
         if [[ "$upstream" == pending ]]; then
@@ -1176,7 +1208,7 @@ desktop_selection_status_display() {
             return
         fi
     done
-    for component in kde gnome anland-next; do
+    for component in kde gnome niri anland-next; do
         [[ "${COMPONENT_INSTALLED[$component]:-false}" == true ]] || continue
         upstream="${COMPONENT_UPSTREAM_VERSIONS[$component]:-}"
         if [[ "$upstream" == "$(msg '超时' 'timeout')" ]]; then
@@ -1324,7 +1356,8 @@ desktop_component_selection_menu() {
                 "$(msg '选择桌面组件' 'Select desktop component')" "$COLOR_RESET"
             print_component_status "1" "Anland KDE (KWin/Xwayland)" "kde"
             print_component_status "2" "Anland GNOME (Mutter/Xwayland)" "gnome"
-            print_component_status "3" "Anland Next session" "anland-next"
+            print_component_status "3" "Anland Niri (Niri/Xwayland)" "niri"
+            print_component_status "4" "Anland Next session" "anland-next"
             printf '  %b[0]%b %s\n\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '返回' 'Back')"
         fi
         draw_dynamic_menu_prompt
@@ -1349,6 +1382,11 @@ desktop_component_selection_menu() {
                 return
                 ;;
             3)
+                restore_dynamic_menu_echo
+                component_menu "niri" "Anland Niri (Niri/Xwayland)"
+                return
+                ;;
+            4)
                 restore_dynamic_menu_echo
                 component_menu "anland-next" "Anland Next session"
                 return
@@ -2004,14 +2042,14 @@ show_about() {
     draw_header
     printf '\n%b%s%b\n\n' "$COLOR_BOLD" "$(msg '关于' 'About')" "$COLOR_RESET"
     printf '%s\n' "$(msg \
-        '此工具统一调用仓库内的六个独立安装器；下载、校验、安装和软件包管理仍由各安装器负责。' \
-        'This tool dispatches the six standalone installers. Each installer still owns download, verification, installation, and package management.')"
+        '此工具统一调用仓库内的七个独立安装器；下载、校验、安装和软件包管理仍由各安装器负责。' \
+        'This tool dispatches the seven standalone installers. Each installer still owns download, verification, installation, and package management.')"
     printf '\n%s\n' "$(msg \
         'GNOME Anland 支持 Debian 13、Ubuntu 26.04 和 Arch Linux ARM；KDE Anland 还支持 Fedora 43/44。' \
         'GNOME Anland supports Debian 13, Ubuntu 26.04, and Arch Linux ARM. KDE Anland also supports Fedora 43/44.')"
     printf '\n%s\n' "$(msg \
-        'Anland Next session 支持 Debian 13、Ubuntu 26.04、Fedora 43/44 和 Arch Linux。' \
-        'Anland Next session supports Debian 13, Ubuntu 26.04, Fedora 43/44, and Arch Linux.')"
+        'Anland Next session 支持 Debian 13、Ubuntu 26.04、Fedora 43/44 和 Arch Linux；Anland Niri 目前仅支持 Arch Linux ARM。' \
+        'Anland Next session supports Debian 13, Ubuntu 26.04, Fedora 43/44, and Arch Linux. Anland Niri currently supports Arch Linux ARM only.')"
     printf '\n%s\n' "$(msg \
         '桌面更新项根据 /etc/droidspaces-desktop.conf 中的 DESKTOP 字段选择。' \
         'The desktop update entry is selected by the DESKTOP field in /etc/droidspaces-desktop.conf.')"

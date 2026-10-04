@@ -41,6 +41,7 @@ EXPECTED_MANIFEST_SHA256=""
 EXPECTED_ARCHIVE_SHA256=""
 OFFICIAL_RELEASE_METADATA=""
 UNINSTALL=false
+KDE_XWAYLAND_PRESERVED=false
 
 detect_language() {
     local locale_name="${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}"
@@ -223,19 +224,29 @@ uninstall_kde_rpm() {
 }
 
 uninstall_kde_arch() {
-    local backup stripped
+    local backup stripped niri_managed=false
+    local -a restore_packages=(kwin)
     command -v pacman >/dev/null 2>&1 || die "未找到 pacman。" "pacman was not found."
     [[ -f /etc/pacman.conf ]] || die "找不到 pacman.conf。" "pacman.conf was not found."
+    [[ -s "$COMPONENT_STATE_DIR/niri.version" ]] && niri_managed=true
+    if [[ "$niri_managed" == true ]]; then
+        KDE_XWAYLAND_PRESERVED=true
+        log "检测到 Anland Niri，将保留共用的 patched xorg-xwayland。" \
+            "Anland Niri is installed; preserving the shared patched xorg-xwayland."
+    else
+        restore_packages+=(xorg-xwayland)
+    fi
     backup="$(mktemp -t anland-kde-uninstall.XXXXXXXX)"
     stripped="$(mktemp -t anland-kde-uninstall.XXXXXXXX)"
     cp -p -- /etc/pacman.conf "$backup"
-    awk '
+    awk -v keep_xwayland="$niri_managed" '
         /^[[:space:]]*IgnorePkg[[:space:]]*=/ {
             equals = index($0, "=")
             count = split(substr($0, equals + 1), items, /[[:space:]]+/)
             output = ""
             for (i = 1; i <= count; i++) {
-                if (items[i] != "" && items[i] != "kwin" && items[i] != "xorg-xwayland") {
+                if (items[i] != "" && items[i] != "kwin" &&
+                    (items[i] != "xorg-xwayland" || keep_xwayland == "true")) {
                     output = output (output == "" ? "" : " ") items[i]
                 }
             }
@@ -245,7 +256,7 @@ uninstall_kde_arch() {
         { print }
     ' /etc/pacman.conf > "$stripped"
     if ! install -m 0644 "$stripped" /etc/pacman.conf || \
-        ! pacman -S --noconfirm kwin xorg-xwayland; then
+        ! pacman -S --noconfirm "${restore_packages[@]}"; then
         install -m 0644 "$backup" /etc/pacman.conf || true
         rm -f -- "$backup" "$stripped"
         die "恢复发行版 KWin/Xwayland 失败。" "Failed to restore distribution KWin/Xwayland packages."
@@ -259,8 +270,13 @@ uninstall_kde() {
         rpm) uninstall_kde_rpm ;;
         pkg.tar.*) uninstall_kde_arch ;;
     esac
-    log "Anland KDE 已卸载，发行版 KWin/Xwayland 已恢复。" \
-        "Anland KDE was uninstalled and distribution KWin/Xwayland packages were restored."
+    if [[ "$KDE_XWAYLAND_PRESERVED" == true ]]; then
+        log "Anland KDE 已卸载，发行版 KWin 已恢复，共用的 patched Xwayland 仍由 Anland Niri 管理。" \
+            "Anland KDE was uninstalled and distribution KWin was restored; the shared patched Xwayland remains managed by Anland Niri."
+    else
+        log "Anland KDE 已卸载，发行版 KWin/Xwayland 已恢复。" \
+            "Anland KDE was uninstalled and distribution KWin/Xwayland packages were restored."
+    fi
 }
 
 cleanup() {
@@ -1300,6 +1316,10 @@ main() {
         download_packages
     fi
     require_root "$@"
+    if [[ "$PACKAGE_TYPE" == "pkg.tar.*" && -s "$COMPONENT_STATE_DIR/niri.version" ]]; then
+        die "检测到 Anland Niri。Niri 与 KDE 共用 patched xorg-xwayland；为避免覆盖，请先卸载 Anland Niri。" \
+            "Anland Niri is installed. Niri and KDE share patched xorg-xwayland; uninstall Anland Niri first to avoid replacing it."
+    fi
 
     case "$PACKAGE_TYPE" in
         deb) install_deb_packages ;;

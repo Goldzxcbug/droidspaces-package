@@ -26,18 +26,16 @@ RootFS 使用的一次性引导器，不会安装到容器；TUI 更新时只会
 和“卸载”。Anland Next session 与 KDE、GNOME 一样由桌面/会话组件入口统一管理。桌面更新项读取
 `/etc/droidspaces-desktop.conf` 的 `DESKTOP` 字段：KDE/KDE
 mobile 只显示 Anland KDE，GNOME 只显示 Anland GNOME，Anland Next 只显示其 session；`none`
-或未知桌面进入选择页，可选择 Anland KDE、GNOME 或 Next session。旧 RootFS 缺少配置时按已
-安装组件兜底，无法判断时同样进入选择页。成功安装 Anland KDE 或 GNOME 后，安装器只把
-`DESKTOP=none` 原子更新为对应桌面，
-不会修改显示后端或桌面环境变量；配置文件不存在时会创建桌面标记，已有明确桌面则保持
-不变。版本检测在启动 TUI 时运行，进入菜单、返回或输入无效内容不会重新检测；安装或
+或未知桌面进入选择页，可选择 Anland KDE、GNOME、Niri 或 Next session。`DESKTOP=niri` 时只显示 Anland Niri；Niri 目前仅支持 Arch Linux ARM。旧 RootFS 缺少配置时按已
+安装组件兜底，无法判断时同样进入选择页。成功安装 Anland KDE、GNOME 或 Niri 后，安装器只把
+`DESKTOP=none` 原子更新为对应桌面；Niri 同时将 `DISPLAY_BACKEND` 设为 `anland-wayland`，因为 Niri 不支持 X11 后端。配置文件不存在时会创建桌面标记，已有明确桌面则保持
+不变。Niri 与 Anland KDE 共用 patched Xwayland；为避免相互覆盖，已有 Anland KDE 时会拒绝安装 Niri，卸载 Niri 时会保留 KDE 使用的 Xwayland。版本检测在启动 TUI 时运行，进入菜单、返回或输入无效内容不会重新检测；安装或
 卸载实际开始执行后，返回主菜单时会重新识别桌面并自动刷新一次。输入内容会显示并支持
 退格，Loading 使用原地重绘以避免反复清屏闪烁。
 
-选择 CNB 下载源时，TUI 不查询 GitHub API；安装器从同一 CNB Release 的清单读取附件
-名称、SHA-256 和大小（旧发布缺少摘要时会明确提示并仅保留归档结构与包元数据校验）。
-GitHub 与代理模式仍使用 GitHub Release API 交叉核验。这样只能访问 CNB 的环境可以完整
-使用 CNB 安装和更新，不会因 GitHub 不可达而被阻塞。
+多数组件选择 CNB 下载源时，安装器从同一 CNB Release 的清单读取附件名称和 SHA-256；
+GitHub 与代理模式使用 GitHub Release API 交叉核验。Anland Niri 还会用 GitHub 官方附件摘要
+交叉验证 CNB 的 SHA256SUMS，因此安装 Niri 时 GitHub API 也必须可访问。
 
 “回收存储空间（稀疏镜像）”用于在正常启动的 `rootfs.img` 容器内回收已经删除文件所占的
 宿主物理空间。TUI 会先确认根文件系统是可写的 Ext4 loop 镜像，经用户确认后以 root 身份
@@ -50,7 +48,7 @@ GitHub 与代理模式仍使用 GitHub Release API 交叉核验。这样只能�
 身份运行脚本；该脚本会交互式选择并修改当前容器的系统软件源配置。
 
 安装器成功完成后会将精确的 Release 版本记录到 `/var/lib/droidspaces-tui/components`。
-卸载 Mesa、KWin 或 Mutter 补丁时会恢复发行版官方包，而不是直接删除系统图形栈；
+卸载 Mesa、KWin、Mutter 或 Niri 补丁时会恢复发行版官方包，而不是直接删除系统图形栈；
 Hangover Wine 和 Wine 字体则会移除各自的软件包或受管目录。
 
 ## 发布

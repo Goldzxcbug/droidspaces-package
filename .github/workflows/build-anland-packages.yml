@@ -1,15 +1,16 @@
 name: 构建 Anland 软件包
 run-name: Anland 软件包 ${{ github.run_number }}
 
-# 三条互相独立的流水线合并在这一个工作流里，各自的发布互不干扰：
+# 四条互相独立的流水线合并在这一个工作流里，各自的发布互不干扰：
 #   kde     —— Anland KDE Wayland（kwin + Xwayland），发布 anland-kde-packages
 #   gnome   —— Anland GNOME Wayland（Mutter + patched Xwayland），发布 anland-gnome-packages
 #   session —— Anland Next session 原生包，发布 anland-session-packages
+#   niri    —— Anland Niri Arch ARM64 包（niri + patched Xwayland），发布 anland-niri-packages
 # 每条流水线由一个布尔开关控制，可以同时打开，构建与上传都并行进行；
 # 关闭的流水线不会产生任何 job，也不会触碰它自己的固定发布。
 on:
   schedule:
-    # 每天北京时间 08:00（UTC 00:00）构建全部三套软件包。
+    # 每天北京时间 08:00（UTC 00:00）构建全部四套软件包。
     - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
@@ -95,6 +96,22 @@ on:
         required: true
         type: string
         default: main
+      # —— Anland Niri ——
+      build_niri:
+        description: 构建 Anland Niri Arch ARM64 软件包（niri + patched Xwayland）
+        required: true
+        type: boolean
+        default: true
+      niri_repo:
+        description: Niri 使用的 Anland 仓库地址
+        required: true
+        type: string
+        default: https://github.com/SuperTurtleDev/anland.git
+      niri_ref:
+        description: Niri 使用的 Anland 分支、标签或提交
+        required: true
+        type: string
+        default: legacy
       # —— 通用 ——
       publish_cnb:
         description: 同步发布到 CNB 国内镜像
@@ -113,6 +130,7 @@ jobs:
       kde: ${{ steps.select.outputs.kde }}
       gnome: ${{ steps.select.outputs.gnome }}
       session: ${{ steps.select.outputs.session }}
+      niri: ${{ steps.select.outputs.niri }}
     steps:
       - name: 选择要构建的流水线
         id: select
@@ -121,23 +139,26 @@ jobs:
           KDE_INPUT: ${{ inputs.build_kde }}
           GNOME_INPUT: ${{ inputs.build_gnome }}
           SESSION_INPUT: ${{ inputs.build_session }}
+          NIRI_INPUT: ${{ inputs.build_niri }}
         shell: bash
         run: |
           set -euo pipefail
 
-          # 定时构建始终构建全部三套软件包；手动触发按各自的布尔开关选择。
+          # 定时构建始终构建全部四套软件包；手动触发按各自的布尔开关选择。
           if [ "$EVENT_NAME" = schedule ]; then
             kde=true
             gnome=true
             session=true
+            niri=true
           else
             kde="${KDE_INPUT:-false}"
             gnome="${GNOME_INPUT:-false}"
             session="${SESSION_INPUT:-false}"
+            niri="${NIRI_INPUT:-false}"
           fi
 
           enabled=()
-          for entry in "kde=$kde" "gnome=$gnome" "session=$session"; do
+          for entry in "kde=$kde" "gnome=$gnome" "session=$session" "niri=$niri"; do
             if [ "${entry#*=}" = true ]; then
               enabled+=("${entry%%=*}")
             fi
@@ -151,8 +172,255 @@ jobs:
             echo "kde=$kde"
             echo "gnome=$gnome"
             echo "session=$session"
+            echo "niri=$niri"
           } >> "$GITHUB_OUTPUT"
           echo "本次构建：${enabled[*]}"
+
+  # ===========================================================================
+  # Anland Niri（Arch ARM64）
+  # ===========================================================================
+  prepare-niri:
+    name: 解析 Anland Niri 源码版本
+    needs: select
+    if: ${{ needs.select.outputs.niri == 'true' }}
+    runs-on: ubuntu-26.04
+    outputs:
+      anland_commit: ${{ steps.resolve.outputs.anland_commit }}
+    steps:
+      - name: 要求从 main 分支触发
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_NAME" != main ]; then
+            echo "此工作流必须从 main 分支触发。" >&2
+            exit 1
+          fi
+
+      - name: 将请求的源解析为单个提交
+        id: resolve
+        env:
+          ANLAND_REPO: ${{ inputs.niri_repo || 'https://github.com/SuperTurtleDev/anland.git' }}
+          ANLAND_REF: ${{ inputs.niri_ref || 'legacy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$(mktemp -d)/anland"
+          trap 'rm -rf "${source_dir%/anland}"' EXIT
+          git init --quiet "$source_dir"
+          git -C "$source_dir" remote add origin "$ANLAND_REPO"
+          git -C "$source_dir" fetch --quiet --depth=1 origin "$ANLAND_REF"
+          anland_commit="$(git -C "$source_dir" rev-parse FETCH_HEAD)"
+          git -C "$source_dir" cat-file -e "${anland_commit}^{commit}"
+          echo "anland_commit=$anland_commit" >> "$GITHUB_OUTPUT"
+          echo "已将 $ANLAND_REPO @ $ANLAND_REF 解析为 $anland_commit"
+
+  build-niri:
+    name: 构建 Niri Arch ARM64 软件包
+    needs: prepare-niri
+    runs-on: ubuntu-24.04-arm
+    env:
+      ANLAND_REPO: ${{ inputs.niri_repo || 'https://github.com/SuperTurtleDev/anland.git' }}
+      ANLAND_COMMIT: ${{ needs.prepare-niri.outputs.anland_commit }}
+    steps:
+      - name: 在 Arch Linux ARM 中构建软件包
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_dir=.niri-package-build/arch
+          rm -rf "$output_dir"
+          mkdir -p "$output_dir"
+          docker run --rm -i \
+            --platform linux/arm64 \
+            -e ANLAND_REPO \
+            -e ANLAND_COMMIT \
+            -v "$PWD/$output_dir:/packages" \
+            ogarcia/archlinux:latest \
+            bash -s <<'ANLAND_BUILD'
+              set -euo pipefail
+              pacman -Syu --noconfirm
+              pacman -S --noconfirm --needed base-devel git ca-certificates sudo
+              useradd -m -s /bin/bash anland
+              printf "anland ALL=(root) NOPASSWD: /usr/bin/pacman\n" > /etc/sudoers.d/anland-pacman
+              chmod 0440 /etc/sudoers.d/anland-pacman
+              if grep -q "^#PACMAN_AUTH=()" /etc/makepkg.conf; then
+                sed -i "s/^#PACMAN_AUTH=().*/PACMAN_AUTH=(sudo)/" /etc/makepkg.conf
+              else
+                printf "\nPACMAN_AUTH=(sudo)\n" >> /etc/makepkg.conf
+              fi
+              chown -R anland:anland /packages
+
+              git init --quiet /tmp/anland
+              git -C /tmp/anland remote add origin "$ANLAND_REPO"
+              git -C /tmp/anland fetch --quiet --depth=1 origin "$ANLAND_COMMIT"
+              git -C /tmp/anland checkout --quiet --detach FETCH_HEAD
+              test -f /tmp/anland/producers/niri/Arch_v5/build.sh
+              su -s /bin/bash anland -c 'cd /tmp/anland/producers/niri/Arch_v5 && ANLAND_INSTALL=0 WORKDIR=/packages ./build.sh --noconfirm'
+              chmod -R a+rX /packages
+
+              package_dir=/packages/packages
+              niri_package=
+              found_niri=false
+              found_xwayland=false
+              while IFS= read -r package; do
+                package_name="$(LC_ALL=C pacman -Qp "$package" | awk 'NR == 1 { print $1 }')"
+                case "$package_name" in
+                  niri-anland)
+                    niri_package="$package"
+                    found_niri=true
+                    ;;
+                  xorg-xwayland)
+                    found_xwayland=true
+                    ;;
+                  *) echo "构建生成了意外的 Arch 包：$package_name" >&2; exit 1 ;;
+                esac
+              done < <(find "$package_dir" -maxdepth 1 -type f -name '*.pkg.tar.*' -print | sort)
+              [ "$found_niri" = true ] || { echo "未找到 niri-anland pacman 包" >&2; exit 1; }
+              [ "$found_xwayland" = true ] || { echo "未找到打过补丁的 xorg-xwayland pacman 包" >&2; exit 1; }
+              package_version="$(LC_ALL=C pacman -Qp "$niri_package" | awk 'NR == 1 { print $2 }')"
+              package_version="${package_version#*:}"
+              package_version="${package_version%-*}"
+              case "$package_version" in
+                ''|*[!A-Za-z0-9.+~_-]*) echo "无效的 Niri 包版本：$package_version" >&2; exit 1 ;;
+              esac
+              printf '%s\n' "$package_version" > /packages/.niri-version
+          ANLAND_BUILD
+
+      - name: 打包发布资产
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_dir=.niri-package-build/arch
+          package_dir="$RUNNER_TEMP/anland-niri-packages/arch"
+          release_dir="$GITHUB_WORKSPACE/.release-assets/niri"
+          rm -rf "$package_dir" "$release_dir"
+          mkdir -p "$package_dir" "$release_dir"
+          find "$output_dir/packages" -maxdepth 1 -type f -name '*.pkg.tar.*' -exec cp -v {} "$package_dir/" \;
+          package_count="$(find "$package_dir" -maxdepth 1 -type f -name '*.pkg.tar.*' | wc -l)"
+          [ "$package_count" -gt 0 ] || { echo "没有收集到 pacman 软件包" >&2; exit 1; }
+          version="$(tr -d '[:space:]' < "$output_dir/.niri-version")"
+          case "$version" in
+            ''|*[!A-Za-z0-9.+~_-]*) echo "无效的 Niri 包版本：$version" >&2; exit 1 ;;
+          esac
+          build_time="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          printf 'target=arch\nniri_version=%s\nbuild_time=%s\n' "$version" "$build_time" > "$package_dir/.anland-niri-build-info"
+          asset="anland-niri-arch-${version}-aarch64.tar.gz"
+          tar -C "$RUNNER_TEMP" -czf "$release_dir/$asset" anland-niri-packages/arch
+          echo "asset_path=$release_dir/$asset" >> "$GITHUB_OUTPUT"
+          echo "已将 $package_count 个包打包为 $asset"
+
+      - name: 上传构建资产
+        uses: actions/upload-artifact@v6
+        with:
+          name: anland-niri-package-arch
+          path: ${{ steps.package.outputs.asset_path }}
+          if-no-files-found: error
+          retention-days: 1
+
+  release-niri:
+    name: 更新 Anland Niri 滚动发布
+    needs: [prepare-niri, build-niri]
+    if: ${{ always() && !cancelled() && needs.prepare-niri.result == 'success' && needs.build-niri.result == 'success' }}
+    runs-on: ubuntu-26.04
+    concurrency:
+      group: anland-niri-package-release
+      cancel-in-progress: false
+    steps:
+      - name: 检出发布脚本
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: 确保滚动标签存在
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=anland-niri-packages
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "滚动标签 ${tag} 已存在。"
+          elif git tag "$tag" "$GITHUB_SHA" && git push origin "refs/tags/${tag}"; then
+            echo "已创建滚动标签 ${tag}。"
+          elif git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "滚动标签 ${tag} 已由并发任务创建。"
+          else
+            echo "无法确认或创建滚动标签 ${tag}。" >&2
+            exit 1
+          fi
+
+      - name: 下载 Niri 构建资产
+        uses: actions/download-artifact@v7
+        with:
+          name: anland-niri-package-arch
+          path: release-assets
+
+      - name: 更新固定发布与软件包清单
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANLAND_REPO: ${{ inputs.niri_repo || 'https://github.com/SuperTurtleDev/anland.git' }}
+          ANLAND_REF: ${{ inputs.niri_ref || 'legacy' }}
+          ANLAND_COMMIT: ${{ needs.prepare-niri.outputs.anland_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="$GITHUB_WORKSPACE/release-assets"
+          rolling_release_tag=anland-niri-packages
+          archive="$(find "$release_dir" -maxdepth 1 -type f -name 'anland-niri-arch-*-aarch64.tar.gz' -print)"
+          [ -n "$archive" ] && [ "$(printf '%s\n' "$archive" | wc -l)" -eq 1 ] || {
+            echo "没有且仅有一个 Niri 发布归档。" >&2; exit 1;
+          }
+          asset="${archive##*/}"
+          build_time="$(tar -xOzf "$archive" anland-niri-packages/arch/.anland-niri-build-info | sed -n 's/^build_time=//p')"
+          version="$(tar -xOzf "$archive" anland-niri-packages/arch/.anland-niri-build-info | sed -n 's/^niri_version=//p')"
+          [ -n "$build_time" ] && [ -n "$version" ] || { echo "Niri 构建元数据无效。" >&2; exit 1; }
+          {
+            printf 'format=1\nrelease_tag=%s\nrevision=run-%s-%s\ngenerated_at=%s\n' "$rolling_release_tag" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+            printf 'source_repository=%s\nsource_ref=%s\nsource_commit=%s\narch=%s\n' "$ANLAND_REPO" "$ANLAND_REF" "$ANLAND_COMMIT" "$asset"
+          } > "$release_dir/anland-niri-manifest"
+          cp scripts/tui/install-anland-niri.sh "$release_dir/install-anland-niri.sh"
+          chmod +x "$release_dir/install-anland-niri.sh"
+          (cd "$release_dir" && sha256sum "$asset" anland-niri-manifest install-anland-niri.sh > SHA256SUMS)
+          notes="$(printf '%s\n' \
+            '# Anland Niri Arch ARM64 预编译包' '' \
+            '包含 Niri Anland backend 与打过补丁的 Xwayland pacman 软件包。归档内目录为 `anland-niri-packages/arch/`。' '' \
+            '## 发布资产' '' \
+            "- [${asset}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${rolling_release_tag}/${asset})（Arch Linux ARM64，Niri ${version}，构建时间 ${build_time}）" \
+            '- `anland-niri-manifest` 描述来源提交及平台资产。' \
+            '- `install-anland-niri.sh` 可在目标 Arch Linux ARM 系统中安装或卸载软件包。' \
+            '- `SHA256SUMS` 校验发布归档、manifest 与安装脚本。' '' \
+            "源码：\`${ANLAND_REPO}\` @ \`${ANLAND_COMMIT}\`（请求：\`${ANLAND_REF}\`）。" \
+            "工作流提交：\`${GITHUB_SHA}\`。")"
+
+          release_exists=false
+          gh release view "$rolling_release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && release_exists=true || true
+          if [ "$release_exists" = true ]; then
+            gh release upload "$rolling_release_tag" "$archive" "$release_dir/install-anland-niri.sh" "$release_dir/anland-niri-manifest" "$release_dir/SHA256SUMS" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            asset_rows="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$rolling_release_tag" --jq '.assets[] | [.id, .name] | @tsv')"
+            while IFS=$'\t' read -r asset_id asset_name; do
+              [ -n "$asset_id" ] || continue
+              case "$asset_name" in
+                anland-niri-arch-*-aarch64.tar.gz)
+                  [ "$asset_name" = "$asset" ] || gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+                  ;;
+              esac
+            done <<< "$asset_rows"
+            gh release edit "$rolling_release_tag" --repo "$GITHUB_REPOSITORY" \
+              --title 'Anland Niri Arch ARM64 预编译包' --notes "$notes" --draft=false --latest=false
+          else
+            gh release create "$rolling_release_tag" "$archive" "$release_dir/install-anland-niri.sh" "$release_dir/anland-niri-manifest" "$release_dir/SHA256SUMS" \
+              --repo "$GITHUB_REPOSITORY" --draft --latest=false --target "$GITHUB_SHA" \
+              --title 'Anland Niri Arch ARM64 预编译包' --notes "$notes"
+            gh release edit "$rolling_release_tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
+          fi
+          echo "已更新 $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$rolling_release_tag"
+
+      - name: 同步到 CNB 国内镜像
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_cnb }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_REPO: ${{ vars.CNB_REPO }}
+        run: bash scripts/publish-cnb-release.sh anland-niri-packages
 
   # ==========================================================================
   # Anland KDE Wayland（kwin + Xwayland）
