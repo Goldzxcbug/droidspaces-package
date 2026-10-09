@@ -778,7 +778,7 @@ install_packages() {
             mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.deb' -print | sort)
             log "正在通过 APT 安装 ${#files[@]} 个包并处理依赖..." \
                 "Installing ${#files[@]} packages through APT and resolving dependencies..."
-            apt-get install -y --no-install-recommends --allow-downgrades "${files[@]}"
+            apt-get install -y --reinstall --no-install-recommends --allow-downgrades "${files[@]}"
             ;;
         rpm)
             mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.rpm' -print | sort)

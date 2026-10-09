@@ -932,7 +932,7 @@ install_deb_packages() {
 
     log "正在安装 ${#files[@]} 个 deb 包并自动处理依赖..." \
         "Installing ${#files[@]} deb packages and resolving dependencies..."
-    apt-get install -y --allow-downgrades --allow-change-held-packages "${files[@]}"
+    apt-get install -y --reinstall --allow-downgrades --allow-change-held-packages "${files[@]}"
 
     for file in "${files[@]}"; do
         package="$(dpkg-deb -f "$file" Package)"

@@ -677,7 +677,7 @@ install_deb_package() {
     (
         cd "${PACKAGE_FILE%/*}"
         export DEBIAN_FRONTEND=noninteractive
-        apt-get install -y --allow-downgrades --allow-change-held-packages "./${PACKAGE_FILE##*/}"
+        apt-get install -y --reinstall --allow-downgrades --allow-change-held-packages "./${PACKAGE_FILE##*/}"
     )
     dpkg-query -W -f='${db:Status-Status}' anland-session 2>/dev/null | \
         grep -Fqx installed || die "APT 未安装 anland-session。" "APT did not install anland-session."
@@ -704,7 +704,7 @@ install_arch_package() {
         rm -f -- "$pacman_conf"
         die "pacman.conf 缺少 [options] 段。" "pacman.conf has no [options] section."
     fi
-    if ! pacman --config "$pacman_conf" -U --noconfirm --needed "$PACKAGE_FILE"; then
+    if ! pacman --config "$pacman_conf" -U --noconfirm "$PACKAGE_FILE"; then
         rm -f -- "$pacman_conf"
         die "Arch 软件包安装失败。" "Arch package installation failed."
     fi
