@@ -1,4 +1,4 @@
-name: 构建 Anland 软件包
+name: test
 run-name: Anland 软件包 ${{ github.run_number }}
 
 # 四条互相独立的流水线合并在这一个工作流里，各自的发布互不干扰：
@@ -33,7 +33,7 @@ on:
         description: KDE 使用的 Anland 仓库地址
         required: true
         type: string
-        default: https://github.com/Gold/anland.git
+        default: https://github.com/Goldzxcbug/anland.git
       kde_ref:
         description: KDE 使用的 Anland 分支、标签或提交
         required: true
@@ -59,7 +59,7 @@ on:
         description: GNOME 使用的 Anland 仓库地址
         required: true
         type: string
-        default: https://github.com/Gold/anland.git
+        default: https://github.com/Goldzxcbug/anland.git
       gnome_ref:
         description: GNOME 使用的 Anland 分支、标签或提交
         required: true
@@ -87,7 +87,7 @@ on:
         description: session 使用的 Anland Next 源码仓库地址
         required: true
         type: string
-        default: https://github.com/SuperTurtleDev/anland.git
+        default: https://github.com/Goldzxcbug/anland.git
       session_ref:
         description: session 使用的 Anland Next 分支、标签或提交
         required: true
@@ -103,7 +103,7 @@ on:
         description: Niri 使用的 Anland 仓库地址
         required: true
         type: string
-        default: https://github.com/Gold/anland.git
+        default: https://github.com/Goldzxcbug/anland.git
       niri_ref:
         description: Niri 使用的 Anland 分支、标签或提交
         required: true
@@ -195,7 +195,7 @@ jobs:
       - name: 将请求的源解析为单个提交
         id: resolve
         env:
-          ANLAND_REPO: ${{ inputs.niri_repo || 'https://github.com/Gold/anland.git' }}
+          ANLAND_REPO: ${{ inputs.niri_repo || 'https://github.com/Goldzxcbug/anland.git' }}
           ANLAND_REF: ${{ inputs.niri_ref || 'Gold' }}
         shell: bash
         run: |
@@ -215,7 +215,7 @@ jobs:
     needs: prepare-niri
     runs-on: ubuntu-24.04-arm
     env:
-      ANLAND_REPO: ${{ inputs.niri_repo || 'https://github.com/Gold/anland.git' }}
+      ANLAND_REPO: ${{ inputs.niri_repo || 'https://github.com/Goldzxcbug/anland.git' }}
       ANLAND_COMMIT: ${{ needs.prepare-niri.outputs.anland_commit }}
     steps:
       - name: 在 Arch Linux ARM 中构建软件包
@@ -352,7 +352,7 @@ jobs:
       - name: 更新固定发布与软件包清单
         env:
           GH_TOKEN: ${{ github.token }}
-          ANLAND_REPO: ${{ inputs.niri_repo || 'https://github.com/Gold/anland.git' }}
+          ANLAND_REPO: ${{ inputs.niri_repo || 'https://github.com/Goldzxcbug/anland.git' }}
           ANLAND_REF: ${{ inputs.niri_ref || 'Gold' }}
           ANLAND_COMMIT: ${{ needs.prepare-niri.outputs.anland_commit }}
         shell: bash
@@ -466,7 +466,7 @@ jobs:
       - name: 将请求的源解析为单个提交
         id: resolve
         env:
-          ANLAND_REPO: ${{ inputs.kde_repo || 'https://github.com/Gold/anland.git' }}
+          ANLAND_REPO: ${{ inputs.kde_repo || 'https://github.com/Goldzxcbug/anland.git' }}
           ANLAND_REF: ${{ inputs.kde_ref || 'Gold' }}
         shell: bash
         run: |
@@ -494,7 +494,7 @@ jobs:
         target: ${{ fromJson(needs.prepare-kde.outputs.targets) }}
 
     env:
-      ANLAND_REPO: ${{ inputs.kde_repo || 'https://github.com/Gold/anland.git' }}
+      ANLAND_REPO: ${{ inputs.kde_repo || 'https://github.com/Goldzxcbug/anland.git' }}
       ANLAND_COMMIT: ${{ needs.prepare-kde.outputs.anland_commit }}
       BUILD_TARGET: ${{ matrix.target }}
 
@@ -840,7 +840,7 @@ jobs:
       - name: 创建固定发布与软件包清单
         env:
           GH_TOKEN: ${{ github.token }}
-          ANLAND_REPO: ${{ inputs.kde_repo || 'https://github.com/Gold/anland.git' }}
+          ANLAND_REPO: ${{ inputs.kde_repo || 'https://github.com/Goldzxcbug/anland.git' }}
           ANLAND_REF: ${{ inputs.kde_ref || 'Gold' }}
           ANLAND_COMMIT: ${{ needs.prepare-kde.outputs.anland_commit }}
           BUILD_TARGET_INPUT: ${{ inputs.kde_target || 'all' }}
@@ -1406,7 +1406,7 @@ jobs:
       - name: 将请求的源解析为单个提交
         id: resolve
         env:
-          ANLAND_REPO: ${{ inputs.gnome_repo || 'https://github.com/Gold/anland.git' }}
+          ANLAND_REPO: ${{ inputs.gnome_repo || 'https://github.com/Goldzxcbug/anland.git' }}
           ANLAND_REF: ${{ inputs.gnome_ref || 'Gold' }}
         shell: bash
         run: |
@@ -1434,7 +1434,7 @@ jobs:
         target: ${{ fromJson(needs.prepare-gnome.outputs.targets) }}
 
     env:
-      ANLAND_REPO: ${{ inputs.gnome_repo || 'https://github.com/Gold/anland.git' }}
+      ANLAND_REPO: ${{ inputs.gnome_repo || 'https://github.com/Goldzxcbug/anland.git' }}
       ANLAND_COMMIT: ${{ needs.prepare-gnome.outputs.anland_commit }}
       BUILD_TARGET: ${{ matrix.target }}
 
@@ -1718,7 +1718,7 @@ jobs:
       - name: 创建固定发布与软件包清单
         env:
           GH_TOKEN: ${{ github.token }}
-          ANLAND_REPO: ${{ inputs.gnome_repo || 'https://github.com/Gold/anland.git' }}
+          ANLAND_REPO: ${{ inputs.gnome_repo || 'https://github.com/Goldzxcbug/anland.git' }}
           ANLAND_REF: ${{ inputs.gnome_ref || 'Gold' }}
           ANLAND_COMMIT: ${{ needs.prepare-gnome.outputs.anland_commit }}
           BUILD_TARGET_INPUT: ${{ inputs.gnome_target || 'all' }}
