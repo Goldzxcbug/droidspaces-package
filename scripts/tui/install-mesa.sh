@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Mesa 源仓库：https://github.com/lfdevs/mesa-for-android-container
-# 媒体解码源仓库：https://github.com/Yizhou147/droidspaces-media-decode
+# 媒体解码源仓库：https://github.com/Re-s/droidspaces-media-decode
 # 分发地址：https://github.com/Goldzxcbug/droidspaces-package/releases/tag/mesa-for-android-container
 # 安装面向 Android 容器的 ARM64 Mesa 构建。
 # 同时安装 droidspaces-media-decode 发布的 MediaCodec VA-API 驱动。
@@ -1430,6 +1430,10 @@ install_arch_packages() {
     mapfile -t MESA_PACKAGE_NAMES < "$package_names_file"
     ((${#MESA_PACKAGE_NAMES[@]} > 0)) || die \
         "无法读取 Arch Mesa 包名。" "Could not determine the Arch Mesa package names."
+
+    log "正在安装 Arch GPU 初始化所需的 LLVM 22..." \
+        "Installing LLVM 22 required for Arch GPU initialization..."
+    pacman -S --noconfirm --needed llvm22
 
     log "正在安装 ${#package_files[@]} 个 Arch Mesa 包..." \
         "Installing ${#package_files[@]} Arch Mesa packages..."
