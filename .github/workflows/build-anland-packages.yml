@@ -488,7 +488,7 @@ jobs:
           esac
           case "$COMPOSITOR:$BUILD_TARGET" in
               hyprland:ubuntu2604|hyprland:debian13)
-                  required_packages=(hyprland libhyprutils13 libhyprlang2 libhyprgraphics4 libaquamarine14 "$xwayland_name") ;;
+                  required_packages=(hyprland libhyprutils12 libhyprlang2 libhyprgraphics4 libaquamarine14 "$xwayland_name") ;;
               hyprland:arch) required_packages=(hyprland-anland hyprpm-anland "$xwayland_name") ;;
               hyprland:fedora43|hyprland:fedora44) required_packages=(hyprland-anland "$xwayland_name") ;;
               mango:*) required_packages=(mango-anland "$xwayland_name") ;;
@@ -1167,7 +1167,7 @@ jobs:
           esac
           case "$COMPOSITOR:$BUILD_TARGET" in
               hyprland:ubuntu2604|hyprland:debian13)
-                  required_packages=(hyprland libhyprutils13 libhyprlang2 libhyprgraphics4 libaquamarine14 "$xwayland_name") ;;
+                  required_packages=(hyprland libhyprutils12 libhyprlang2 libhyprgraphics4 libaquamarine14 "$xwayland_name") ;;
               hyprland:arch) required_packages=(hyprland-anland hyprpm-anland "$xwayland_name") ;;
               hyprland:fedora43|hyprland:fedora44) required_packages=(hyprland-anland "$xwayland_name") ;;
               mango:*) required_packages=(mango-anland "$xwayland_name") ;;
@@ -1836,7 +1836,7 @@ jobs:
           esac
           case "$COMPOSITOR:$BUILD_TARGET" in
               hyprland:ubuntu2604|hyprland:debian13)
-                  required_packages=(hyprland libhyprutils13 libhyprlang2 libhyprgraphics4 libaquamarine14 "$xwayland_name") ;;
+                  required_packages=(hyprland libhyprutils12 libhyprlang2 libhyprgraphics4 libaquamarine14 "$xwayland_name") ;;
               hyprland:arch) required_packages=(hyprland-anland hyprpm-anland "$xwayland_name") ;;
               hyprland:fedora43|hyprland:fedora44) required_packages=(hyprland-anland "$xwayland_name") ;;
               mango:*) required_packages=(mango-anland "$xwayland_name") ;;
@@ -2505,7 +2505,7 @@ jobs:
           esac
           case "$COMPOSITOR:$BUILD_TARGET" in
               hyprland:ubuntu2604|hyprland:debian13)
-                  required_packages=(hyprland libhyprutils13 libhyprlang2 libhyprgraphics4 libaquamarine14 "$xwayland_name") ;;
+                  required_packages=(hyprland libhyprutils12 libhyprlang2 libhyprgraphics4 libaquamarine14 "$xwayland_name") ;;
               hyprland:arch) required_packages=(hyprland-anland hyprpm-anland "$xwayland_name") ;;
               hyprland:fedora43|hyprland:fedora44) required_packages=(hyprland-anland "$xwayland_name") ;;
               mango:*) required_packages=(mango-anland "$xwayland_name") ;;
