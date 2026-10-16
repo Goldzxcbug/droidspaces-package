@@ -449,7 +449,8 @@ jobs:
           if [[ $COMPOSITOR == hyprland && $BUILD_TARGET == debian13 ]]; then
               # This particular upstream recipe does not bootstrap dependencies itself.
               apt-get build-dep -y --no-install-recommends -t trixie-backports \
-                  hyprutils hyprlang hyprgraphics aquamarine hyprland xwayland
+                  hyprutils hyprlang hyprgraphics aquamarine hyprland
+              apt-get build-dep -y --no-install-recommends xwayland
               apt-get install -y --no-install-recommends cpio gettext xxd libpipewire-0.3-dev
           fi
           mkdir -p /build/work /build/packages /build/payload
@@ -1127,7 +1128,8 @@ jobs:
           if [[ $COMPOSITOR == hyprland && $BUILD_TARGET == debian13 ]]; then
               # This particular upstream recipe does not bootstrap dependencies itself.
               apt-get build-dep -y --no-install-recommends -t trixie-backports \
-                  hyprutils hyprlang hyprgraphics aquamarine hyprland xwayland
+                  hyprutils hyprlang hyprgraphics aquamarine hyprland
+              apt-get build-dep -y --no-install-recommends xwayland
               apt-get install -y --no-install-recommends cpio gettext xxd libpipewire-0.3-dev
           fi
           mkdir -p /build/work /build/packages /build/payload
@@ -1795,7 +1797,8 @@ jobs:
           if [[ $COMPOSITOR == hyprland && $BUILD_TARGET == debian13 ]]; then
               # This particular upstream recipe does not bootstrap dependencies itself.
               apt-get build-dep -y --no-install-recommends -t trixie-backports \
-                  hyprutils hyprlang hyprgraphics aquamarine hyprland xwayland
+                  hyprutils hyprlang hyprgraphics aquamarine hyprland
+              apt-get build-dep -y --no-install-recommends xwayland
               apt-get install -y --no-install-recommends cpio gettext xxd libpipewire-0.3-dev
           fi
           mkdir -p /build/work /build/packages /build/payload
@@ -2463,7 +2466,8 @@ jobs:
           if [[ $COMPOSITOR == hyprland && $BUILD_TARGET == debian13 ]]; then
               # This particular upstream recipe does not bootstrap dependencies itself.
               apt-get build-dep -y --no-install-recommends -t trixie-backports \
-                  hyprutils hyprlang hyprgraphics aquamarine hyprland xwayland
+                  hyprutils hyprlang hyprgraphics aquamarine hyprland
+              apt-get build-dep -y --no-install-recommends xwayland
               apt-get install -y --no-install-recommends cpio gettext xxd libpipewire-0.3-dev
           fi
           mkdir -p /build/work /build/packages /build/payload
