@@ -451,7 +451,7 @@ jobs:
               apt-get build-dep -y --no-install-recommends -t trixie-backports \
                   hyprutils hyprlang hyprgraphics aquamarine hyprland
               apt-get build-dep -y --no-install-recommends xwayland
-              apt-get install -y --no-install-recommends cpio gettext xxd libpipewire-0.3-dev
+              apt-get install -y --no-install-recommends cpio gettext xxd libpipewire-0.3-dev libglm-dev
           fi
           mkdir -p /build/work /build/packages /build/payload
           chown -R anland:anland /tmp/anland /build
@@ -1130,7 +1130,7 @@ jobs:
               apt-get build-dep -y --no-install-recommends -t trixie-backports \
                   hyprutils hyprlang hyprgraphics aquamarine hyprland
               apt-get build-dep -y --no-install-recommends xwayland
-              apt-get install -y --no-install-recommends cpio gettext xxd libpipewire-0.3-dev
+              apt-get install -y --no-install-recommends cpio gettext xxd libpipewire-0.3-dev libglm-dev
           fi
           mkdir -p /build/work /build/packages /build/payload
           chown -R anland:anland /tmp/anland /build
@@ -1799,7 +1799,7 @@ jobs:
               apt-get build-dep -y --no-install-recommends -t trixie-backports \
                   hyprutils hyprlang hyprgraphics aquamarine hyprland
               apt-get build-dep -y --no-install-recommends xwayland
-              apt-get install -y --no-install-recommends cpio gettext xxd libpipewire-0.3-dev
+              apt-get install -y --no-install-recommends cpio gettext xxd libpipewire-0.3-dev libglm-dev
           fi
           mkdir -p /build/work /build/packages /build/payload
           chown -R anland:anland /tmp/anland /build
@@ -2468,7 +2468,7 @@ jobs:
               apt-get build-dep -y --no-install-recommends -t trixie-backports \
                   hyprutils hyprlang hyprgraphics aquamarine hyprland
               apt-get build-dep -y --no-install-recommends xwayland
-              apt-get install -y --no-install-recommends cpio gettext xxd libpipewire-0.3-dev
+              apt-get install -y --no-install-recommends cpio gettext xxd libpipewire-0.3-dev libglm-dev
           fi
           mkdir -p /build/work /build/packages /build/payload
           chown -R anland:anland /tmp/anland /build
