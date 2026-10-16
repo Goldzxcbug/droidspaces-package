@@ -1,19 +1,39 @@
 name: 构建 Anland 软件包
 run-name: Anland 软件包 ${{ github.run_number }}
 
-# 四条互相独立的流水线合并在这一个工作流里，各自的发布互不干扰：
+# 七条互相独立的流水线合并在这一个工作流里，各自的发布互不干扰：
 #   kde     —— Anland KDE Wayland（kwin + Xwayland），发布 anland-kde-packages
 #   gnome   —— Anland GNOME Wayland（Mutter + patched Xwayland），发布 anland-gnome-packages
+#   niri    —— Anland Niri 多发行版 ARM64 包（niri + patched Xwayland），发布 anland-niri-packages
+#   hyprland —— Anland Hyprland Wayland ARM64 包，发布 anland-hyprland-packages
+#   mango    —— Anland Mango Wayland ARM64 包，发布 anland-mango-packages
+#   denial   —— Anland Denial Wayland ARM64 包，发布 anland-denial-packages
 #   session —— Anland Next session 原生包，发布 anland-session-packages
-#   niri    —— Anland Niri Arch ARM64 包（niri + patched Xwayland），发布 anland-niri-packages
 # 每条流水线由一个布尔开关控制，可以同时打开，构建与上传都并行进行；
 # 关闭的流水线不会产生任何 job，也不会触碰它自己的固定发布。
 on:
   schedule:
-    # 每天北京时间 08:00（UTC 00:00）构建全部四套软件包。
+    # 每天北京时间 08:00（UTC 00:00）构建全部七套软件包。
     - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
+      # —— 六种 Anland 桌面组件共用的源码 ——
+      anland_repo:
+        description: KDE、GNOME、Niri、Hyprland、Mango、Denial 共用的 Anland 仓库地址
+        required: true
+        type: string
+        default: https://github.com/Goldzxcbug/anland.git
+      anland_ref:
+        description: 六种 Anland 桌面组件共用的分支、标签或提交
+        required: true
+        type: string
+        default: Gold
+      # —— 通用 ——
+      publish_cnb:
+        description: 同步发布到 CNB 国内镜像
+        required: true
+        type: boolean
+        default: true
       # —— KDE Wayland ——
       build_kde:
         description: 构建 Anland KDE Wayland 软件包（kwin + Xwayland）
@@ -32,16 +52,6 @@ on:
           - Fedora43
           - Fedora44
           - Arch
-      kde_repo:
-        description: KDE 使用的 Anland 仓库地址
-        required: true
-        type: string
-        default: https://github.com/superturtlee/anland.git
-      kde_ref:
-        description: KDE 使用的 Anland 分支、标签或提交
-        required: true
-        type: string
-        default: legacy
       # —— GNOME Wayland ——
       build_gnome:
         description: 构建 Anland GNOME Wayland 软件包（Mutter + patched Xwayland）
@@ -57,17 +67,81 @@ on:
           - all
           - ubuntu2604
           - Debian13
+          - Fedora43
+          - Fedora44
           - Arch
-      gnome_repo:
-        description: GNOME 使用的 Anland 仓库地址
+      # —— Anland Niri ——
+      build_niri:
+        description: 构建 Anland Niri ARM64 软件包（niri + patched Xwayland）
         required: true
-        type: string
-        default: https://github.com/superturtlee/anland.git
-      gnome_ref:
-        description: GNOME 使用的 Anland 分支、标签或提交
+        type: boolean
+        default: true
+      niri_target:
+        description: Niri 构建目标；all 中失败的平台沿用上一份发布，单个平台只替换选中的包
         required: true
-        type: string
-        default: legacy
+        type: choice
+        default: all
+        options:
+          - all
+          - ubuntu2604
+          - debian13
+          - fedora43
+          - fedora44
+          - arch
+      # —— Anland Hyprland ——
+      build_hyprland:
+        description: 构建 Anland Hyprland ARM64 软件包
+        required: true
+        type: boolean
+        default: true
+      hyprland_target:
+        description: Hyprland 构建目标；all 中失败的平台沿用上一份发布
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - ubuntu2604
+          - debian13
+          - fedora43
+          - fedora44
+          - arch
+      # —— Anland Mango ——
+      build_mango:
+        description: 构建 Anland Mango ARM64 软件包
+        required: true
+        type: boolean
+        default: true
+      mango_target:
+        description: Mango 构建目标；all 中失败的平台沿用上一份发布
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - ubuntu2604
+          - debian13
+          - fedora43
+          - fedora44
+          - arch
+      # —— Anland Denial ——
+      build_denial:
+        description: 构建 Anland Denial ARM64 软件包
+        required: true
+        type: boolean
+        default: true
+      denial_target:
+        description: Denial 构建目标；all 中失败的平台沿用上一份发布
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - ubuntu2604
+          - debian13
+          - fedora43
+          - fedora44
+          - arch
       # —— Anland Next session ——
       build_session:
         description: 构建 Anland Next session 软件包
@@ -96,28 +170,6 @@ on:
         required: true
         type: string
         default: main
-      # —— Anland Niri ——
-      build_niri:
-        description: 构建 Anland Niri Arch ARM64 软件包（niri + patched Xwayland）
-        required: true
-        type: boolean
-        default: true
-      niri_repo:
-        description: Niri 使用的 Anland 仓库地址
-        required: true
-        type: string
-        default: https://github.com/SuperTurtleDev/anland.git
-      niri_ref:
-        description: Niri 使用的 Anland 分支、标签或提交
-        required: true
-        type: string
-        default: legacy
-      # —— 通用 ——
-      publish_cnb:
-        description: 同步发布到 CNB 国内镜像
-        required: true
-        type: boolean
-        default: true
 
 permissions:
   contents: write
@@ -131,6 +183,9 @@ jobs:
       gnome: ${{ steps.select.outputs.gnome }}
       session: ${{ steps.select.outputs.session }}
       niri: ${{ steps.select.outputs.niri }}
+      hyprland: ${{ steps.select.outputs.hyprland }}
+      mango: ${{ steps.select.outputs.mango }}
+      denial: ${{ steps.select.outputs.denial }}
     steps:
       - name: 选择要构建的流水线
         id: select
@@ -140,25 +195,35 @@ jobs:
           GNOME_INPUT: ${{ inputs.build_gnome }}
           SESSION_INPUT: ${{ inputs.build_session }}
           NIRI_INPUT: ${{ inputs.build_niri }}
+          HYPRLAND_INPUT: ${{ inputs.build_hyprland }}
+          MANGO_INPUT: ${{ inputs.build_mango }}
+          DENIAL_INPUT: ${{ inputs.build_denial }}
         shell: bash
         run: |
           set -euo pipefail
 
-          # 定时构建始终构建全部四套软件包；手动触发按各自的布尔开关选择。
+          # 定时构建始终构建全部七套软件包；手动触发按各自开关决定。
           if [ "$EVENT_NAME" = schedule ]; then
             kde=true
             gnome=true
             session=true
             niri=true
+            hyprland=true
+            mango=true
+            denial=true
           else
             kde="${KDE_INPUT:-false}"
             gnome="${GNOME_INPUT:-false}"
             session="${SESSION_INPUT:-false}"
             niri="${NIRI_INPUT:-false}"
+            hyprland="${HYPRLAND_INPUT:-false}"
+            mango="${MANGO_INPUT:-false}"
+            denial="${DENIAL_INPUT:-false}"
           fi
 
           enabled=()
-          for entry in "kde=$kde" "gnome=$gnome" "session=$session" "niri=$niri"; do
+          for entry in "kde=$kde" "gnome=$gnome" "session=$session" "niri=$niri" \
+                       "hyprland=$hyprland" "mango=$mango" "denial=$denial"; do
             if [ "${entry#*=}" = true ]; then
               enabled+=("${entry%%=*}")
             fi
@@ -173,11 +238,14 @@ jobs:
             echo "gnome=$gnome"
             echo "session=$session"
             echo "niri=$niri"
+            echo "hyprland=$hyprland"
+            echo "mango=$mango"
+            echo "denial=$denial"
           } >> "$GITHUB_OUTPUT"
           echo "本次构建：${enabled[*]}"
 
   # ===========================================================================
-  # Anland Niri（Arch ARM64）
+  # Anland Niri（多发行版 ARM64）
   # ===========================================================================
   prepare-niri:
     name: 解析 Anland Niri 源码版本
@@ -186,7 +254,23 @@ jobs:
     runs-on: ubuntu-26.04
     outputs:
       anland_commit: ${{ steps.resolve.outputs.anland_commit }}
+      targets: ${{ steps.target.outputs.targets }}
     steps:
+      - name: 选择构建目标
+        id: target
+        env:
+          BUILD_TARGET_INPUT: ${{ inputs.niri_target || 'all' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$BUILD_TARGET_INPUT" in
+            all) targets='["ubuntu2604","debian13","fedora43","fedora44","arch"]' ;;
+            ubuntu2604|debian13|fedora43|fedora44|arch) targets="[\"$BUILD_TARGET_INPUT\"]" ;;
+            *) echo "不支持的 Niri 构建目标：$BUILD_TARGET_INPUT" >&2; exit 1 ;;
+          esac
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "Niri 构建目标：$targets"
+
       - name: 要求从 main 分支触发
         shell: bash
         run: |
@@ -195,11 +279,12 @@ jobs:
             exit 1
           fi
 
-      - name: 将请求的源解析为单个提交
+      - name: 将请求的源解析为单个提交并检查构建配方
         id: resolve
         env:
-          ANLAND_REPO: ${{ inputs.niri_repo || 'https://github.com/SuperTurtleDev/anland.git' }}
-          ANLAND_REF: ${{ inputs.niri_ref || 'legacy' }}
+          ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
+          ANLAND_REF: ${{ inputs.anland_ref || 'Gold' }}
+          BUILD_TARGETS: ${{ steps.target.outputs.targets }}
         shell: bash
         run: |
           set -euo pipefail
@@ -209,109 +294,316 @@ jobs:
           git -C "$source_dir" remote add origin "$ANLAND_REPO"
           git -C "$source_dir" fetch --quiet --depth=1 origin "$ANLAND_REF"
           anland_commit="$(git -C "$source_dir" rev-parse FETCH_HEAD)"
-          git -C "$source_dir" cat-file -e "${anland_commit}^{commit}"
+          git -C "$source_dir" checkout --quiet --detach "$anland_commit"
+          # 检查远端提交中的真实文件，避免只在本地存在的新配方进入整组矩阵后才失败。
+          python3 - "$source_dir" <<'CHECK_RECIPES'
+          import json, os, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          recipe_dirs = {
+              'ubuntu2604': 'Ubuntu2604_v5', 'debian13': 'Debian13_v5',
+              'fedora43': 'Fedora43_v5', 'fedora44': 'Fedora44_v5', 'arch': 'Arch_v5',
+          }
+          required = ['CMakeLists.txt', 'producers/niri/anland_backend/CMakeLists.txt',
+                      'libdisplay_producer/display_producer.h']
+          for target in json.loads(os.environ['BUILD_TARGETS']):
+              recipe = 'producers/niri/' + recipe_dirs[target] + '/'
+              required.extend(recipe + name for name in
+                              ('build.sh', 'niri/mod.rs', 'niri.patch', 'smithay.patch',
+                               'startup.sh', 'xwayland.patch'))
+              if target == 'arch':
+                  required.append(recipe + 'xorg-xwayland.PKGBUILD')
+              else:
+                  required.extend((recipe + 'sources.json', 'producers/common/latest-source.sh'))
+              if target.startswith('fedora'):
+                  required.append('producers/common/fedora-latest-srpm.sh')
+          missing = sorted({name for name in required if not (root / name).is_file()})
+          if missing:
+              print('所选 Anland 提交缺少 Niri 构建输入：', file=sys.stderr)
+              print('\n'.join('  ' + name for name in missing), file=sys.stderr)
+              raise SystemExit('请先将对应源码及共享文件推送到所选 Anland ref。')
+          CHECK_RECIPES
           echo "anland_commit=$anland_commit" >> "$GITHUB_OUTPUT"
           echo "已将 $ANLAND_REPO @ $ANLAND_REF 解析为 $anland_commit"
 
   build-niri:
-    name: 构建 Niri Arch ARM64 软件包
+    name: 构建 Niri ${{ matrix.target }} ARM64 软件包
     needs: prepare-niri
     runs-on: ubuntu-24.04-arm
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.prepare-niri.outputs.targets) }}
     env:
-      ANLAND_REPO: ${{ inputs.niri_repo || 'https://github.com/SuperTurtleDev/anland.git' }}
+      COMPOSITOR: niri
+      ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
       ANLAND_COMMIT: ${{ needs.prepare-niri.outputs.anland_commit }}
+      BUILD_TARGET: ${{ matrix.target }}
+      OUTPUT_DIR: .niri-package-build/${{ matrix.target }}
     steps:
-      - name: 在 Arch Linux ARM 中构建软件包
+      - name: 检出构建脚本
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: 解析构建目标
+        id: target
         shell: bash
         run: |
           set -euo pipefail
-          output_dir=.niri-package-build/arch
-          rm -rf "$output_dir"
-          mkdir -p "$output_dir"
-          docker run --rm -i \
-            --platform linux/arm64 \
-            -e ANLAND_REPO \
-            -e ANLAND_COMMIT \
-            -v "$PWD/$output_dir:/packages" \
-            ogarcia/archlinux:latest \
-            bash -s <<'ANLAND_BUILD'
-              set -euo pipefail
-              pacman -Syu --noconfirm
-              pacman -S --noconfirm --needed base-devel git ca-certificates sudo
-              useradd -m -s /bin/bash anland
-              printf "anland ALL=(root) NOPASSWD: /usr/bin/pacman\n" > /etc/sudoers.d/anland-pacman
-              chmod 0440 /etc/sudoers.d/anland-pacman
-              if grep -q "^#PACMAN_AUTH=()" /etc/makepkg.conf; then
-                sed -i "s/^#PACMAN_AUTH=().*/PACMAN_AUTH=(sudo)/" /etc/makepkg.conf
-              else
-                printf "\nPACMAN_AUTH=(sudo)\n" >> /etc/makepkg.conf
-              fi
-              chown -R anland:anland /packages
+          case "$COMPOSITOR" in
+            niri|hyprland|mango|denial) ;;
+            *) echo "Unsupported compositor: $COMPOSITOR" >&2; exit 1 ;;
+          esac
+          case "$BUILD_TARGET" in
+            ubuntu2604) image=ubuntu:26.04; recipe=Ubuntu2604_v5; asset_arch=arm64 ;;
+            debian13) image=debian:trixie; recipe=Debian13_v5; asset_arch=arm64 ;;
+            fedora43) image=fedora:43; recipe=Fedora43_v5; asset_arch=aarch64 ;;
+            fedora44) image=fedora:44; recipe=Fedora44_v5; asset_arch=aarch64 ;;
+            arch) image=ogarcia/archlinux:latest; recipe=Arch_v5; asset_arch=aarch64 ;;
+            *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
+          esac
+          {
+            echo "image=$image"
+            echo "recipe=$recipe"
+            echo "asset_arch=$asset_arch"
+          } >> "$GITHUB_OUTPUT"
 
-              git init --quiet /tmp/anland
-              git -C /tmp/anland remote add origin "$ANLAND_REPO"
-              git -C /tmp/anland fetch --quiet --depth=1 origin "$ANLAND_COMMIT"
-              git -C /tmp/anland checkout --quiet --detach FETCH_HEAD
-              test -f /tmp/anland/producers/niri/Arch_v5/build.sh
-              su -s /bin/bash anland -c 'cd /tmp/anland/producers/niri/Arch_v5 && ANLAND_INSTALL=0 WORKDIR=/packages ./build.sh --noconfirm'
-              chmod -R a+rX /packages
+      - name: 在对应的发行版中构建并校验软件包
+        env:
+          DISTRO_IMAGE: ${{ steps.target.outputs.image }}
+          RECIPE: ${{ steps.target.outputs.recipe }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUTPUT_DIR"
+          output_dir=$(cd -- "$OUTPUT_DIR" && pwd -P)
+          # Refuse accidental reuse of a previous run's successful outputs.
+          if [[ -n $(find "$output_dir" -mindepth 1 -print -quit) ]]; then
+            echo "Build output must be empty: $output_dir" >&2
+            exit 1
+          fi
 
-              package_dir=/packages/packages
-              niri_package=
-              found_niri=false
-              found_xwayland=false
-              while IFS= read -r package; do
-                package_name="$(LC_ALL=C pacman -Qp "$package" | awk 'NR == 1 { print $1 }')"
-                case "$package_name" in
-                  niri-anland)
-                    niri_package="$package"
-                    found_niri=true
-                    ;;
-                  xorg-xwayland)
-                    found_xwayland=true
-                    ;;
-                  *) echo "构建生成了意外的 Arch 包：$package_name" >&2; exit 1 ;;
-                esac
-              done < <(find "$package_dir" -maxdepth 1 -type f -name '*.pkg.tar.*' -print | sort)
-              [ "$found_niri" = true ] || { echo "未找到 niri-anland pacman 包" >&2; exit 1; }
-              [ "$found_xwayland" = true ] || { echo "未找到打过补丁的 xorg-xwayland pacman 包" >&2; exit 1; }
-              package_version="$(LC_ALL=C pacman -Qp "$niri_package" | awk 'NR == 1 { print $2 }')"
-              package_version="${package_version#*:}"
-              package_version="${package_version%-*}"
-              case "$package_version" in
-                ''|*[!A-Za-z0-9.+~_-]*) echo "无效的 Niri 包版本：$package_version" >&2; exit 1 ;;
+          docker run --rm -i --platform linux/arm64 \
+            -e COMPOSITOR -e BUILD_TARGET -e ANLAND_REPO -e ANLAND_COMMIT \
+            -e RECIPE -e JOBS="${JOBS:-4}" \
+            -e DEBIAN_FRONTEND=noninteractive \
+            -v "$output_dir:/build" \
+            "$DISTRO_IMAGE" bash -s <<'ANLAND_BUILD'
+          # Called as root in a disposable native ARM64 distribution container.
+          set -euo pipefail
+          [[ $(uname -m) == aarch64 ]] || { echo 'Native aarch64 container required' >&2; exit 1; }
+          case "$BUILD_TARGET" in
+              ubuntu2604|debian13)
+                  apt-get update
+                  apt-get install -y --no-install-recommends git ca-certificates sudo python3 \
+                      build-essential devscripts dpkg-dev debhelper fakeroot quilt patch \
+                      cmake meson ninja-build pkgconf ccache curl xz-utils unzip zip file binutils
+                  for sources in /etc/apt/sources.list.d/*.sources; do
+                      [[ -f $sources ]] || continue
+                      sed -i 's/^Types: deb$/Types: deb deb-src/' "$sources"
+                  done
+                  if [[ $BUILD_TARGET == debian13 ]]; then
+                      # Debian Hyprland's source/runtime ABI set lives in trixie-backports.
+                      # Other producers can also use current source packages from it.
+                      cat > /etc/apt/sources.list.d/anland-ci-backports.sources <<'SOURCES'
+          Types: deb deb-src
+          URIs: http://deb.debian.org/debian
+          Suites: trixie-backports
+          Components: main
+          Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+          SOURCES
+                  fi
+                  apt-get update
+                  ;;
+              fedora43|fedora44)
+                  dnf install -y --setopt=install_weak_deps=False \
+                      git ca-certificates sudo python3 rpm-build rpmdevtools findutils \
+                      util-linux tar xz which shadow-utils
+                  ;;
+              arch)
+                  pacman -Syu --noconfirm
+                  pacman -S --noconfirm --needed base-devel git ca-certificates sudo python
+                  ;;
+          esac
+
+          useradd -m -s /bin/bash anland
+          # The upstream recipes install build dependencies through sudo. This permission
+          # exists only inside this fresh, disposable build container.
+          printf 'anland ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/anland-ci
+          chmod 0440 /etc/sudoers.d/anland-ci
+          if [[ $BUILD_TARGET == arch ]]; then
+              printf '\nPACMAN_AUTH=(sudo)\n' >> /etc/makepkg.conf
+          fi
+          git init --quiet /tmp/anland
+          git -C /tmp/anland remote add origin "$ANLAND_REPO"
+          git -C /tmp/anland fetch --quiet --depth=1 origin "$ANLAND_COMMIT"
+          git -C /tmp/anland checkout --quiet --detach FETCH_HEAD
+          [[ $(git -C /tmp/anland rev-parse HEAD) == "$ANLAND_COMMIT" ]] || { echo 'Source commit mismatch' >&2; exit 1; }
+          recipe_dir="/tmp/anland/producers/$COMPOSITOR/$RECIPE"
+          test -f "$recipe_dir/build.sh" || {
+              echo "The selected Anland commit lacks producers/$COMPOSITOR/$RECIPE/build.sh; publish the local recipes and choose a ref containing them." >&2
+              exit 1
+          }
+
+          if [[ $COMPOSITOR == hyprland && $BUILD_TARGET == debian13 ]]; then
+              # This particular upstream recipe does not bootstrap dependencies itself.
+              apt-get build-dep -y --no-install-recommends -t trixie-backports \
+                  hyprutils hyprlang hyprgraphics aquamarine hyprland xwayland
+              apt-get install -y --no-install-recommends cpio gettext xxd libpipewire-0.3-dev
+          fi
+          mkdir -p /build/work /build/packages /build/payload
+          chown -R anland:anland /tmp/anland /build
+          export RECIPE_DIR="$recipe_dir" WORKDIR=/build/work ARTIFACTS=/build/packages ARTIFACTS_DIR=/build/packages
+          export ANLAND_WITH_DEPS=1 ANLAND_INSTALL=0 INSTALL=0 BUILD_XWAYLAND=1 ANLAND_STAGE=build
+          export ANLAND_WITH_DE=1 ANLAND_ENGINE_MODE=auto
+          export LANG=C.UTF-8 LC_ALL=C.UTF-8 GIT_TERMINAL_PROMPT=0
+          su -m -s /bin/bash anland -c '
+              export HOME=/home/anland
+              cd "$RECIPE_DIR"
+              case "$COMPOSITOR:$BUILD_TARGET" in
+                  niri:arch|denial:*) bash ./build.sh --noconfirm ;;
+                  *) bash ./build.sh ;;
               esac
-              printf '%s\n' "$package_version" > /packages/.niri-version
+          '
+
+          # Validate complete native runtime package sets before release packaging.
+          set -euo pipefail
+          : "${COMPOSITOR:?COMPOSITOR is required}"
+          : "${BUILD_TARGET:?BUILD_TARGET is required}"
+          : "${RECIPE_DIR:?RECIPE_DIR is required}"
+          output_root=${OUTPUT_ROOT:-/build}
+          mkdir -p "$output_root/payload"
+          case "$BUILD_TARGET" in
+              ubuntu2604|debian13) pattern='*.deb'; native_arch=arm64; xwayland_name=xwayland ;;
+              fedora43|fedora44) pattern='*.rpm'; native_arch=aarch64; xwayland_name=xorg-x11-server-Xwayland ;;
+              arch) pattern='*.pkg.tar.*'; native_arch=aarch64; xwayland_name=xorg-xwayland ;;
+              *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
+          esac
+          case "$COMPOSITOR:$BUILD_TARGET" in
+              hyprland:ubuntu2604|hyprland:debian13) main_name=hyprland ;;
+              denial:*) main_name=denial ;;
+              *) main_name=${COMPOSITOR}-anland ;;
+          esac
+          case "$COMPOSITOR:$BUILD_TARGET" in
+              hyprland:ubuntu2604|hyprland:debian13)
+                  required_packages=(hyprland libhyprutils12 libhyprlang2 libhyprgraphics4 libaquamarine14 "$xwayland_name") ;;
+              hyprland:arch) required_packages=(hyprland-anland hyprpm-anland "$xwayland_name") ;;
+              hyprland:fedora43|hyprland:fedora44) required_packages=(hyprland-anland "$xwayland_name") ;;
+              mango:*) required_packages=(mango-anland "$xwayland_name") ;;
+              denial:*) required_packages=(denial-anland-engine denial denial-desktop "$xwayland_name") ;;
+              niri:arch) required_packages=(niri-anland "$xwayland_name") ;;
+              niri:*) required_packages=(niri-anland xwayland-satellite "$xwayland_name") ;;
+              *) echo "Unsupported compositor: $COMPOSITOR" >&2; exit 1 ;;
+          esac
+          main_version=; found_xwayland=false; found_satellite=false
+          declare -A seen_packages=()
+          # Some upstream scripts fix output to recipe/artifacts; Niri Arch fix it
+          # to WORKDIR/packages. Only these explicit finished-package locations are read.
+          while IFS= read -r -d '' package; do
+              case "${package##*/}" in *-debug-*|*-debuginfo-*|*-debugsource-*|*-dbgsym_*|*.src.rpm|*.sig) continue ;; esac
+              case "$BUILD_TARGET" in
+                  ubuntu2604|debian13)
+                      name=$(dpkg-deb -f "$package" Package)
+                      version=$(dpkg-deb -f "$package" Version)
+                      architecture=$(dpkg-deb -f "$package" Architecture)
+                      dpkg-deb --contents "$package" >/dev/null
+                      ;;
+                  fedora43|fedora44)
+                      IFS=$'\t' read -r name version architecture < <(rpm -qp --queryformat '%{NAME}\t%{VERSION}\t%{ARCH}\n' "$package")
+                      rpm -qpl "$package" >/dev/null
+                      ;;
+                  arch)
+                      metadata=$(bsdtar -xOf "$package" .PKGINFO)
+                      name=$(sed -n 's/^pkgname = //p' <<< "$metadata")
+                      version=$(sed -n 's/^pkgver = //p' <<< "$metadata")
+                      architecture=$(sed -n 's/^arch = //p' <<< "$metadata")
+                      bsdtar -tf "$package" >/dev/null
+                      ;;
+              esac
+              [[ -n $name && -n $version ]] || { echo "Missing package metadata: $package" >&2; exit 1; }
+              # Native Xwayland source builds can also emit SDK subpackages. Installers
+              # need only the server runtime, matching the KDE package collection policy.
+              case "$name" in xorg-x11-server-Xwayland-devel|xwayland-dev) continue ;; esac
+              [[ $architecture == "$native_arch" ]] || { echo "Wrong architecture $architecture: $package" >&2; exit 1; }
+              case " ${required_packages[*]} " in
+                  *" $name "*) ;;
+                  *) echo "Unexpected $COMPOSITOR runtime package: $name" >&2; exit 1 ;;
+              esac
+              if [[ $COMPOSITOR == niri ]]; then
+                  # The Niri installers accept only this runtime package set. Satellite
+                  # is built with Niri on Debian/Ubuntu/Fedora; Arch uses its repository
+                  # dependency instead of shipping a second satellite package.
+                  # Fedora's Xwayland SRPM may also produce SDK packages, as in KDE's
+                  # distribution builds. The installer needs only its runtime package.
+                  [[ $architecture == "$native_arch" ]] || { echo "Niri runtime must be native ARM64: $name" >&2; exit 1; }
+                  case "$name" in
+                      niri-anland|"$xwayland_name") ;;
+                      xwayland-satellite)
+                          [[ $BUILD_TARGET != arch ]] || { echo "Unexpected Niri Arch package: $name" >&2; exit 1; }
+                          found_satellite=true
+                          ;;
+                      *) echo "Unexpected Niri runtime package: $name" >&2; exit 1 ;;
+                  esac
+              fi
+              if [[ -n ${seen_packages[$name]+set} ]]; then
+                  cmp -s "$package" "${seen_packages[$name]}" || { echo "Conflicting duplicate package: $name" >&2; exit 1; }
+                  continue
+              fi
+              seen_packages[$name]=$package
+              if [[ $name == "$main_name" ]]; then
+                  [[ $architecture == "$native_arch" ]] || { echo 'Compositor must be native ARM64' >&2; exit 1; }
+                  main_version=$version
+              fi
+              [[ $name != "$xwayland_name" ]] || found_xwayland=true
+              cp -v "$package" "$output_root"/payload/
+          done < <(find "$output_root"/packages "$output_root"/work/packages "$RECIPE_DIR/artifacts" \
+              -maxdepth 1 -type f -name "$pattern" -print0 2>/dev/null || true)
+          for name in "${required_packages[@]}"; do
+              [[ -n ${seen_packages[$name]+set} ]] || { echo "Missing $COMPOSITOR runtime package: $name" >&2; exit 1; }
+          done
+          [[ -n $main_version ]] || { echo "Missing compositor package: $main_name" >&2; exit 1; }
+          [[ $found_xwayland == true ]] || { echo "Missing patched Xwayland package: $xwayland_name" >&2; exit 1; }
+          if [[ $COMPOSITOR == niri && $BUILD_TARGET != arch ]]; then
+              [[ $found_satellite == true ]] || { echo 'Missing Niri runtime package: xwayland-satellite' >&2; exit 1; }
+          fi
+          main_version=${main_version#*:}
+          case "$BUILD_TARGET" in ubuntu2604|debian13|arch) main_version=${main_version%-*} ;; esac
+          printf '%s\n' "$main_version" > "$output_root"/.version
+          chmod -R a+rX "$output_root"/payload
+          chmod a+r "$output_root"/.version
           ANLAND_BUILD
 
       - name: 打包发布资产
         id: package
+        env:
+          ASSET_ARCH: ${{ steps.target.outputs.asset_arch }}
         shell: bash
         run: |
           set -euo pipefail
-          output_dir=.niri-package-build/arch
-          package_dir="$RUNNER_TEMP/anland-niri-packages/arch"
-          release_dir="$GITHUB_WORKSPACE/.release-assets/niri"
-          rm -rf "$package_dir" "$release_dir"
-          mkdir -p "$package_dir" "$release_dir"
-          find "$output_dir/packages" -maxdepth 1 -type f -name '*.pkg.tar.*' -exec cp -v {} "$package_dir/" \;
-          package_count="$(find "$package_dir" -maxdepth 1 -type f -name '*.pkg.tar.*' | wc -l)"
-          [ "$package_count" -gt 0 ] || { echo "没有收集到 pacman 软件包" >&2; exit 1; }
-          version="$(tr -d '[:space:]' < "$output_dir/.niri-version")"
-          case "$version" in
-            ''|*[!A-Za-z0-9.+~_-]*) echo "无效的 Niri 包版本：$version" >&2; exit 1 ;;
-          esac
-          build_time="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          printf 'target=arch\nniri_version=%s\nbuild_time=%s\n' "$version" "$build_time" > "$package_dir/.anland-niri-build-info"
-          asset="anland-niri-arch-${version}-aarch64.tar.gz"
-          tar -C "$RUNNER_TEMP" -czf "$release_dir/$asset" anland-niri-packages/arch
-          echo "asset_path=$release_dir/$asset" >> "$GITHUB_OUTPUT"
-          echo "已将 $package_count 个包打包为 $asset"
+          output_dir=$OUTPUT_DIR
+          version=$(tr -d '[:space:]' < "$output_dir/.version")
+          case "$version" in ''|*[!A-Za-z0-9.+~_-]*) echo "Invalid package version: $version" >&2; exit 1 ;; esac
+          archive_root="anland-${COMPOSITOR}-packages/$BUILD_TARGET"
+          stage_dir=$(mktemp -d "${RUNNER_TEMP:-/tmp}/anland-${COMPOSITOR}-archive.XXXXXX")
+          trap 'rm -rf -- "$stage_dir"' EXIT
+          mkdir -p "$stage_dir/$archive_root"
+          cp -a "$output_dir/payload/." "$stage_dir/$archive_root/"
+          version_key=${COMPOSITOR}_version
+          printf 'target=%s\n%s=%s\nbuild_time=%s\nsource_commit=%s\n' \
+              "$BUILD_TARGET" "$version_key" "$version" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$ANLAND_COMMIT" \
+              > "$stage_dir/$archive_root/.anland-${COMPOSITOR}-build-info"
+          asset_dir="$GITHUB_WORKSPACE/.release-assets/$COMPOSITOR/$BUILD_TARGET"
+          mkdir -p "$asset_dir"
+          asset_path="$asset_dir/anland-${COMPOSITOR}-${BUILD_TARGET}-${version}-${ASSET_ARCH}.tar.gz"
+          tar --owner=0 --group=0 --numeric-owner -C "$stage_dir" -czf "$asset_path" "$archive_root"
+          printf 'asset_path=%s\n' "$asset_path" >> "$GITHUB_OUTPUT"
+          printf 'Packaged %s\n' "$asset_path"
 
       - name: 上传构建资产
         uses: actions/upload-artifact@v6
         with:
-          name: anland-niri-package-arch
+          name: anland-niri-package-${{ matrix.target }}
           path: ${{ steps.package.outputs.asset_path }}
           if-no-files-found: error
           retention-days: 1
@@ -319,13 +611,13 @@ jobs:
   release-niri:
     name: 更新 Anland Niri 滚动发布
     needs: [prepare-niri, build-niri]
-    if: ${{ always() && !cancelled() && needs.prepare-niri.result == 'success' && needs.build-niri.result == 'success' }}
+    if: ${{ always() && !cancelled() && needs.prepare-niri.result == 'success' }}
     runs-on: ubuntu-26.04
     concurrency:
       group: anland-niri-package-release
       cancel-in-progress: false
     steps:
-      - name: 检出发布脚本
+      - name: 检出发布与安装脚本
         uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}
@@ -349,69 +641,285 @@ jobs:
       - name: 下载 Niri 构建资产
         uses: actions/download-artifact@v7
         with:
-          name: anland-niri-package-arch
+          pattern: anland-niri-package-*
           path: release-assets
+          merge-multiple: true
 
       - name: 更新固定发布与软件包清单
         env:
           GH_TOKEN: ${{ github.token }}
-          ANLAND_REPO: ${{ inputs.niri_repo || 'https://github.com/SuperTurtleDev/anland.git' }}
-          ANLAND_REF: ${{ inputs.niri_ref || 'legacy' }}
+          COMPOSITOR: niri
+          ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
+          ANLAND_REF: ${{ inputs.anland_ref || 'Gold' }}
           ANLAND_COMMIT: ${{ needs.prepare-niri.outputs.anland_commit }}
+          BUILD_TARGET_INPUT: ${{ inputs.niri_target || 'all' }}
+          RELEASE_DIR: ${{ github.workspace }}/release-assets
         shell: bash
         run: |
           set -euo pipefail
-          release_dir="$GITHUB_WORKSPACE/release-assets"
-          rolling_release_tag=anland-niri-packages
-          archive="$(find "$release_dir" -maxdepth 1 -type f -name 'anland-niri-arch-*-aarch64.tar.gz' -print)"
-          [ -n "$archive" ] && [ "$(printf '%s\n' "$archive" | wc -l)" -eq 1 ] || {
-            echo "没有且仅有一个 Niri 发布归档。" >&2; exit 1;
-          }
-          asset="${archive##*/}"
-          build_time="$(tar -xOzf "$archive" anland-niri-packages/arch/.anland-niri-build-info | sed -n 's/^build_time=//p')"
-          version="$(tar -xOzf "$archive" anland-niri-packages/arch/.anland-niri-build-info | sed -n 's/^niri_version=//p')"
-          [ -n "$build_time" ] && [ -n "$version" ] || { echo "Niri 构建元数据无效。" >&2; exit 1; }
-          {
-            printf 'format=1\nrelease_tag=%s\nrevision=run-%s-%s\ngenerated_at=%s\n' "$rolling_release_tag" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$(date -u +'%Y-%m-%d %H:%M:%S UTC')"
-            printf 'source_repository=%s\nsource_ref=%s\nsource_commit=%s\narch=%s\n' "$ANLAND_REPO" "$ANLAND_REF" "$ANLAND_COMMIT" "$asset"
-          } > "$release_dir/anland-niri-manifest"
-          cp scripts/tui/install-anland-niri.sh "$release_dir/install-anland-niri.sh"
-          chmod +x "$release_dir/install-anland-niri.sh"
-          (cd "$release_dir" && sha256sum "$asset" anland-niri-manifest install-anland-niri.sh > SHA256SUMS)
-          notes="$(printf '%s\n' \
-            '# Anland Niri Arch ARM64 预编译包' '' \
-            '包含 Niri Anland backend 与打过补丁的 Xwayland pacman 软件包。归档内目录为 `anland-niri-packages/arch/`。' '' \
-            '## 发布资产' '' \
-            "- [${asset}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${rolling_release_tag}/${asset})（Arch Linux ARM64，Niri ${version}，构建时间 ${build_time}）" \
-            '- `anland-niri-manifest` 描述来源提交及平台资产。' \
-            '- `install-anland-niri.sh` 可在目标 Arch Linux ARM 系统中安装或卸载软件包。' \
-            '- `SHA256SUMS` 校验发布归档、manifest 与安装脚本。' '' \
-            "源码：\`${ANLAND_REPO}\` @ \`${ANLAND_COMMIT}\`（请求：\`${ANLAND_REF}\`）。" \
-            "工作流提交：\`${GITHUB_SHA}\`。")"
+          python3 - <<'RELEASE_PACKAGES'
+          """Merge successful native builds into an independent rolling release.
 
-          release_exists=false
-          gh release view "$rolling_release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && release_exists=true || true
-          if [ "$release_exists" = true ]; then
-            gh release upload "$rolling_release_tag" "$archive" "$release_dir/install-anland-niri.sh" "$release_dir/anland-niri-manifest" "$release_dir/SHA256SUMS" \
-              --repo "$GITHUB_REPOSITORY" --clobber
-            asset_rows="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$rolling_release_tag" --jq '.assets[] | [.id, .name] | @tsv')"
-            while IFS=$'\t' read -r asset_id asset_name; do
-              [ -n "$asset_id" ] || continue
-              case "$asset_name" in
-                anland-niri-arch-*-aarch64.tar.gz)
-                  [ "$asset_name" = "$asset" ] || gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
-                  ;;
-              esac
-            done <<< "$asset_rows"
-            gh release edit "$rolling_release_tag" --repo "$GITHUB_REPOSITORY" \
-              --title 'Anland Niri Arch ARM64 预编译包' --notes "$notes" --draft=false --latest=false
-          else
-            gh release create "$rolling_release_tag" "$archive" "$release_dir/install-anland-niri.sh" "$release_dir/anland-niri-manifest" "$release_dir/SHA256SUMS" \
-              --repo "$GITHUB_REPOSITORY" --draft --latest=false --target "$GITHUB_SHA" \
-              --title 'Anland Niri Arch ARM64 预编译包' --notes "$notes"
-            gh release edit "$rolling_release_tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
-          fi
-          echo "已更新 $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$rolling_release_tag"
+          Missing builds reuse verified assets from the current published manifest. A
+          failed single-target request and a run with no successful builds never publish.
+          """
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+          import tarfile
+          import tempfile
+          from datetime import datetime, timezone
+
+
+          def fail(message):
+              raise SystemExit(message)
+
+
+          def gh(*args, check=True):
+              result = subprocess.run(["gh", *args], text=True, capture_output=True)
+              if check and result.returncode:
+                  fail(result.stderr.strip() or f"gh failed: {args}")
+              return result
+
+
+          def digest(path):
+              with path.open("rb") as stream:
+                  return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+          def read_manifest(path):
+              result = {}
+              for line in path.read_text().splitlines():
+                  if not line or line.startswith("#"):
+                      continue
+                  key, separator, value = line.partition("=")
+                  if not separator or key in result:
+                      fail(f"Invalid or duplicate manifest record: {line}")
+                  result[key] = value
+              return result
+
+
+          def release_packages():
+              compositor = os.environ["COMPOSITOR"]
+              if compositor not in {"niri", "hyprland", "mango", "denial"}:
+                  fail(f"Unsupported compositor: {compositor}")
+              targets = ["ubuntu2604", "debian13", "fedora43", "fedora44", "arch"]
+              selected = os.environ.get("BUILD_TARGET_INPUT", "all")
+              if selected != "all" and selected not in targets:
+                  fail(f"Unsupported target: {selected}")
+              repo = os.environ["GITHUB_REPOSITORY"]
+              source_commit = os.environ["ANLAND_COMMIT"]
+              release_dir = Path(os.environ.get("RELEASE_DIR", "release-assets")).resolve()
+              release_dir.mkdir(parents=True, exist_ok=True)
+              tag = f"anland-{compositor}-packages"
+              manifest_name = f"anland-{compositor}-manifest"
+              installer_name = f"install-anland-{compositor}.sh"
+              server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+
+              def asset_pattern(target):
+                  arch = "arm64" if target in {"ubuntu2604", "debian13"} else "aarch64"
+                  return f"anland-{compositor}-{target}-*-{arch}.tar.gz"
+
+              def metadata(path, target, required):
+                  name = f"anland-{compositor}-packages/{target}/.anland-{compositor}-build-info"
+                  try:
+                      with tarfile.open(path, "r:gz") as archive:
+                          entry = archive.getmember(name)
+                          if not entry.isfile() or entry.size > 16384:
+                              fail(f"Invalid build metadata: {path.name}")
+                          stream = archive.extractfile(entry)
+                          records = dict(line.split("=", 1) for line in stream.read().decode().splitlines() if "=" in line)
+                  except (KeyError, tarfile.TarError, UnicodeError, ValueError):
+                      if required:
+                          fail(f"New archive lacks valid build metadata: {path.name}")
+                      return {"build_time": "unknown", "source_commit": "unknown"}
+                  if records.get("target") != target:
+                      fail(f"Archive target mismatch: {path.name}")
+                  if required and (not records.get("build_time") or records.get("source_commit") != source_commit):
+                      fail(f"New archive has missing time or wrong source commit: {path.name}")
+                  return records
+
+              assets = {}
+              info = {}
+              updated = []
+              reused = []
+              for target in targets:
+                  candidates = sorted(release_dir.glob(asset_pattern(target)))
+                  if len(candidates) > 1:
+                      fail(f"Multiple new assets for {target}")
+                  if candidates:
+                      if selected != "all" and target != selected:
+                          fail(f"Single-target run unexpectedly supplied {target}")
+                      path = candidates[0]
+                      info[target] = metadata(path, target, required=True)
+                      assets[target] = path.name
+                      updated.append(target)
+              if selected != "all" and selected not in updated:
+                  fail(f"Selected {selected} build produced no new asset; rolling release was not changed")
+              if not updated:
+                  fail("No successful build assets; rolling release was not changed")
+
+              response = gh("api", f"repos/{repo}/releases/tags/{tag}", check=False)
+              previous = None
+              if response.returncode == 0:
+                  previous = json.loads(response.stdout)
+                  if previous.get("draft") or previous.get("prerelease"):
+                      fail("Refusing to reuse an unpublished or prerelease rolling release")
+              elif "404" not in response.stderr and "Not Found" not in response.stderr:
+                  fail(response.stderr.strip() or "Unable to determine whether the rolling release exists")
+
+              missing = [target for target in targets if target not in assets]
+              if previous and missing:
+                  previous_assets = {entry["name"]: entry for entry in previous["assets"]}
+                  with tempfile.TemporaryDirectory(prefix=f"anland-{compositor}-previous-") as temp:
+                      previous_dir = Path(temp)
+                      manifest = {}
+                      legacy_checksums = None
+                      if manifest_name in previous_assets:
+                          gh("release", "download", tag, "--repo", repo, "--pattern", manifest_name, "--dir", temp)
+                          manifest = read_manifest(previous_dir / manifest_name)
+                          if manifest.get("format") != "1" or manifest.get("release_tag") != tag:
+                              fail("Previous release manifest has an unsupported format/tag")
+                      for target in missing:
+                          asset = manifest.get(target)
+                          # Compatibility with the original Arch-only Niri release.
+                          if not asset:
+                              matches = sorted(name for name in previous_assets if Path(name).match(asset_pattern(target)))
+                              if len(matches) > 1:
+                                  fail(f"Previous release has ambiguous {target} assets")
+                              asset = matches[0] if matches else None
+                          if not asset:
+                              continue
+                          if Path(asset).name != asset or not Path(asset).match(asset_pattern(target)) or asset not in previous_assets:
+                              fail(f"Invalid previous {target} asset: {asset}")
+                          gh("release", "download", tag, "--repo", repo, "--pattern", asset, "--dir", temp)
+                          path = previous_dir / asset
+                          expected = manifest.get(f"{target}_sha256")
+                          api_digest = previous_assets[asset].get("digest") or ""
+                          if not expected and api_digest.startswith("sha256:"):
+                              expected = api_digest.removeprefix("sha256:")
+                          if not expected and "SHA256SUMS" in previous_assets:
+                              # The original Arch-only Niri manifest predates per-target
+                              # hashes, and older GitHub assets may lack an API digest.
+                              if legacy_checksums is None:
+                                  gh("release", "download", tag, "--repo", repo, "--pattern", "SHA256SUMS", "--dir", temp)
+                                  legacy_checksums = {}
+                                  for line in (previous_dir / "SHA256SUMS").read_text().splitlines():
+                                      match = re.fullmatch(r"([0-9a-fA-F]{64}) [ *]([^/\\\s]+)", line)
+                                      if not match or match[2] in legacy_checksums:
+                                          fail("Invalid previous SHA256SUMS")
+                                      legacy_checksums[match[2]] = match[1]
+                              expected = legacy_checksums.get(asset)
+                          if not expected or not re.fullmatch(r"[0-9a-fA-F]{64}", expected) or digest(path) != expected.lower():
+                              fail(f"Previous {target} asset checksum unavailable or mismatched")
+                          shutil.copy2(path, release_dir / asset)
+                          info[target] = metadata(path, target, required=False)
+                          assets[target] = asset
+                          reused.append(target)
+
+              installer = Path(os.environ["GITHUB_WORKSPACE"]) / "scripts" / "tui" / installer_name
+              if not installer.is_file():
+                  fail(f"Missing installer: {installer}")
+              shutil.copy2(installer, release_dir / installer_name)
+              (release_dir / installer_name).chmod(0o755)
+              generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+              records = ["format=1", f"release_tag={tag}",
+                         f"revision=run-{os.environ.get('GITHUB_RUN_ID', 'local')}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}",
+                         f"generated_at={generated}", f"source_repository={os.environ['ANLAND_REPO']}",
+                         f"source_ref={os.environ['ANLAND_REF']}", f"source_commit={source_commit}"]
+              for target in targets:
+                  if target in assets:
+                      records.extend([f"{target}={assets[target]}", f"{target}_sha256={digest(release_dir / assets[target])}",
+                                      f"{target}_source_commit={info[target].get('source_commit', 'unknown')}"])
+              (release_dir / manifest_name).write_text("\n".join(records) + "\n")
+              files = [assets[target] for target in targets if target in assets] + [manifest_name, installer_name]
+              (release_dir / "SHA256SUMS").write_text("".join(f"{digest(release_dir / name)}  {name}\n" for name in files))
+              files.append("SHA256SUMS")
+              title = f"Anland {compositor.title()} ARM64 预编译包"
+              notes = [f"# {title}", "", "发行版原生软件包与 patched Xwayland，使用目标系统的 apt、dnf 或 pacman 管理。",
+                       f"归档内目录：`anland-{compositor}-packages/<target>/`。", "",
+                       f"本次更新：{', '.join(updated)}。", f"沿用上次发布：{', '.join(reused) or '无'}。",
+                       f"暂缺平台：{', '.join(target for target in targets if target not in assets) or '无'}。", "",
+                       "| 平台 | 资产 | 构建时间 | 来源提交 |", "| --- | --- | --- | --- |"]
+              for target in targets:
+                  if target in assets:
+                      name = assets[target]
+                      notes.append(f"| {target} | [{name}]({server}/{repo}/releases/download/{tag}/{name}) | {info[target].get('build_time', 'unknown')} | {info[target].get('source_commit', 'unknown')} |")
+              notes.extend(["", f"`{manifest_name}` 映射平台与资产并记录 SHA-256；`SHA256SUMS` 同时校验安装脚本。",
+                            f"安装/卸载脚本：`{installer_name}`。",
+                            "", f"本次构建来源：`{os.environ['ANLAND_REPO']}` @ `{source_commit}`（请求 `{os.environ['ANLAND_REF']}`）。",
+                            "沿用平台的实际源码提交保留在各平台元数据中。构建成功不代表已完成设备图形会话测试。"])
+              notes_path = release_dir / ".release-notes.md"
+              notes_path.write_text("\n".join(notes) + "\n")
+
+              if previous:
+                  # Same-version daily builds clobber the same asset name. Back up every
+                  # overwritten file before uploading, so a failed manifest/notes upload
+                  # cannot leave old checksums pointing at new archive bytes.
+                  previous_names = {entry["name"] for entry in previous["assets"]}
+                  uploads = [assets[target] for target in updated] + [installer_name, manifest_name, "SHA256SUMS"]
+                  with tempfile.TemporaryDirectory(prefix=f"anland-{compositor}-rollback-") as temp:
+                      backup = Path(temp)
+                      overwritten = [name for name in uploads if name in previous_names]
+                      for name in overwritten:
+                          gh("release", "download", tag, "--repo", repo, "--pattern", name, "--dir", temp)
+                      old_notes = backup / ".previous-notes.md"
+                      old_notes.write_text(previous.get("body") or "")
+                      try:
+                          gh("release", "upload", tag, *(str(release_dir / assets[target]) for target in updated), "--repo", repo, "--clobber")
+                          gh("release", "upload", tag, *(str(release_dir / name) for name in [installer_name, manifest_name, "SHA256SUMS"]), "--repo", repo, "--clobber")
+                          gh("release", "edit", tag, "--repo", repo, "--title", title, "--notes-file", str(notes_path), "--draft=false", "--latest=false")
+                      except SystemExit as error:
+                          restoration_errors = []
+                          if overwritten:
+                              result = gh("release", "upload", tag, *(str(backup / name) for name in overwritten), "--repo", repo, "--clobber", check=False)
+                              if result.returncode:
+                                  restoration_errors.append(result.stderr.strip())
+                          result = gh("release", "edit", tag, "--repo", repo, "--title", previous.get("name") or title,
+                                      "--notes-file", str(old_notes), "--draft=false", "--latest=false", check=False)
+                          if result.returncode:
+                              restoration_errors.append(result.stderr.strip())
+                          current = gh("api", f"repos/{repo}/releases/tags/{tag}", check=False)
+                          if current.returncode:
+                              restoration_errors.append(current.stderr.strip())
+                          else:
+                              for entry in json.loads(current.stdout)["assets"]:
+                                  if entry["name"] in uploads and entry["name"] not in previous_names:
+                                      result = gh("api", "--method", "DELETE", f"repos/{repo}/releases/assets/{entry['id']}", check=False)
+                                      if result.returncode:
+                                          restoration_errors.append(result.stderr.strip())
+                          if restoration_errors:
+                              fail(f"Release update failed: {error}. Rollback also failed: {'; '.join(restoration_errors)}")
+                          fail(f"Release update failed; previous assets and release notes restored: {error}")
+                  # The manifest has committed. Stale assets are only housekeeping now;
+                  # retaining an unused old archive is safer than rolling back good data.
+                  for entry in previous["assets"]:
+                      if any(Path(entry["name"]).match(asset_pattern(target)) and entry["name"] != assets[target] for target in updated):
+                          result = gh("api", "--method", "DELETE", f"repos/{repo}/releases/assets/{entry['id']}", check=False)
+                          if result.returncode:
+                              print(f"Warning: unable to remove stale asset {entry['name']}: {result.stderr.strip()}")
+              else:
+                  try:
+                      gh("release", "create", tag, *(str(release_dir / name) for name in files), "--repo", repo,
+                         "--draft", "--latest=false", "--target", os.environ["GITHUB_SHA"], "--title", title, "--notes-file", str(notes_path))
+                      gh("release", "edit", tag, "--repo", repo, "--title", title, "--notes-file", str(notes_path), "--draft=false", "--latest=false")
+                  except SystemExit:
+                      current = gh("api", f"repos/{repo}/releases/tags/{tag}", check=False)
+                      if current.returncode == 0 and json.loads(current.stdout).get("draft"):
+                          result = gh("release", "delete", tag, "--repo", repo, "--yes", check=False)
+                          if result.returncode:
+                              fail(f"Initial release failed and draft cleanup failed: {result.stderr.strip()}")
+                      raise
+              print(f"Updated {server}/{repo}/releases/tag/{tag}: {', '.join(updated)}; reused: {', '.join(reused) or 'none'}")
+
+
+          if __name__ == "__main__":
+              release_packages()
+          RELEASE_PACKAGES
 
       - name: 同步到 CNB 国内镜像
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_cnb }}
@@ -421,6 +929,2010 @@ jobs:
           CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
           CNB_REPO: ${{ vars.CNB_REPO }}
         run: bash scripts/publish-cnb-release.sh anland-niri-packages
+
+  # ===========================================================================
+  # Anland Hyprland（多发行版 ARM64）
+  # ===========================================================================
+  prepare-hyprland:
+    name: 解析 Anland Hyprland 源码版本
+    needs: select
+    if: ${{ needs.select.outputs.hyprland == 'true' }}
+    runs-on: ubuntu-26.04
+    outputs:
+      anland_commit: ${{ steps.resolve.outputs.anland_commit }}
+      targets: ${{ steps.targets.outputs.targets }}
+    steps:
+      - name: 生成构建矩阵
+        id: targets
+        env:
+          BUILD_TARGET_INPUT: ${{ inputs.hyprland_target || 'all' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$BUILD_TARGET_INPUT" in
+            all) targets='["ubuntu2604","debian13","fedora43","fedora44","arch"]' ;;
+            ubuntu2604|debian13|fedora43|fedora44|arch) targets="[\"$BUILD_TARGET_INPUT\"]" ;;
+            *) echo "不支持的 Hyprland 构建目标：$BUILD_TARGET_INPUT" >&2; exit 1 ;;
+          esac
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "Hyprland 构建目标：$targets"
+
+      - name: 要求从 main 分支触发
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_NAME" != main ]; then
+            echo "此工作流必须从 main 分支触发。" >&2
+            exit 1
+          fi
+
+      - name: 将请求的源解析为单个提交并检查构建配方
+        id: resolve
+        env:
+          ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
+          ANLAND_REF: ${{ inputs.anland_ref || 'Gold' }}
+          BUILD_TARGETS: ${{ steps.targets.outputs.targets }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$(mktemp -d)/anland"
+          trap 'rm -rf "${source_dir%/anland}"' EXIT
+          git init --quiet "$source_dir"
+          git -C "$source_dir" remote add origin "$ANLAND_REPO"
+          git -C "$source_dir" fetch --quiet --depth=1 origin "$ANLAND_REF"
+          anland_commit="$(git -C "$source_dir" rev-parse FETCH_HEAD)"
+          git -C "$source_dir" cat-file -e "${anland_commit}^{commit}"
+          while IFS= read -r target; do
+            case "$target" in
+              ubuntu2604) recipe=Ubuntu2604_v5 ;;
+              debian13) recipe=Debian13_v5 ;;
+              fedora43) recipe=Fedora43_v5 ;;
+              fedora44) recipe=Fedora44_v5 ;;
+              arch) recipe=Arch_v5 ;;
+              *) echo "不支持的构建目标：$target" >&2; exit 1 ;;
+            esac
+            required=("producers/hyprland/$recipe/build.sh" producers/common/latest-source.sh)
+            if [[ $target == fedora* ]]; then
+              required+=(producers/common/fedora-latest-srpm.sh)
+            fi
+            for path in "${required[@]}"; do
+              git -C "$source_dir" cat-file -e "$anland_commit:$path" || {
+                echo "所选 Anland 提交缺少 $path；请先推送构建配方及共享文件或选择包含它们的 ref。" >&2
+                exit 1
+              }
+            done
+          done < <(python3 -c 'import json,os; print("\n".join(json.loads(os.environ["BUILD_TARGETS"])))')
+          echo "anland_commit=$anland_commit" >> "$GITHUB_OUTPUT"
+          echo "已将 $ANLAND_REPO @ $ANLAND_REF 解析为 $anland_commit"
+
+  build-hyprland:
+    name: 构建 Hyprland / ${{ matrix.target }} ARM64 软件包
+    needs: prepare-hyprland
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.prepare-hyprland.outputs.targets) }}
+    env:
+      COMPOSITOR: hyprland
+      BUILD_TARGET: ${{ matrix.target }}
+      ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
+      ANLAND_COMMIT: ${{ needs.prepare-hyprland.outputs.anland_commit }}
+      OUTPUT_DIR: .compositor-package-build/hyprland/${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - name: 解析构建目标
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$COMPOSITOR" in
+            niri|hyprland|mango|denial) ;;
+            *) echo "Unsupported compositor: $COMPOSITOR" >&2; exit 1 ;;
+          esac
+          case "$BUILD_TARGET" in
+            ubuntu2604) image=ubuntu:26.04; recipe=Ubuntu2604_v5; asset_arch=arm64 ;;
+            debian13) image=debian:trixie; recipe=Debian13_v5; asset_arch=arm64 ;;
+            fedora43) image=fedora:43; recipe=Fedora43_v5; asset_arch=aarch64 ;;
+            fedora44) image=fedora:44; recipe=Fedora44_v5; asset_arch=aarch64 ;;
+            arch) image=ogarcia/archlinux:latest; recipe=Arch_v5; asset_arch=aarch64 ;;
+            *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
+          esac
+          {
+            echo "image=$image"
+            echo "recipe=$recipe"
+            echo "asset_arch=$asset_arch"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 在对应的发行版中构建并校验软件包
+        env:
+          DISTRO_IMAGE: ${{ steps.target.outputs.image }}
+          RECIPE: ${{ steps.target.outputs.recipe }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUTPUT_DIR"
+          output_dir=$(cd -- "$OUTPUT_DIR" && pwd -P)
+          # Refuse accidental reuse of a previous run's successful outputs.
+          if [[ -n $(find "$output_dir" -mindepth 1 -print -quit) ]]; then
+            echo "Build output must be empty: $output_dir" >&2
+            exit 1
+          fi
+
+          docker run --rm -i --platform linux/arm64 \
+            -e COMPOSITOR -e BUILD_TARGET -e ANLAND_REPO -e ANLAND_COMMIT \
+            -e RECIPE -e JOBS="${JOBS:-4}" \
+            -e DEBIAN_FRONTEND=noninteractive \
+            -v "$output_dir:/build" \
+            "$DISTRO_IMAGE" bash -s <<'ANLAND_BUILD'
+          # Called as root in a disposable native ARM64 distribution container.
+          set -euo pipefail
+          [[ $(uname -m) == aarch64 ]] || { echo 'Native aarch64 container required' >&2; exit 1; }
+          case "$BUILD_TARGET" in
+              ubuntu2604|debian13)
+                  apt-get update
+                  apt-get install -y --no-install-recommends git ca-certificates sudo python3 \
+                      build-essential devscripts dpkg-dev debhelper fakeroot quilt patch \
+                      cmake meson ninja-build pkgconf ccache curl xz-utils unzip zip file binutils
+                  for sources in /etc/apt/sources.list.d/*.sources; do
+                      [[ -f $sources ]] || continue
+                      sed -i 's/^Types: deb$/Types: deb deb-src/' "$sources"
+                  done
+                  if [[ $BUILD_TARGET == debian13 ]]; then
+                      # Debian Hyprland's source/runtime ABI set lives in trixie-backports.
+                      # Other producers can also use current source packages from it.
+                      cat > /etc/apt/sources.list.d/anland-ci-backports.sources <<'SOURCES'
+          Types: deb deb-src
+          URIs: http://deb.debian.org/debian
+          Suites: trixie-backports
+          Components: main
+          Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+          SOURCES
+                  fi
+                  apt-get update
+                  ;;
+              fedora43|fedora44)
+                  dnf install -y --setopt=install_weak_deps=False \
+                      git ca-certificates sudo python3 rpm-build rpmdevtools findutils \
+                      util-linux tar xz which shadow-utils
+                  ;;
+              arch)
+                  pacman -Syu --noconfirm
+                  pacman -S --noconfirm --needed base-devel git ca-certificates sudo python
+                  ;;
+          esac
+
+          useradd -m -s /bin/bash anland
+          # The upstream recipes install build dependencies through sudo. This permission
+          # exists only inside this fresh, disposable build container.
+          printf 'anland ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/anland-ci
+          chmod 0440 /etc/sudoers.d/anland-ci
+          if [[ $BUILD_TARGET == arch ]]; then
+              printf '\nPACMAN_AUTH=(sudo)\n' >> /etc/makepkg.conf
+          fi
+          git init --quiet /tmp/anland
+          git -C /tmp/anland remote add origin "$ANLAND_REPO"
+          git -C /tmp/anland fetch --quiet --depth=1 origin "$ANLAND_COMMIT"
+          git -C /tmp/anland checkout --quiet --detach FETCH_HEAD
+          [[ $(git -C /tmp/anland rev-parse HEAD) == "$ANLAND_COMMIT" ]] || { echo 'Source commit mismatch' >&2; exit 1; }
+          recipe_dir="/tmp/anland/producers/$COMPOSITOR/$RECIPE"
+          test -f "$recipe_dir/build.sh" || {
+              echo "The selected Anland commit lacks producers/$COMPOSITOR/$RECIPE/build.sh; publish the local recipes and choose a ref containing them." >&2
+              exit 1
+          }
+
+          if [[ $COMPOSITOR == hyprland && $BUILD_TARGET == debian13 ]]; then
+              # This particular upstream recipe does not bootstrap dependencies itself.
+              apt-get build-dep -y --no-install-recommends -t trixie-backports \
+                  hyprutils hyprlang hyprgraphics aquamarine hyprland xwayland
+              apt-get install -y --no-install-recommends cpio gettext xxd libpipewire-0.3-dev
+          fi
+          mkdir -p /build/work /build/packages /build/payload
+          chown -R anland:anland /tmp/anland /build
+          export RECIPE_DIR="$recipe_dir" WORKDIR=/build/work ARTIFACTS=/build/packages ARTIFACTS_DIR=/build/packages
+          export ANLAND_WITH_DEPS=1 ANLAND_INSTALL=0 INSTALL=0 BUILD_XWAYLAND=1 ANLAND_STAGE=build
+          export ANLAND_WITH_DE=1 ANLAND_ENGINE_MODE=auto
+          export LANG=C.UTF-8 LC_ALL=C.UTF-8 GIT_TERMINAL_PROMPT=0
+          su -m -s /bin/bash anland -c '
+              export HOME=/home/anland
+              cd "$RECIPE_DIR"
+              case "$COMPOSITOR:$BUILD_TARGET" in
+                  niri:arch|denial:*) bash ./build.sh --noconfirm ;;
+                  *) bash ./build.sh ;;
+              esac
+          '
+
+          # Validate complete native runtime package sets before release packaging.
+          set -euo pipefail
+          : "${COMPOSITOR:?COMPOSITOR is required}"
+          : "${BUILD_TARGET:?BUILD_TARGET is required}"
+          : "${RECIPE_DIR:?RECIPE_DIR is required}"
+          output_root=${OUTPUT_ROOT:-/build}
+          mkdir -p "$output_root/payload"
+          case "$BUILD_TARGET" in
+              ubuntu2604|debian13) pattern='*.deb'; native_arch=arm64; xwayland_name=xwayland ;;
+              fedora43|fedora44) pattern='*.rpm'; native_arch=aarch64; xwayland_name=xorg-x11-server-Xwayland ;;
+              arch) pattern='*.pkg.tar.*'; native_arch=aarch64; xwayland_name=xorg-xwayland ;;
+              *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
+          esac
+          case "$COMPOSITOR:$BUILD_TARGET" in
+              hyprland:ubuntu2604|hyprland:debian13) main_name=hyprland ;;
+              denial:*) main_name=denial ;;
+              *) main_name=${COMPOSITOR}-anland ;;
+          esac
+          case "$COMPOSITOR:$BUILD_TARGET" in
+              hyprland:ubuntu2604|hyprland:debian13)
+                  required_packages=(hyprland libhyprutils12 libhyprlang2 libhyprgraphics4 libaquamarine14 "$xwayland_name") ;;
+              hyprland:arch) required_packages=(hyprland-anland hyprpm-anland "$xwayland_name") ;;
+              hyprland:fedora43|hyprland:fedora44) required_packages=(hyprland-anland "$xwayland_name") ;;
+              mango:*) required_packages=(mango-anland "$xwayland_name") ;;
+              denial:*) required_packages=(denial-anland-engine denial denial-desktop "$xwayland_name") ;;
+              niri:arch) required_packages=(niri-anland "$xwayland_name") ;;
+              niri:*) required_packages=(niri-anland xwayland-satellite "$xwayland_name") ;;
+              *) echo "Unsupported compositor: $COMPOSITOR" >&2; exit 1 ;;
+          esac
+          main_version=; found_xwayland=false; found_satellite=false
+          declare -A seen_packages=()
+          # Some upstream scripts fix output to recipe/artifacts; Niri Arch fix it
+          # to WORKDIR/packages. Only these explicit finished-package locations are read.
+          while IFS= read -r -d '' package; do
+              case "${package##*/}" in *-debug-*|*-debuginfo-*|*-debugsource-*|*-dbgsym_*|*.src.rpm|*.sig) continue ;; esac
+              case "$BUILD_TARGET" in
+                  ubuntu2604|debian13)
+                      name=$(dpkg-deb -f "$package" Package)
+                      version=$(dpkg-deb -f "$package" Version)
+                      architecture=$(dpkg-deb -f "$package" Architecture)
+                      dpkg-deb --contents "$package" >/dev/null
+                      ;;
+                  fedora43|fedora44)
+                      IFS=$'\t' read -r name version architecture < <(rpm -qp --queryformat '%{NAME}\t%{VERSION}\t%{ARCH}\n' "$package")
+                      rpm -qpl "$package" >/dev/null
+                      ;;
+                  arch)
+                      metadata=$(bsdtar -xOf "$package" .PKGINFO)
+                      name=$(sed -n 's/^pkgname = //p' <<< "$metadata")
+                      version=$(sed -n 's/^pkgver = //p' <<< "$metadata")
+                      architecture=$(sed -n 's/^arch = //p' <<< "$metadata")
+                      bsdtar -tf "$package" >/dev/null
+                      ;;
+              esac
+              [[ -n $name && -n $version ]] || { echo "Missing package metadata: $package" >&2; exit 1; }
+              # Native Xwayland source builds can also emit SDK subpackages. Installers
+              # need only the server runtime, matching the KDE package collection policy.
+              case "$name" in xorg-x11-server-Xwayland-devel|xwayland-dev) continue ;; esac
+              [[ $architecture == "$native_arch" ]] || { echo "Wrong architecture $architecture: $package" >&2; exit 1; }
+              case " ${required_packages[*]} " in
+                  *" $name "*) ;;
+                  *) echo "Unexpected $COMPOSITOR runtime package: $name" >&2; exit 1 ;;
+              esac
+              if [[ $COMPOSITOR == niri ]]; then
+                  # The Niri installers accept only this runtime package set. Satellite
+                  # is built with Niri on Debian/Ubuntu/Fedora; Arch uses its repository
+                  # dependency instead of shipping a second satellite package.
+                  # Fedora's Xwayland SRPM may also produce SDK packages, as in KDE's
+                  # distribution builds. The installer needs only its runtime package.
+                  [[ $architecture == "$native_arch" ]] || { echo "Niri runtime must be native ARM64: $name" >&2; exit 1; }
+                  case "$name" in
+                      niri-anland|"$xwayland_name") ;;
+                      xwayland-satellite)
+                          [[ $BUILD_TARGET != arch ]] || { echo "Unexpected Niri Arch package: $name" >&2; exit 1; }
+                          found_satellite=true
+                          ;;
+                      *) echo "Unexpected Niri runtime package: $name" >&2; exit 1 ;;
+                  esac
+              fi
+              if [[ -n ${seen_packages[$name]+set} ]]; then
+                  cmp -s "$package" "${seen_packages[$name]}" || { echo "Conflicting duplicate package: $name" >&2; exit 1; }
+                  continue
+              fi
+              seen_packages[$name]=$package
+              if [[ $name == "$main_name" ]]; then
+                  [[ $architecture == "$native_arch" ]] || { echo 'Compositor must be native ARM64' >&2; exit 1; }
+                  main_version=$version
+              fi
+              [[ $name != "$xwayland_name" ]] || found_xwayland=true
+              cp -v "$package" "$output_root"/payload/
+          done < <(find "$output_root"/packages "$output_root"/work/packages "$RECIPE_DIR/artifacts" \
+              -maxdepth 1 -type f -name "$pattern" -print0 2>/dev/null || true)
+          for name in "${required_packages[@]}"; do
+              [[ -n ${seen_packages[$name]+set} ]] || { echo "Missing $COMPOSITOR runtime package: $name" >&2; exit 1; }
+          done
+          [[ -n $main_version ]] || { echo "Missing compositor package: $main_name" >&2; exit 1; }
+          [[ $found_xwayland == true ]] || { echo "Missing patched Xwayland package: $xwayland_name" >&2; exit 1; }
+          if [[ $COMPOSITOR == niri && $BUILD_TARGET != arch ]]; then
+              [[ $found_satellite == true ]] || { echo 'Missing Niri runtime package: xwayland-satellite' >&2; exit 1; }
+          fi
+          main_version=${main_version#*:}
+          case "$BUILD_TARGET" in ubuntu2604|debian13|arch) main_version=${main_version%-*} ;; esac
+          printf '%s\n' "$main_version" > "$output_root"/.version
+          chmod -R a+rX "$output_root"/payload
+          chmod a+r "$output_root"/.version
+          ANLAND_BUILD
+
+      - name: 打包发布资产
+        id: package
+        env:
+          ASSET_ARCH: ${{ steps.target.outputs.asset_arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_dir=$OUTPUT_DIR
+          version=$(tr -d '[:space:]' < "$output_dir/.version")
+          case "$version" in ''|*[!A-Za-z0-9.+~_-]*) echo "Invalid package version: $version" >&2; exit 1 ;; esac
+          archive_root="anland-${COMPOSITOR}-packages/$BUILD_TARGET"
+          stage_dir=$(mktemp -d "${RUNNER_TEMP:-/tmp}/anland-${COMPOSITOR}-archive.XXXXXX")
+          trap 'rm -rf -- "$stage_dir"' EXIT
+          mkdir -p "$stage_dir/$archive_root"
+          cp -a "$output_dir/payload/." "$stage_dir/$archive_root/"
+          version_key=${COMPOSITOR}_version
+          printf 'target=%s\n%s=%s\nbuild_time=%s\nsource_commit=%s\n' \
+              "$BUILD_TARGET" "$version_key" "$version" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$ANLAND_COMMIT" \
+              > "$stage_dir/$archive_root/.anland-${COMPOSITOR}-build-info"
+          asset_dir="$GITHUB_WORKSPACE/.release-assets/$COMPOSITOR/$BUILD_TARGET"
+          mkdir -p "$asset_dir"
+          asset_path="$asset_dir/anland-${COMPOSITOR}-${BUILD_TARGET}-${version}-${ASSET_ARCH}.tar.gz"
+          tar --owner=0 --group=0 --numeric-owner -C "$stage_dir" -czf "$asset_path" "$archive_root"
+          printf 'asset_path=%s\n' "$asset_path" >> "$GITHUB_OUTPUT"
+          printf 'Packaged %s\n' "$asset_path"
+      - name: 上传构建归档
+        uses: actions/upload-artifact@v6
+        with:
+          name: anland-hyprland-package-${{ matrix.target }}
+          path: ${{ steps.package.outputs.asset_path }}
+          if-no-files-found: error
+          retention-days: 1
+
+  release-hyprland:
+    name: 更新 Anland Hyprland 滚动发布
+    needs: [prepare-hyprland, build-hyprland]
+    if: ${{ always() && !cancelled() && needs.prepare-hyprland.result == 'success' }}
+    runs-on: ubuntu-26.04
+    concurrency:
+      group: anland-hyprland-package-release
+      cancel-in-progress: false
+    env:
+      COMPOSITOR: hyprland
+      BUILD_TARGET_INPUT: ${{ inputs.hyprland_target || 'all' }}
+      ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
+      ANLAND_REF: ${{ inputs.anland_ref || 'Gold' }}
+      ANLAND_COMMIT: ${{ needs.prepare-hyprland.outputs.anland_commit }}
+      RELEASE_DIR: ${{ github.workspace }}/release-assets
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - name: 确保滚动标签存在
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="anland-${COMPOSITOR}-packages"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "标签 $tag 已存在。"
+          elif git tag "$tag" "$GITHUB_SHA" && git push origin "refs/tags/$tag"; then
+            echo "已创建标签 $tag。"
+          else
+            git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null
+          fi
+      - name: 下载成功的构建归档
+        uses: actions/download-artifact@v7
+        with:
+          pattern: anland-hyprland-package-*
+          path: release-assets
+          merge-multiple: true
+      - name: 合并成功包、沿用失败平台并更新发布
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'RELEASE_PACKAGES'
+          """Merge successful native builds into an independent rolling release.
+
+          Missing builds reuse verified assets from the current published manifest. A
+          failed single-target request and a run with no successful builds never publish.
+          """
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+          import tarfile
+          import tempfile
+          from datetime import datetime, timezone
+
+
+          def fail(message):
+              raise SystemExit(message)
+
+
+          def gh(*args, check=True):
+              result = subprocess.run(["gh", *args], text=True, capture_output=True)
+              if check and result.returncode:
+                  fail(result.stderr.strip() or f"gh failed: {args}")
+              return result
+
+
+          def digest(path):
+              with path.open("rb") as stream:
+                  return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+          def read_manifest(path):
+              result = {}
+              for line in path.read_text().splitlines():
+                  if not line or line.startswith("#"):
+                      continue
+                  key, separator, value = line.partition("=")
+                  if not separator or key in result:
+                      fail(f"Invalid or duplicate manifest record: {line}")
+                  result[key] = value
+              return result
+
+
+          def release_packages():
+              compositor = os.environ["COMPOSITOR"]
+              if compositor not in {"niri", "hyprland", "mango", "denial"}:
+                  fail(f"Unsupported compositor: {compositor}")
+              targets = ["ubuntu2604", "debian13", "fedora43", "fedora44", "arch"]
+              selected = os.environ.get("BUILD_TARGET_INPUT", "all")
+              if selected != "all" and selected not in targets:
+                  fail(f"Unsupported target: {selected}")
+              repo = os.environ["GITHUB_REPOSITORY"]
+              source_commit = os.environ["ANLAND_COMMIT"]
+              release_dir = Path(os.environ.get("RELEASE_DIR", "release-assets")).resolve()
+              release_dir.mkdir(parents=True, exist_ok=True)
+              tag = f"anland-{compositor}-packages"
+              manifest_name = f"anland-{compositor}-manifest"
+              installer_name = f"install-anland-{compositor}.sh"
+              server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+
+              def asset_pattern(target):
+                  arch = "arm64" if target in {"ubuntu2604", "debian13"} else "aarch64"
+                  return f"anland-{compositor}-{target}-*-{arch}.tar.gz"
+
+              def metadata(path, target, required):
+                  name = f"anland-{compositor}-packages/{target}/.anland-{compositor}-build-info"
+                  try:
+                      with tarfile.open(path, "r:gz") as archive:
+                          entry = archive.getmember(name)
+                          if not entry.isfile() or entry.size > 16384:
+                              fail(f"Invalid build metadata: {path.name}")
+                          stream = archive.extractfile(entry)
+                          records = dict(line.split("=", 1) for line in stream.read().decode().splitlines() if "=" in line)
+                  except (KeyError, tarfile.TarError, UnicodeError, ValueError):
+                      if required:
+                          fail(f"New archive lacks valid build metadata: {path.name}")
+                      return {"build_time": "unknown", "source_commit": "unknown"}
+                  if records.get("target") != target:
+                      fail(f"Archive target mismatch: {path.name}")
+                  if required and (not records.get("build_time") or records.get("source_commit") != source_commit):
+                      fail(f"New archive has missing time or wrong source commit: {path.name}")
+                  return records
+
+              assets = {}
+              info = {}
+              updated = []
+              reused = []
+              for target in targets:
+                  candidates = sorted(release_dir.glob(asset_pattern(target)))
+                  if len(candidates) > 1:
+                      fail(f"Multiple new assets for {target}")
+                  if candidates:
+                      if selected != "all" and target != selected:
+                          fail(f"Single-target run unexpectedly supplied {target}")
+                      path = candidates[0]
+                      info[target] = metadata(path, target, required=True)
+                      assets[target] = path.name
+                      updated.append(target)
+              if selected != "all" and selected not in updated:
+                  fail(f"Selected {selected} build produced no new asset; rolling release was not changed")
+              if not updated:
+                  fail("No successful build assets; rolling release was not changed")
+
+              response = gh("api", f"repos/{repo}/releases/tags/{tag}", check=False)
+              previous = None
+              if response.returncode == 0:
+                  previous = json.loads(response.stdout)
+                  if previous.get("draft") or previous.get("prerelease"):
+                      fail("Refusing to reuse an unpublished or prerelease rolling release")
+              elif "404" not in response.stderr and "Not Found" not in response.stderr:
+                  fail(response.stderr.strip() or "Unable to determine whether the rolling release exists")
+
+              missing = [target for target in targets if target not in assets]
+              if previous and missing:
+                  previous_assets = {entry["name"]: entry for entry in previous["assets"]}
+                  with tempfile.TemporaryDirectory(prefix=f"anland-{compositor}-previous-") as temp:
+                      previous_dir = Path(temp)
+                      manifest = {}
+                      legacy_checksums = None
+                      if manifest_name in previous_assets:
+                          gh("release", "download", tag, "--repo", repo, "--pattern", manifest_name, "--dir", temp)
+                          manifest = read_manifest(previous_dir / manifest_name)
+                          if manifest.get("format") != "1" or manifest.get("release_tag") != tag:
+                              fail("Previous release manifest has an unsupported format/tag")
+                      for target in missing:
+                          asset = manifest.get(target)
+                          # Compatibility with the original Arch-only Niri release.
+                          if not asset:
+                              matches = sorted(name for name in previous_assets if Path(name).match(asset_pattern(target)))
+                              if len(matches) > 1:
+                                  fail(f"Previous release has ambiguous {target} assets")
+                              asset = matches[0] if matches else None
+                          if not asset:
+                              continue
+                          if Path(asset).name != asset or not Path(asset).match(asset_pattern(target)) or asset not in previous_assets:
+                              fail(f"Invalid previous {target} asset: {asset}")
+                          gh("release", "download", tag, "--repo", repo, "--pattern", asset, "--dir", temp)
+                          path = previous_dir / asset
+                          expected = manifest.get(f"{target}_sha256")
+                          api_digest = previous_assets[asset].get("digest") or ""
+                          if not expected and api_digest.startswith("sha256:"):
+                              expected = api_digest.removeprefix("sha256:")
+                          if not expected and "SHA256SUMS" in previous_assets:
+                              # The original Arch-only Niri manifest predates per-target
+                              # hashes, and older GitHub assets may lack an API digest.
+                              if legacy_checksums is None:
+                                  gh("release", "download", tag, "--repo", repo, "--pattern", "SHA256SUMS", "--dir", temp)
+                                  legacy_checksums = {}
+                                  for line in (previous_dir / "SHA256SUMS").read_text().splitlines():
+                                      match = re.fullmatch(r"([0-9a-fA-F]{64}) [ *]([^/\\\s]+)", line)
+                                      if not match or match[2] in legacy_checksums:
+                                          fail("Invalid previous SHA256SUMS")
+                                      legacy_checksums[match[2]] = match[1]
+                              expected = legacy_checksums.get(asset)
+                          if not expected or not re.fullmatch(r"[0-9a-fA-F]{64}", expected) or digest(path) != expected.lower():
+                              fail(f"Previous {target} asset checksum unavailable or mismatched")
+                          shutil.copy2(path, release_dir / asset)
+                          info[target] = metadata(path, target, required=False)
+                          assets[target] = asset
+                          reused.append(target)
+
+              installer = Path(os.environ["GITHUB_WORKSPACE"]) / "scripts" / "tui" / installer_name
+              if not installer.is_file():
+                  fail(f"Missing installer: {installer}")
+              shutil.copy2(installer, release_dir / installer_name)
+              (release_dir / installer_name).chmod(0o755)
+              generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+              records = ["format=1", f"release_tag={tag}",
+                         f"revision=run-{os.environ.get('GITHUB_RUN_ID', 'local')}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}",
+                         f"generated_at={generated}", f"source_repository={os.environ['ANLAND_REPO']}",
+                         f"source_ref={os.environ['ANLAND_REF']}", f"source_commit={source_commit}"]
+              for target in targets:
+                  if target in assets:
+                      records.extend([f"{target}={assets[target]}", f"{target}_sha256={digest(release_dir / assets[target])}",
+                                      f"{target}_source_commit={info[target].get('source_commit', 'unknown')}"])
+              (release_dir / manifest_name).write_text("\n".join(records) + "\n")
+              files = [assets[target] for target in targets if target in assets] + [manifest_name, installer_name]
+              (release_dir / "SHA256SUMS").write_text("".join(f"{digest(release_dir / name)}  {name}\n" for name in files))
+              files.append("SHA256SUMS")
+              title = f"Anland {compositor.title()} ARM64 预编译包"
+              notes = [f"# {title}", "", "发行版原生软件包与 patched Xwayland，使用目标系统的 apt、dnf 或 pacman 管理。",
+                       f"归档内目录：`anland-{compositor}-packages/<target>/`。", "",
+                       f"本次更新：{', '.join(updated)}。", f"沿用上次发布：{', '.join(reused) or '无'}。",
+                       f"暂缺平台：{', '.join(target for target in targets if target not in assets) or '无'}。", "",
+                       "| 平台 | 资产 | 构建时间 | 来源提交 |", "| --- | --- | --- | --- |"]
+              for target in targets:
+                  if target in assets:
+                      name = assets[target]
+                      notes.append(f"| {target} | [{name}]({server}/{repo}/releases/download/{tag}/{name}) | {info[target].get('build_time', 'unknown')} | {info[target].get('source_commit', 'unknown')} |")
+              notes.extend(["", f"`{manifest_name}` 映射平台与资产并记录 SHA-256；`SHA256SUMS` 同时校验安装脚本。",
+                            f"安装/卸载脚本：`{installer_name}`。",
+                            "", f"本次构建来源：`{os.environ['ANLAND_REPO']}` @ `{source_commit}`（请求 `{os.environ['ANLAND_REF']}`）。",
+                            "沿用平台的实际源码提交保留在各平台元数据中。构建成功不代表已完成设备图形会话测试。"])
+              notes_path = release_dir / ".release-notes.md"
+              notes_path.write_text("\n".join(notes) + "\n")
+
+              if previous:
+                  # Same-version daily builds clobber the same asset name. Back up every
+                  # overwritten file before uploading, so a failed manifest/notes upload
+                  # cannot leave old checksums pointing at new archive bytes.
+                  previous_names = {entry["name"] for entry in previous["assets"]}
+                  uploads = [assets[target] for target in updated] + [installer_name, manifest_name, "SHA256SUMS"]
+                  with tempfile.TemporaryDirectory(prefix=f"anland-{compositor}-rollback-") as temp:
+                      backup = Path(temp)
+                      overwritten = [name for name in uploads if name in previous_names]
+                      for name in overwritten:
+                          gh("release", "download", tag, "--repo", repo, "--pattern", name, "--dir", temp)
+                      old_notes = backup / ".previous-notes.md"
+                      old_notes.write_text(previous.get("body") or "")
+                      try:
+                          gh("release", "upload", tag, *(str(release_dir / assets[target]) for target in updated), "--repo", repo, "--clobber")
+                          gh("release", "upload", tag, *(str(release_dir / name) for name in [installer_name, manifest_name, "SHA256SUMS"]), "--repo", repo, "--clobber")
+                          gh("release", "edit", tag, "--repo", repo, "--title", title, "--notes-file", str(notes_path), "--draft=false", "--latest=false")
+                      except SystemExit as error:
+                          restoration_errors = []
+                          if overwritten:
+                              result = gh("release", "upload", tag, *(str(backup / name) for name in overwritten), "--repo", repo, "--clobber", check=False)
+                              if result.returncode:
+                                  restoration_errors.append(result.stderr.strip())
+                          result = gh("release", "edit", tag, "--repo", repo, "--title", previous.get("name") or title,
+                                      "--notes-file", str(old_notes), "--draft=false", "--latest=false", check=False)
+                          if result.returncode:
+                              restoration_errors.append(result.stderr.strip())
+                          current = gh("api", f"repos/{repo}/releases/tags/{tag}", check=False)
+                          if current.returncode:
+                              restoration_errors.append(current.stderr.strip())
+                          else:
+                              for entry in json.loads(current.stdout)["assets"]:
+                                  if entry["name"] in uploads and entry["name"] not in previous_names:
+                                      result = gh("api", "--method", "DELETE", f"repos/{repo}/releases/assets/{entry['id']}", check=False)
+                                      if result.returncode:
+                                          restoration_errors.append(result.stderr.strip())
+                          if restoration_errors:
+                              fail(f"Release update failed: {error}. Rollback also failed: {'; '.join(restoration_errors)}")
+                          fail(f"Release update failed; previous assets and release notes restored: {error}")
+                  # The manifest has committed. Stale assets are only housekeeping now;
+                  # retaining an unused old archive is safer than rolling back good data.
+                  for entry in previous["assets"]:
+                      if any(Path(entry["name"]).match(asset_pattern(target)) and entry["name"] != assets[target] for target in updated):
+                          result = gh("api", "--method", "DELETE", f"repos/{repo}/releases/assets/{entry['id']}", check=False)
+                          if result.returncode:
+                              print(f"Warning: unable to remove stale asset {entry['name']}: {result.stderr.strip()}")
+              else:
+                  try:
+                      gh("release", "create", tag, *(str(release_dir / name) for name in files), "--repo", repo,
+                         "--draft", "--latest=false", "--target", os.environ["GITHUB_SHA"], "--title", title, "--notes-file", str(notes_path))
+                      gh("release", "edit", tag, "--repo", repo, "--title", title, "--notes-file", str(notes_path), "--draft=false", "--latest=false")
+                  except SystemExit:
+                      current = gh("api", f"repos/{repo}/releases/tags/{tag}", check=False)
+                      if current.returncode == 0 and json.loads(current.stdout).get("draft"):
+                          result = gh("release", "delete", tag, "--repo", repo, "--yes", check=False)
+                          if result.returncode:
+                              fail(f"Initial release failed and draft cleanup failed: {result.stderr.strip()}")
+                      raise
+              print(f"Updated {server}/{repo}/releases/tag/{tag}: {', '.join(updated)}; reused: {', '.join(reused) or 'none'}")
+
+
+          if __name__ == "__main__":
+              release_packages()
+          RELEASE_PACKAGES
+      - name: 同步到 CNB 国内镜像
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_cnb }}
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_REPO: ${{ vars.CNB_REPO }}
+        shell: bash
+        run: bash scripts/publish-cnb-release.sh "anland-${COMPOSITOR}-packages"
+
+  # ===========================================================================
+  # Anland Mango（多发行版 ARM64）
+  # ===========================================================================
+  prepare-mango:
+    name: 解析 Anland Mango 源码版本
+    needs: select
+    if: ${{ needs.select.outputs.mango == 'true' }}
+    runs-on: ubuntu-26.04
+    outputs:
+      anland_commit: ${{ steps.resolve.outputs.anland_commit }}
+      targets: ${{ steps.targets.outputs.targets }}
+    steps:
+      - name: 生成构建矩阵
+        id: targets
+        env:
+          BUILD_TARGET_INPUT: ${{ inputs.mango_target || 'all' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$BUILD_TARGET_INPUT" in
+            all) targets='["ubuntu2604","debian13","fedora43","fedora44","arch"]' ;;
+            ubuntu2604|debian13|fedora43|fedora44|arch) targets="[\"$BUILD_TARGET_INPUT\"]" ;;
+            *) echo "不支持的 Mango 构建目标：$BUILD_TARGET_INPUT" >&2; exit 1 ;;
+          esac
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "Mango 构建目标：$targets"
+
+      - name: 要求从 main 分支触发
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_NAME" != main ]; then
+            echo "此工作流必须从 main 分支触发。" >&2
+            exit 1
+          fi
+
+      - name: 将请求的源解析为单个提交并检查构建配方
+        id: resolve
+        env:
+          ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
+          ANLAND_REF: ${{ inputs.anland_ref || 'Gold' }}
+          BUILD_TARGETS: ${{ steps.targets.outputs.targets }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$(mktemp -d)/anland"
+          trap 'rm -rf "${source_dir%/anland}"' EXIT
+          git init --quiet "$source_dir"
+          git -C "$source_dir" remote add origin "$ANLAND_REPO"
+          git -C "$source_dir" fetch --quiet --depth=1 origin "$ANLAND_REF"
+          anland_commit="$(git -C "$source_dir" rev-parse FETCH_HEAD)"
+          git -C "$source_dir" cat-file -e "${anland_commit}^{commit}"
+          while IFS= read -r target; do
+            case "$target" in
+              ubuntu2604) recipe=Ubuntu2604_v5 ;;
+              debian13) recipe=Debian13_v5 ;;
+              fedora43) recipe=Fedora43_v5 ;;
+              fedora44) recipe=Fedora44_v5 ;;
+              arch) recipe=Arch_v5 ;;
+              *) echo "不支持的构建目标：$target" >&2; exit 1 ;;
+            esac
+            required=("producers/mango/$recipe/build.sh" producers/common/latest-source.sh)
+            if [[ $target == fedora* ]]; then
+              required+=(producers/common/fedora-latest-srpm.sh)
+            fi
+            for path in "${required[@]}"; do
+              git -C "$source_dir" cat-file -e "$anland_commit:$path" || {
+                echo "所选 Anland 提交缺少 $path；请先推送构建配方及共享文件或选择包含它们的 ref。" >&2
+                exit 1
+              }
+            done
+          done < <(python3 -c 'import json,os; print("\n".join(json.loads(os.environ["BUILD_TARGETS"])))')
+          echo "anland_commit=$anland_commit" >> "$GITHUB_OUTPUT"
+          echo "已将 $ANLAND_REPO @ $ANLAND_REF 解析为 $anland_commit"
+
+  build-mango:
+    name: 构建 Mango / ${{ matrix.target }} ARM64 软件包
+    needs: prepare-mango
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.prepare-mango.outputs.targets) }}
+    env:
+      COMPOSITOR: mango
+      BUILD_TARGET: ${{ matrix.target }}
+      ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
+      ANLAND_COMMIT: ${{ needs.prepare-mango.outputs.anland_commit }}
+      OUTPUT_DIR: .compositor-package-build/mango/${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - name: 解析构建目标
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$COMPOSITOR" in
+            niri|hyprland|mango|denial) ;;
+            *) echo "Unsupported compositor: $COMPOSITOR" >&2; exit 1 ;;
+          esac
+          case "$BUILD_TARGET" in
+            ubuntu2604) image=ubuntu:26.04; recipe=Ubuntu2604_v5; asset_arch=arm64 ;;
+            debian13) image=debian:trixie; recipe=Debian13_v5; asset_arch=arm64 ;;
+            fedora43) image=fedora:43; recipe=Fedora43_v5; asset_arch=aarch64 ;;
+            fedora44) image=fedora:44; recipe=Fedora44_v5; asset_arch=aarch64 ;;
+            arch) image=ogarcia/archlinux:latest; recipe=Arch_v5; asset_arch=aarch64 ;;
+            *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
+          esac
+          {
+            echo "image=$image"
+            echo "recipe=$recipe"
+            echo "asset_arch=$asset_arch"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 在对应的发行版中构建并校验软件包
+        env:
+          DISTRO_IMAGE: ${{ steps.target.outputs.image }}
+          RECIPE: ${{ steps.target.outputs.recipe }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUTPUT_DIR"
+          output_dir=$(cd -- "$OUTPUT_DIR" && pwd -P)
+          # Refuse accidental reuse of a previous run's successful outputs.
+          if [[ -n $(find "$output_dir" -mindepth 1 -print -quit) ]]; then
+            echo "Build output must be empty: $output_dir" >&2
+            exit 1
+          fi
+
+          docker run --rm -i --platform linux/arm64 \
+            -e COMPOSITOR -e BUILD_TARGET -e ANLAND_REPO -e ANLAND_COMMIT \
+            -e RECIPE -e JOBS="${JOBS:-4}" \
+            -e DEBIAN_FRONTEND=noninteractive \
+            -v "$output_dir:/build" \
+            "$DISTRO_IMAGE" bash -s <<'ANLAND_BUILD'
+          # Called as root in a disposable native ARM64 distribution container.
+          set -euo pipefail
+          [[ $(uname -m) == aarch64 ]] || { echo 'Native aarch64 container required' >&2; exit 1; }
+          case "$BUILD_TARGET" in
+              ubuntu2604|debian13)
+                  apt-get update
+                  apt-get install -y --no-install-recommends git ca-certificates sudo python3 \
+                      build-essential devscripts dpkg-dev debhelper fakeroot quilt patch \
+                      cmake meson ninja-build pkgconf ccache curl xz-utils unzip zip file binutils
+                  for sources in /etc/apt/sources.list.d/*.sources; do
+                      [[ -f $sources ]] || continue
+                      sed -i 's/^Types: deb$/Types: deb deb-src/' "$sources"
+                  done
+                  if [[ $BUILD_TARGET == debian13 ]]; then
+                      # Debian Hyprland's source/runtime ABI set lives in trixie-backports.
+                      # Other producers can also use current source packages from it.
+                      cat > /etc/apt/sources.list.d/anland-ci-backports.sources <<'SOURCES'
+          Types: deb deb-src
+          URIs: http://deb.debian.org/debian
+          Suites: trixie-backports
+          Components: main
+          Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+          SOURCES
+                  fi
+                  apt-get update
+                  ;;
+              fedora43|fedora44)
+                  dnf install -y --setopt=install_weak_deps=False \
+                      git ca-certificates sudo python3 rpm-build rpmdevtools findutils \
+                      util-linux tar xz which shadow-utils
+                  ;;
+              arch)
+                  pacman -Syu --noconfirm
+                  pacman -S --noconfirm --needed base-devel git ca-certificates sudo python
+                  ;;
+          esac
+
+          useradd -m -s /bin/bash anland
+          # The upstream recipes install build dependencies through sudo. This permission
+          # exists only inside this fresh, disposable build container.
+          printf 'anland ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/anland-ci
+          chmod 0440 /etc/sudoers.d/anland-ci
+          if [[ $BUILD_TARGET == arch ]]; then
+              printf '\nPACMAN_AUTH=(sudo)\n' >> /etc/makepkg.conf
+          fi
+          git init --quiet /tmp/anland
+          git -C /tmp/anland remote add origin "$ANLAND_REPO"
+          git -C /tmp/anland fetch --quiet --depth=1 origin "$ANLAND_COMMIT"
+          git -C /tmp/anland checkout --quiet --detach FETCH_HEAD
+          [[ $(git -C /tmp/anland rev-parse HEAD) == "$ANLAND_COMMIT" ]] || { echo 'Source commit mismatch' >&2; exit 1; }
+          recipe_dir="/tmp/anland/producers/$COMPOSITOR/$RECIPE"
+          test -f "$recipe_dir/build.sh" || {
+              echo "The selected Anland commit lacks producers/$COMPOSITOR/$RECIPE/build.sh; publish the local recipes and choose a ref containing them." >&2
+              exit 1
+          }
+
+          if [[ $COMPOSITOR == hyprland && $BUILD_TARGET == debian13 ]]; then
+              # This particular upstream recipe does not bootstrap dependencies itself.
+              apt-get build-dep -y --no-install-recommends -t trixie-backports \
+                  hyprutils hyprlang hyprgraphics aquamarine hyprland xwayland
+              apt-get install -y --no-install-recommends cpio gettext xxd libpipewire-0.3-dev
+          fi
+          mkdir -p /build/work /build/packages /build/payload
+          chown -R anland:anland /tmp/anland /build
+          export RECIPE_DIR="$recipe_dir" WORKDIR=/build/work ARTIFACTS=/build/packages ARTIFACTS_DIR=/build/packages
+          export ANLAND_WITH_DEPS=1 ANLAND_INSTALL=0 INSTALL=0 BUILD_XWAYLAND=1 ANLAND_STAGE=build
+          export ANLAND_WITH_DE=1 ANLAND_ENGINE_MODE=auto
+          export LANG=C.UTF-8 LC_ALL=C.UTF-8 GIT_TERMINAL_PROMPT=0
+          su -m -s /bin/bash anland -c '
+              export HOME=/home/anland
+              cd "$RECIPE_DIR"
+              case "$COMPOSITOR:$BUILD_TARGET" in
+                  niri:arch|denial:*) bash ./build.sh --noconfirm ;;
+                  *) bash ./build.sh ;;
+              esac
+          '
+
+          # Validate complete native runtime package sets before release packaging.
+          set -euo pipefail
+          : "${COMPOSITOR:?COMPOSITOR is required}"
+          : "${BUILD_TARGET:?BUILD_TARGET is required}"
+          : "${RECIPE_DIR:?RECIPE_DIR is required}"
+          output_root=${OUTPUT_ROOT:-/build}
+          mkdir -p "$output_root/payload"
+          case "$BUILD_TARGET" in
+              ubuntu2604|debian13) pattern='*.deb'; native_arch=arm64; xwayland_name=xwayland ;;
+              fedora43|fedora44) pattern='*.rpm'; native_arch=aarch64; xwayland_name=xorg-x11-server-Xwayland ;;
+              arch) pattern='*.pkg.tar.*'; native_arch=aarch64; xwayland_name=xorg-xwayland ;;
+              *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
+          esac
+          case "$COMPOSITOR:$BUILD_TARGET" in
+              hyprland:ubuntu2604|hyprland:debian13) main_name=hyprland ;;
+              denial:*) main_name=denial ;;
+              *) main_name=${COMPOSITOR}-anland ;;
+          esac
+          case "$COMPOSITOR:$BUILD_TARGET" in
+              hyprland:ubuntu2604|hyprland:debian13)
+                  required_packages=(hyprland libhyprutils12 libhyprlang2 libhyprgraphics4 libaquamarine14 "$xwayland_name") ;;
+              hyprland:arch) required_packages=(hyprland-anland hyprpm-anland "$xwayland_name") ;;
+              hyprland:fedora43|hyprland:fedora44) required_packages=(hyprland-anland "$xwayland_name") ;;
+              mango:*) required_packages=(mango-anland "$xwayland_name") ;;
+              denial:*) required_packages=(denial-anland-engine denial denial-desktop "$xwayland_name") ;;
+              niri:arch) required_packages=(niri-anland "$xwayland_name") ;;
+              niri:*) required_packages=(niri-anland xwayland-satellite "$xwayland_name") ;;
+              *) echo "Unsupported compositor: $COMPOSITOR" >&2; exit 1 ;;
+          esac
+          main_version=; found_xwayland=false; found_satellite=false
+          declare -A seen_packages=()
+          # Some upstream scripts fix output to recipe/artifacts; Niri Arch fix it
+          # to WORKDIR/packages. Only these explicit finished-package locations are read.
+          while IFS= read -r -d '' package; do
+              case "${package##*/}" in *-debug-*|*-debuginfo-*|*-debugsource-*|*-dbgsym_*|*.src.rpm|*.sig) continue ;; esac
+              case "$BUILD_TARGET" in
+                  ubuntu2604|debian13)
+                      name=$(dpkg-deb -f "$package" Package)
+                      version=$(dpkg-deb -f "$package" Version)
+                      architecture=$(dpkg-deb -f "$package" Architecture)
+                      dpkg-deb --contents "$package" >/dev/null
+                      ;;
+                  fedora43|fedora44)
+                      IFS=$'\t' read -r name version architecture < <(rpm -qp --queryformat '%{NAME}\t%{VERSION}\t%{ARCH}\n' "$package")
+                      rpm -qpl "$package" >/dev/null
+                      ;;
+                  arch)
+                      metadata=$(bsdtar -xOf "$package" .PKGINFO)
+                      name=$(sed -n 's/^pkgname = //p' <<< "$metadata")
+                      version=$(sed -n 's/^pkgver = //p' <<< "$metadata")
+                      architecture=$(sed -n 's/^arch = //p' <<< "$metadata")
+                      bsdtar -tf "$package" >/dev/null
+                      ;;
+              esac
+              [[ -n $name && -n $version ]] || { echo "Missing package metadata: $package" >&2; exit 1; }
+              # Native Xwayland source builds can also emit SDK subpackages. Installers
+              # need only the server runtime, matching the KDE package collection policy.
+              case "$name" in xorg-x11-server-Xwayland-devel|xwayland-dev) continue ;; esac
+              [[ $architecture == "$native_arch" ]] || { echo "Wrong architecture $architecture: $package" >&2; exit 1; }
+              case " ${required_packages[*]} " in
+                  *" $name "*) ;;
+                  *) echo "Unexpected $COMPOSITOR runtime package: $name" >&2; exit 1 ;;
+              esac
+              if [[ $COMPOSITOR == niri ]]; then
+                  # The Niri installers accept only this runtime package set. Satellite
+                  # is built with Niri on Debian/Ubuntu/Fedora; Arch uses its repository
+                  # dependency instead of shipping a second satellite package.
+                  # Fedora's Xwayland SRPM may also produce SDK packages, as in KDE's
+                  # distribution builds. The installer needs only its runtime package.
+                  [[ $architecture == "$native_arch" ]] || { echo "Niri runtime must be native ARM64: $name" >&2; exit 1; }
+                  case "$name" in
+                      niri-anland|"$xwayland_name") ;;
+                      xwayland-satellite)
+                          [[ $BUILD_TARGET != arch ]] || { echo "Unexpected Niri Arch package: $name" >&2; exit 1; }
+                          found_satellite=true
+                          ;;
+                      *) echo "Unexpected Niri runtime package: $name" >&2; exit 1 ;;
+                  esac
+              fi
+              if [[ -n ${seen_packages[$name]+set} ]]; then
+                  cmp -s "$package" "${seen_packages[$name]}" || { echo "Conflicting duplicate package: $name" >&2; exit 1; }
+                  continue
+              fi
+              seen_packages[$name]=$package
+              if [[ $name == "$main_name" ]]; then
+                  [[ $architecture == "$native_arch" ]] || { echo 'Compositor must be native ARM64' >&2; exit 1; }
+                  main_version=$version
+              fi
+              [[ $name != "$xwayland_name" ]] || found_xwayland=true
+              cp -v "$package" "$output_root"/payload/
+          done < <(find "$output_root"/packages "$output_root"/work/packages "$RECIPE_DIR/artifacts" \
+              -maxdepth 1 -type f -name "$pattern" -print0 2>/dev/null || true)
+          for name in "${required_packages[@]}"; do
+              [[ -n ${seen_packages[$name]+set} ]] || { echo "Missing $COMPOSITOR runtime package: $name" >&2; exit 1; }
+          done
+          [[ -n $main_version ]] || { echo "Missing compositor package: $main_name" >&2; exit 1; }
+          [[ $found_xwayland == true ]] || { echo "Missing patched Xwayland package: $xwayland_name" >&2; exit 1; }
+          if [[ $COMPOSITOR == niri && $BUILD_TARGET != arch ]]; then
+              [[ $found_satellite == true ]] || { echo 'Missing Niri runtime package: xwayland-satellite' >&2; exit 1; }
+          fi
+          main_version=${main_version#*:}
+          case "$BUILD_TARGET" in ubuntu2604|debian13|arch) main_version=${main_version%-*} ;; esac
+          printf '%s\n' "$main_version" > "$output_root"/.version
+          chmod -R a+rX "$output_root"/payload
+          chmod a+r "$output_root"/.version
+          ANLAND_BUILD
+
+      - name: 打包发布资产
+        id: package
+        env:
+          ASSET_ARCH: ${{ steps.target.outputs.asset_arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_dir=$OUTPUT_DIR
+          version=$(tr -d '[:space:]' < "$output_dir/.version")
+          case "$version" in ''|*[!A-Za-z0-9.+~_-]*) echo "Invalid package version: $version" >&2; exit 1 ;; esac
+          archive_root="anland-${COMPOSITOR}-packages/$BUILD_TARGET"
+          stage_dir=$(mktemp -d "${RUNNER_TEMP:-/tmp}/anland-${COMPOSITOR}-archive.XXXXXX")
+          trap 'rm -rf -- "$stage_dir"' EXIT
+          mkdir -p "$stage_dir/$archive_root"
+          cp -a "$output_dir/payload/." "$stage_dir/$archive_root/"
+          version_key=${COMPOSITOR}_version
+          printf 'target=%s\n%s=%s\nbuild_time=%s\nsource_commit=%s\n' \
+              "$BUILD_TARGET" "$version_key" "$version" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$ANLAND_COMMIT" \
+              > "$stage_dir/$archive_root/.anland-${COMPOSITOR}-build-info"
+          asset_dir="$GITHUB_WORKSPACE/.release-assets/$COMPOSITOR/$BUILD_TARGET"
+          mkdir -p "$asset_dir"
+          asset_path="$asset_dir/anland-${COMPOSITOR}-${BUILD_TARGET}-${version}-${ASSET_ARCH}.tar.gz"
+          tar --owner=0 --group=0 --numeric-owner -C "$stage_dir" -czf "$asset_path" "$archive_root"
+          printf 'asset_path=%s\n' "$asset_path" >> "$GITHUB_OUTPUT"
+          printf 'Packaged %s\n' "$asset_path"
+      - name: 上传构建归档
+        uses: actions/upload-artifact@v6
+        with:
+          name: anland-mango-package-${{ matrix.target }}
+          path: ${{ steps.package.outputs.asset_path }}
+          if-no-files-found: error
+          retention-days: 1
+
+  release-mango:
+    name: 更新 Anland Mango 滚动发布
+    needs: [prepare-mango, build-mango]
+    if: ${{ always() && !cancelled() && needs.prepare-mango.result == 'success' }}
+    runs-on: ubuntu-26.04
+    concurrency:
+      group: anland-mango-package-release
+      cancel-in-progress: false
+    env:
+      COMPOSITOR: mango
+      BUILD_TARGET_INPUT: ${{ inputs.mango_target || 'all' }}
+      ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
+      ANLAND_REF: ${{ inputs.anland_ref || 'Gold' }}
+      ANLAND_COMMIT: ${{ needs.prepare-mango.outputs.anland_commit }}
+      RELEASE_DIR: ${{ github.workspace }}/release-assets
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - name: 确保滚动标签存在
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="anland-${COMPOSITOR}-packages"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "标签 $tag 已存在。"
+          elif git tag "$tag" "$GITHUB_SHA" && git push origin "refs/tags/$tag"; then
+            echo "已创建标签 $tag。"
+          else
+            git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null
+          fi
+      - name: 下载成功的构建归档
+        uses: actions/download-artifact@v7
+        with:
+          pattern: anland-mango-package-*
+          path: release-assets
+          merge-multiple: true
+      - name: 合并成功包、沿用失败平台并更新发布
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'RELEASE_PACKAGES'
+          """Merge successful native builds into an independent rolling release.
+
+          Missing builds reuse verified assets from the current published manifest. A
+          failed single-target request and a run with no successful builds never publish.
+          """
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+          import tarfile
+          import tempfile
+          from datetime import datetime, timezone
+
+
+          def fail(message):
+              raise SystemExit(message)
+
+
+          def gh(*args, check=True):
+              result = subprocess.run(["gh", *args], text=True, capture_output=True)
+              if check and result.returncode:
+                  fail(result.stderr.strip() or f"gh failed: {args}")
+              return result
+
+
+          def digest(path):
+              with path.open("rb") as stream:
+                  return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+          def read_manifest(path):
+              result = {}
+              for line in path.read_text().splitlines():
+                  if not line or line.startswith("#"):
+                      continue
+                  key, separator, value = line.partition("=")
+                  if not separator or key in result:
+                      fail(f"Invalid or duplicate manifest record: {line}")
+                  result[key] = value
+              return result
+
+
+          def release_packages():
+              compositor = os.environ["COMPOSITOR"]
+              if compositor not in {"niri", "hyprland", "mango", "denial"}:
+                  fail(f"Unsupported compositor: {compositor}")
+              targets = ["ubuntu2604", "debian13", "fedora43", "fedora44", "arch"]
+              selected = os.environ.get("BUILD_TARGET_INPUT", "all")
+              if selected != "all" and selected not in targets:
+                  fail(f"Unsupported target: {selected}")
+              repo = os.environ["GITHUB_REPOSITORY"]
+              source_commit = os.environ["ANLAND_COMMIT"]
+              release_dir = Path(os.environ.get("RELEASE_DIR", "release-assets")).resolve()
+              release_dir.mkdir(parents=True, exist_ok=True)
+              tag = f"anland-{compositor}-packages"
+              manifest_name = f"anland-{compositor}-manifest"
+              installer_name = f"install-anland-{compositor}.sh"
+              server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+
+              def asset_pattern(target):
+                  arch = "arm64" if target in {"ubuntu2604", "debian13"} else "aarch64"
+                  return f"anland-{compositor}-{target}-*-{arch}.tar.gz"
+
+              def metadata(path, target, required):
+                  name = f"anland-{compositor}-packages/{target}/.anland-{compositor}-build-info"
+                  try:
+                      with tarfile.open(path, "r:gz") as archive:
+                          entry = archive.getmember(name)
+                          if not entry.isfile() or entry.size > 16384:
+                              fail(f"Invalid build metadata: {path.name}")
+                          stream = archive.extractfile(entry)
+                          records = dict(line.split("=", 1) for line in stream.read().decode().splitlines() if "=" in line)
+                  except (KeyError, tarfile.TarError, UnicodeError, ValueError):
+                      if required:
+                          fail(f"New archive lacks valid build metadata: {path.name}")
+                      return {"build_time": "unknown", "source_commit": "unknown"}
+                  if records.get("target") != target:
+                      fail(f"Archive target mismatch: {path.name}")
+                  if required and (not records.get("build_time") or records.get("source_commit") != source_commit):
+                      fail(f"New archive has missing time or wrong source commit: {path.name}")
+                  return records
+
+              assets = {}
+              info = {}
+              updated = []
+              reused = []
+              for target in targets:
+                  candidates = sorted(release_dir.glob(asset_pattern(target)))
+                  if len(candidates) > 1:
+                      fail(f"Multiple new assets for {target}")
+                  if candidates:
+                      if selected != "all" and target != selected:
+                          fail(f"Single-target run unexpectedly supplied {target}")
+                      path = candidates[0]
+                      info[target] = metadata(path, target, required=True)
+                      assets[target] = path.name
+                      updated.append(target)
+              if selected != "all" and selected not in updated:
+                  fail(f"Selected {selected} build produced no new asset; rolling release was not changed")
+              if not updated:
+                  fail("No successful build assets; rolling release was not changed")
+
+              response = gh("api", f"repos/{repo}/releases/tags/{tag}", check=False)
+              previous = None
+              if response.returncode == 0:
+                  previous = json.loads(response.stdout)
+                  if previous.get("draft") or previous.get("prerelease"):
+                      fail("Refusing to reuse an unpublished or prerelease rolling release")
+              elif "404" not in response.stderr and "Not Found" not in response.stderr:
+                  fail(response.stderr.strip() or "Unable to determine whether the rolling release exists")
+
+              missing = [target for target in targets if target not in assets]
+              if previous and missing:
+                  previous_assets = {entry["name"]: entry for entry in previous["assets"]}
+                  with tempfile.TemporaryDirectory(prefix=f"anland-{compositor}-previous-") as temp:
+                      previous_dir = Path(temp)
+                      manifest = {}
+                      legacy_checksums = None
+                      if manifest_name in previous_assets:
+                          gh("release", "download", tag, "--repo", repo, "--pattern", manifest_name, "--dir", temp)
+                          manifest = read_manifest(previous_dir / manifest_name)
+                          if manifest.get("format") != "1" or manifest.get("release_tag") != tag:
+                              fail("Previous release manifest has an unsupported format/tag")
+                      for target in missing:
+                          asset = manifest.get(target)
+                          # Compatibility with the original Arch-only Niri release.
+                          if not asset:
+                              matches = sorted(name for name in previous_assets if Path(name).match(asset_pattern(target)))
+                              if len(matches) > 1:
+                                  fail(f"Previous release has ambiguous {target} assets")
+                              asset = matches[0] if matches else None
+                          if not asset:
+                              continue
+                          if Path(asset).name != asset or not Path(asset).match(asset_pattern(target)) or asset not in previous_assets:
+                              fail(f"Invalid previous {target} asset: {asset}")
+                          gh("release", "download", tag, "--repo", repo, "--pattern", asset, "--dir", temp)
+                          path = previous_dir / asset
+                          expected = manifest.get(f"{target}_sha256")
+                          api_digest = previous_assets[asset].get("digest") or ""
+                          if not expected and api_digest.startswith("sha256:"):
+                              expected = api_digest.removeprefix("sha256:")
+                          if not expected and "SHA256SUMS" in previous_assets:
+                              # The original Arch-only Niri manifest predates per-target
+                              # hashes, and older GitHub assets may lack an API digest.
+                              if legacy_checksums is None:
+                                  gh("release", "download", tag, "--repo", repo, "--pattern", "SHA256SUMS", "--dir", temp)
+                                  legacy_checksums = {}
+                                  for line in (previous_dir / "SHA256SUMS").read_text().splitlines():
+                                      match = re.fullmatch(r"([0-9a-fA-F]{64}) [ *]([^/\\\s]+)", line)
+                                      if not match or match[2] in legacy_checksums:
+                                          fail("Invalid previous SHA256SUMS")
+                                      legacy_checksums[match[2]] = match[1]
+                              expected = legacy_checksums.get(asset)
+                          if not expected or not re.fullmatch(r"[0-9a-fA-F]{64}", expected) or digest(path) != expected.lower():
+                              fail(f"Previous {target} asset checksum unavailable or mismatched")
+                          shutil.copy2(path, release_dir / asset)
+                          info[target] = metadata(path, target, required=False)
+                          assets[target] = asset
+                          reused.append(target)
+
+              installer = Path(os.environ["GITHUB_WORKSPACE"]) / "scripts" / "tui" / installer_name
+              if not installer.is_file():
+                  fail(f"Missing installer: {installer}")
+              shutil.copy2(installer, release_dir / installer_name)
+              (release_dir / installer_name).chmod(0o755)
+              generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+              records = ["format=1", f"release_tag={tag}",
+                         f"revision=run-{os.environ.get('GITHUB_RUN_ID', 'local')}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}",
+                         f"generated_at={generated}", f"source_repository={os.environ['ANLAND_REPO']}",
+                         f"source_ref={os.environ['ANLAND_REF']}", f"source_commit={source_commit}"]
+              for target in targets:
+                  if target in assets:
+                      records.extend([f"{target}={assets[target]}", f"{target}_sha256={digest(release_dir / assets[target])}",
+                                      f"{target}_source_commit={info[target].get('source_commit', 'unknown')}"])
+              (release_dir / manifest_name).write_text("\n".join(records) + "\n")
+              files = [assets[target] for target in targets if target in assets] + [manifest_name, installer_name]
+              (release_dir / "SHA256SUMS").write_text("".join(f"{digest(release_dir / name)}  {name}\n" for name in files))
+              files.append("SHA256SUMS")
+              title = f"Anland {compositor.title()} ARM64 预编译包"
+              notes = [f"# {title}", "", "发行版原生软件包与 patched Xwayland，使用目标系统的 apt、dnf 或 pacman 管理。",
+                       f"归档内目录：`anland-{compositor}-packages/<target>/`。", "",
+                       f"本次更新：{', '.join(updated)}。", f"沿用上次发布：{', '.join(reused) or '无'}。",
+                       f"暂缺平台：{', '.join(target for target in targets if target not in assets) or '无'}。", "",
+                       "| 平台 | 资产 | 构建时间 | 来源提交 |", "| --- | --- | --- | --- |"]
+              for target in targets:
+                  if target in assets:
+                      name = assets[target]
+                      notes.append(f"| {target} | [{name}]({server}/{repo}/releases/download/{tag}/{name}) | {info[target].get('build_time', 'unknown')} | {info[target].get('source_commit', 'unknown')} |")
+              notes.extend(["", f"`{manifest_name}` 映射平台与资产并记录 SHA-256；`SHA256SUMS` 同时校验安装脚本。",
+                            f"安装/卸载脚本：`{installer_name}`。",
+                            "", f"本次构建来源：`{os.environ['ANLAND_REPO']}` @ `{source_commit}`（请求 `{os.environ['ANLAND_REF']}`）。",
+                            "沿用平台的实际源码提交保留在各平台元数据中。构建成功不代表已完成设备图形会话测试。"])
+              notes_path = release_dir / ".release-notes.md"
+              notes_path.write_text("\n".join(notes) + "\n")
+
+              if previous:
+                  # Same-version daily builds clobber the same asset name. Back up every
+                  # overwritten file before uploading, so a failed manifest/notes upload
+                  # cannot leave old checksums pointing at new archive bytes.
+                  previous_names = {entry["name"] for entry in previous["assets"]}
+                  uploads = [assets[target] for target in updated] + [installer_name, manifest_name, "SHA256SUMS"]
+                  with tempfile.TemporaryDirectory(prefix=f"anland-{compositor}-rollback-") as temp:
+                      backup = Path(temp)
+                      overwritten = [name for name in uploads if name in previous_names]
+                      for name in overwritten:
+                          gh("release", "download", tag, "--repo", repo, "--pattern", name, "--dir", temp)
+                      old_notes = backup / ".previous-notes.md"
+                      old_notes.write_text(previous.get("body") or "")
+                      try:
+                          gh("release", "upload", tag, *(str(release_dir / assets[target]) for target in updated), "--repo", repo, "--clobber")
+                          gh("release", "upload", tag, *(str(release_dir / name) for name in [installer_name, manifest_name, "SHA256SUMS"]), "--repo", repo, "--clobber")
+                          gh("release", "edit", tag, "--repo", repo, "--title", title, "--notes-file", str(notes_path), "--draft=false", "--latest=false")
+                      except SystemExit as error:
+                          restoration_errors = []
+                          if overwritten:
+                              result = gh("release", "upload", tag, *(str(backup / name) for name in overwritten), "--repo", repo, "--clobber", check=False)
+                              if result.returncode:
+                                  restoration_errors.append(result.stderr.strip())
+                          result = gh("release", "edit", tag, "--repo", repo, "--title", previous.get("name") or title,
+                                      "--notes-file", str(old_notes), "--draft=false", "--latest=false", check=False)
+                          if result.returncode:
+                              restoration_errors.append(result.stderr.strip())
+                          current = gh("api", f"repos/{repo}/releases/tags/{tag}", check=False)
+                          if current.returncode:
+                              restoration_errors.append(current.stderr.strip())
+                          else:
+                              for entry in json.loads(current.stdout)["assets"]:
+                                  if entry["name"] in uploads and entry["name"] not in previous_names:
+                                      result = gh("api", "--method", "DELETE", f"repos/{repo}/releases/assets/{entry['id']}", check=False)
+                                      if result.returncode:
+                                          restoration_errors.append(result.stderr.strip())
+                          if restoration_errors:
+                              fail(f"Release update failed: {error}. Rollback also failed: {'; '.join(restoration_errors)}")
+                          fail(f"Release update failed; previous assets and release notes restored: {error}")
+                  # The manifest has committed. Stale assets are only housekeeping now;
+                  # retaining an unused old archive is safer than rolling back good data.
+                  for entry in previous["assets"]:
+                      if any(Path(entry["name"]).match(asset_pattern(target)) and entry["name"] != assets[target] for target in updated):
+                          result = gh("api", "--method", "DELETE", f"repos/{repo}/releases/assets/{entry['id']}", check=False)
+                          if result.returncode:
+                              print(f"Warning: unable to remove stale asset {entry['name']}: {result.stderr.strip()}")
+              else:
+                  try:
+                      gh("release", "create", tag, *(str(release_dir / name) for name in files), "--repo", repo,
+                         "--draft", "--latest=false", "--target", os.environ["GITHUB_SHA"], "--title", title, "--notes-file", str(notes_path))
+                      gh("release", "edit", tag, "--repo", repo, "--title", title, "--notes-file", str(notes_path), "--draft=false", "--latest=false")
+                  except SystemExit:
+                      current = gh("api", f"repos/{repo}/releases/tags/{tag}", check=False)
+                      if current.returncode == 0 and json.loads(current.stdout).get("draft"):
+                          result = gh("release", "delete", tag, "--repo", repo, "--yes", check=False)
+                          if result.returncode:
+                              fail(f"Initial release failed and draft cleanup failed: {result.stderr.strip()}")
+                      raise
+              print(f"Updated {server}/{repo}/releases/tag/{tag}: {', '.join(updated)}; reused: {', '.join(reused) or 'none'}")
+
+
+          if __name__ == "__main__":
+              release_packages()
+          RELEASE_PACKAGES
+      - name: 同步到 CNB 国内镜像
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_cnb }}
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_REPO: ${{ vars.CNB_REPO }}
+        shell: bash
+        run: bash scripts/publish-cnb-release.sh "anland-${COMPOSITOR}-packages"
+
+  # ===========================================================================
+  # Anland Denial（多发行版 ARM64）
+  # ===========================================================================
+  prepare-denial:
+    name: 解析 Anland Denial 源码版本
+    needs: select
+    if: ${{ needs.select.outputs.denial == 'true' }}
+    runs-on: ubuntu-26.04
+    outputs:
+      anland_commit: ${{ steps.resolve.outputs.anland_commit }}
+      targets: ${{ steps.targets.outputs.targets }}
+    steps:
+      - name: 生成构建矩阵
+        id: targets
+        env:
+          BUILD_TARGET_INPUT: ${{ inputs.denial_target || 'all' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$BUILD_TARGET_INPUT" in
+            all) targets='["ubuntu2604","debian13","fedora43","fedora44","arch"]' ;;
+            ubuntu2604|debian13|fedora43|fedora44|arch) targets="[\"$BUILD_TARGET_INPUT\"]" ;;
+            *) echo "不支持的 Denial 构建目标：$BUILD_TARGET_INPUT" >&2; exit 1 ;;
+          esac
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "Denial 构建目标：$targets"
+
+      - name: 要求从 main 分支触发
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_NAME" != main ]; then
+            echo "此工作流必须从 main 分支触发。" >&2
+            exit 1
+          fi
+
+      - name: 将请求的源解析为单个提交并检查构建配方
+        id: resolve
+        env:
+          ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
+          ANLAND_REF: ${{ inputs.anland_ref || 'Gold' }}
+          BUILD_TARGETS: ${{ steps.targets.outputs.targets }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$(mktemp -d)/anland"
+          trap 'rm -rf "${source_dir%/anland}"' EXIT
+          git init --quiet "$source_dir"
+          git -C "$source_dir" remote add origin "$ANLAND_REPO"
+          git -C "$source_dir" fetch --quiet --depth=1 origin "$ANLAND_REF"
+          anland_commit="$(git -C "$source_dir" rev-parse FETCH_HEAD)"
+          git -C "$source_dir" cat-file -e "${anland_commit}^{commit}"
+          while IFS= read -r target; do
+            case "$target" in
+              ubuntu2604) recipe=Ubuntu2604_v5 ;;
+              debian13) recipe=Debian13_v5 ;;
+              fedora43) recipe=Fedora43_v5 ;;
+              fedora44) recipe=Fedora44_v5 ;;
+              arch) recipe=Arch_v5 ;;
+              *) echo "不支持的构建目标：$target" >&2; exit 1 ;;
+            esac
+            required=("producers/denial/$recipe/build.sh" producers/common/latest-source.sh)
+            if [[ $target == fedora* ]]; then
+              required+=(producers/common/fedora-latest-srpm.sh)
+            fi
+            for path in "${required[@]}"; do
+              git -C "$source_dir" cat-file -e "$anland_commit:$path" || {
+                echo "所选 Anland 提交缺少 $path；请先推送构建配方及共享文件或选择包含它们的 ref。" >&2
+                exit 1
+              }
+            done
+          done < <(python3 -c 'import json,os; print("\n".join(json.loads(os.environ["BUILD_TARGETS"])))')
+          echo "anland_commit=$anland_commit" >> "$GITHUB_OUTPUT"
+          echo "已将 $ANLAND_REPO @ $ANLAND_REF 解析为 $anland_commit"
+
+  build-denial:
+    name: 构建 Denial / ${{ matrix.target }} ARM64 软件包
+    needs: prepare-denial
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.prepare-denial.outputs.targets) }}
+    env:
+      COMPOSITOR: denial
+      BUILD_TARGET: ${{ matrix.target }}
+      ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
+      ANLAND_COMMIT: ${{ needs.prepare-denial.outputs.anland_commit }}
+      OUTPUT_DIR: .compositor-package-build/denial/${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - name: 解析构建目标
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$COMPOSITOR" in
+            niri|hyprland|mango|denial) ;;
+            *) echo "Unsupported compositor: $COMPOSITOR" >&2; exit 1 ;;
+          esac
+          case "$BUILD_TARGET" in
+            ubuntu2604) image=ubuntu:26.04; recipe=Ubuntu2604_v5; asset_arch=arm64 ;;
+            debian13) image=debian:trixie; recipe=Debian13_v5; asset_arch=arm64 ;;
+            fedora43) image=fedora:43; recipe=Fedora43_v5; asset_arch=aarch64 ;;
+            fedora44) image=fedora:44; recipe=Fedora44_v5; asset_arch=aarch64 ;;
+            arch) image=ogarcia/archlinux:latest; recipe=Arch_v5; asset_arch=aarch64 ;;
+            *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
+          esac
+          {
+            echo "image=$image"
+            echo "recipe=$recipe"
+            echo "asset_arch=$asset_arch"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 在对应的发行版中构建并校验软件包
+        env:
+          DISTRO_IMAGE: ${{ steps.target.outputs.image }}
+          RECIPE: ${{ steps.target.outputs.recipe }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUTPUT_DIR"
+          output_dir=$(cd -- "$OUTPUT_DIR" && pwd -P)
+          # Refuse accidental reuse of a previous run's successful outputs.
+          if [[ -n $(find "$output_dir" -mindepth 1 -print -quit) ]]; then
+            echo "Build output must be empty: $output_dir" >&2
+            exit 1
+          fi
+
+          docker run --rm -i --platform linux/arm64 \
+            -e COMPOSITOR -e BUILD_TARGET -e ANLAND_REPO -e ANLAND_COMMIT \
+            -e RECIPE -e JOBS="${JOBS:-4}" \
+            -e DEBIAN_FRONTEND=noninteractive \
+            -v "$output_dir:/build" \
+            "$DISTRO_IMAGE" bash -s <<'ANLAND_BUILD'
+          # Called as root in a disposable native ARM64 distribution container.
+          set -euo pipefail
+          [[ $(uname -m) == aarch64 ]] || { echo 'Native aarch64 container required' >&2; exit 1; }
+          case "$BUILD_TARGET" in
+              ubuntu2604|debian13)
+                  apt-get update
+                  apt-get install -y --no-install-recommends git ca-certificates sudo python3 \
+                      build-essential devscripts dpkg-dev debhelper fakeroot quilt patch \
+                      cmake meson ninja-build pkgconf ccache curl xz-utils unzip zip file binutils
+                  for sources in /etc/apt/sources.list.d/*.sources; do
+                      [[ -f $sources ]] || continue
+                      sed -i 's/^Types: deb$/Types: deb deb-src/' "$sources"
+                  done
+                  if [[ $BUILD_TARGET == debian13 ]]; then
+                      # Debian Hyprland's source/runtime ABI set lives in trixie-backports.
+                      # Other producers can also use current source packages from it.
+                      cat > /etc/apt/sources.list.d/anland-ci-backports.sources <<'SOURCES'
+          Types: deb deb-src
+          URIs: http://deb.debian.org/debian
+          Suites: trixie-backports
+          Components: main
+          Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+          SOURCES
+                  fi
+                  apt-get update
+                  ;;
+              fedora43|fedora44)
+                  dnf install -y --setopt=install_weak_deps=False \
+                      git ca-certificates sudo python3 rpm-build rpmdevtools findutils \
+                      util-linux tar xz which shadow-utils
+                  ;;
+              arch)
+                  pacman -Syu --noconfirm
+                  pacman -S --noconfirm --needed base-devel git ca-certificates sudo python
+                  ;;
+          esac
+
+          useradd -m -s /bin/bash anland
+          # The upstream recipes install build dependencies through sudo. This permission
+          # exists only inside this fresh, disposable build container.
+          printf 'anland ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/anland-ci
+          chmod 0440 /etc/sudoers.d/anland-ci
+          if [[ $BUILD_TARGET == arch ]]; then
+              printf '\nPACMAN_AUTH=(sudo)\n' >> /etc/makepkg.conf
+          fi
+          git init --quiet /tmp/anland
+          git -C /tmp/anland remote add origin "$ANLAND_REPO"
+          git -C /tmp/anland fetch --quiet --depth=1 origin "$ANLAND_COMMIT"
+          git -C /tmp/anland checkout --quiet --detach FETCH_HEAD
+          [[ $(git -C /tmp/anland rev-parse HEAD) == "$ANLAND_COMMIT" ]] || { echo 'Source commit mismatch' >&2; exit 1; }
+          recipe_dir="/tmp/anland/producers/$COMPOSITOR/$RECIPE"
+          test -f "$recipe_dir/build.sh" || {
+              echo "The selected Anland commit lacks producers/$COMPOSITOR/$RECIPE/build.sh; publish the local recipes and choose a ref containing them." >&2
+              exit 1
+          }
+
+          if [[ $COMPOSITOR == hyprland && $BUILD_TARGET == debian13 ]]; then
+              # This particular upstream recipe does not bootstrap dependencies itself.
+              apt-get build-dep -y --no-install-recommends -t trixie-backports \
+                  hyprutils hyprlang hyprgraphics aquamarine hyprland xwayland
+              apt-get install -y --no-install-recommends cpio gettext xxd libpipewire-0.3-dev
+          fi
+          mkdir -p /build/work /build/packages /build/payload
+          chown -R anland:anland /tmp/anland /build
+          export RECIPE_DIR="$recipe_dir" WORKDIR=/build/work ARTIFACTS=/build/packages ARTIFACTS_DIR=/build/packages
+          export ANLAND_WITH_DEPS=1 ANLAND_INSTALL=0 INSTALL=0 BUILD_XWAYLAND=1 ANLAND_STAGE=build
+          export ANLAND_WITH_DE=1 ANLAND_ENGINE_MODE=auto
+          export LANG=C.UTF-8 LC_ALL=C.UTF-8 GIT_TERMINAL_PROMPT=0
+          su -m -s /bin/bash anland -c '
+              export HOME=/home/anland
+              cd "$RECIPE_DIR"
+              case "$COMPOSITOR:$BUILD_TARGET" in
+                  niri:arch|denial:*) bash ./build.sh --noconfirm ;;
+                  *) bash ./build.sh ;;
+              esac
+          '
+
+          # Validate complete native runtime package sets before release packaging.
+          set -euo pipefail
+          : "${COMPOSITOR:?COMPOSITOR is required}"
+          : "${BUILD_TARGET:?BUILD_TARGET is required}"
+          : "${RECIPE_DIR:?RECIPE_DIR is required}"
+          output_root=${OUTPUT_ROOT:-/build}
+          mkdir -p "$output_root/payload"
+          case "$BUILD_TARGET" in
+              ubuntu2604|debian13) pattern='*.deb'; native_arch=arm64; xwayland_name=xwayland ;;
+              fedora43|fedora44) pattern='*.rpm'; native_arch=aarch64; xwayland_name=xorg-x11-server-Xwayland ;;
+              arch) pattern='*.pkg.tar.*'; native_arch=aarch64; xwayland_name=xorg-xwayland ;;
+              *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
+          esac
+          case "$COMPOSITOR:$BUILD_TARGET" in
+              hyprland:ubuntu2604|hyprland:debian13) main_name=hyprland ;;
+              denial:*) main_name=denial ;;
+              *) main_name=${COMPOSITOR}-anland ;;
+          esac
+          case "$COMPOSITOR:$BUILD_TARGET" in
+              hyprland:ubuntu2604|hyprland:debian13)
+                  required_packages=(hyprland libhyprutils12 libhyprlang2 libhyprgraphics4 libaquamarine14 "$xwayland_name") ;;
+              hyprland:arch) required_packages=(hyprland-anland hyprpm-anland "$xwayland_name") ;;
+              hyprland:fedora43|hyprland:fedora44) required_packages=(hyprland-anland "$xwayland_name") ;;
+              mango:*) required_packages=(mango-anland "$xwayland_name") ;;
+              denial:*) required_packages=(denial-anland-engine denial denial-desktop "$xwayland_name") ;;
+              niri:arch) required_packages=(niri-anland "$xwayland_name") ;;
+              niri:*) required_packages=(niri-anland xwayland-satellite "$xwayland_name") ;;
+              *) echo "Unsupported compositor: $COMPOSITOR" >&2; exit 1 ;;
+          esac
+          main_version=; found_xwayland=false; found_satellite=false
+          declare -A seen_packages=()
+          # Some upstream scripts fix output to recipe/artifacts; Niri Arch fix it
+          # to WORKDIR/packages. Only these explicit finished-package locations are read.
+          while IFS= read -r -d '' package; do
+              case "${package##*/}" in *-debug-*|*-debuginfo-*|*-debugsource-*|*-dbgsym_*|*.src.rpm|*.sig) continue ;; esac
+              case "$BUILD_TARGET" in
+                  ubuntu2604|debian13)
+                      name=$(dpkg-deb -f "$package" Package)
+                      version=$(dpkg-deb -f "$package" Version)
+                      architecture=$(dpkg-deb -f "$package" Architecture)
+                      dpkg-deb --contents "$package" >/dev/null
+                      ;;
+                  fedora43|fedora44)
+                      IFS=$'\t' read -r name version architecture < <(rpm -qp --queryformat '%{NAME}\t%{VERSION}\t%{ARCH}\n' "$package")
+                      rpm -qpl "$package" >/dev/null
+                      ;;
+                  arch)
+                      metadata=$(bsdtar -xOf "$package" .PKGINFO)
+                      name=$(sed -n 's/^pkgname = //p' <<< "$metadata")
+                      version=$(sed -n 's/^pkgver = //p' <<< "$metadata")
+                      architecture=$(sed -n 's/^arch = //p' <<< "$metadata")
+                      bsdtar -tf "$package" >/dev/null
+                      ;;
+              esac
+              [[ -n $name && -n $version ]] || { echo "Missing package metadata: $package" >&2; exit 1; }
+              # Native Xwayland source builds can also emit SDK subpackages. Installers
+              # need only the server runtime, matching the KDE package collection policy.
+              case "$name" in xorg-x11-server-Xwayland-devel|xwayland-dev) continue ;; esac
+              [[ $architecture == "$native_arch" ]] || { echo "Wrong architecture $architecture: $package" >&2; exit 1; }
+              case " ${required_packages[*]} " in
+                  *" $name "*) ;;
+                  *) echo "Unexpected $COMPOSITOR runtime package: $name" >&2; exit 1 ;;
+              esac
+              if [[ $COMPOSITOR == niri ]]; then
+                  # The Niri installers accept only this runtime package set. Satellite
+                  # is built with Niri on Debian/Ubuntu/Fedora; Arch uses its repository
+                  # dependency instead of shipping a second satellite package.
+                  # Fedora's Xwayland SRPM may also produce SDK packages, as in KDE's
+                  # distribution builds. The installer needs only its runtime package.
+                  [[ $architecture == "$native_arch" ]] || { echo "Niri runtime must be native ARM64: $name" >&2; exit 1; }
+                  case "$name" in
+                      niri-anland|"$xwayland_name") ;;
+                      xwayland-satellite)
+                          [[ $BUILD_TARGET != arch ]] || { echo "Unexpected Niri Arch package: $name" >&2; exit 1; }
+                          found_satellite=true
+                          ;;
+                      *) echo "Unexpected Niri runtime package: $name" >&2; exit 1 ;;
+                  esac
+              fi
+              if [[ -n ${seen_packages[$name]+set} ]]; then
+                  cmp -s "$package" "${seen_packages[$name]}" || { echo "Conflicting duplicate package: $name" >&2; exit 1; }
+                  continue
+              fi
+              seen_packages[$name]=$package
+              if [[ $name == "$main_name" ]]; then
+                  [[ $architecture == "$native_arch" ]] || { echo 'Compositor must be native ARM64' >&2; exit 1; }
+                  main_version=$version
+              fi
+              [[ $name != "$xwayland_name" ]] || found_xwayland=true
+              cp -v "$package" "$output_root"/payload/
+          done < <(find "$output_root"/packages "$output_root"/work/packages "$RECIPE_DIR/artifacts" \
+              -maxdepth 1 -type f -name "$pattern" -print0 2>/dev/null || true)
+          for name in "${required_packages[@]}"; do
+              [[ -n ${seen_packages[$name]+set} ]] || { echo "Missing $COMPOSITOR runtime package: $name" >&2; exit 1; }
+          done
+          [[ -n $main_version ]] || { echo "Missing compositor package: $main_name" >&2; exit 1; }
+          [[ $found_xwayland == true ]] || { echo "Missing patched Xwayland package: $xwayland_name" >&2; exit 1; }
+          if [[ $COMPOSITOR == niri && $BUILD_TARGET != arch ]]; then
+              [[ $found_satellite == true ]] || { echo 'Missing Niri runtime package: xwayland-satellite' >&2; exit 1; }
+          fi
+          main_version=${main_version#*:}
+          case "$BUILD_TARGET" in ubuntu2604|debian13|arch) main_version=${main_version%-*} ;; esac
+          printf '%s\n' "$main_version" > "$output_root"/.version
+          chmod -R a+rX "$output_root"/payload
+          chmod a+r "$output_root"/.version
+          ANLAND_BUILD
+
+      - name: 打包发布资产
+        id: package
+        env:
+          ASSET_ARCH: ${{ steps.target.outputs.asset_arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_dir=$OUTPUT_DIR
+          version=$(tr -d '[:space:]' < "$output_dir/.version")
+          case "$version" in ''|*[!A-Za-z0-9.+~_-]*) echo "Invalid package version: $version" >&2; exit 1 ;; esac
+          archive_root="anland-${COMPOSITOR}-packages/$BUILD_TARGET"
+          stage_dir=$(mktemp -d "${RUNNER_TEMP:-/tmp}/anland-${COMPOSITOR}-archive.XXXXXX")
+          trap 'rm -rf -- "$stage_dir"' EXIT
+          mkdir -p "$stage_dir/$archive_root"
+          cp -a "$output_dir/payload/." "$stage_dir/$archive_root/"
+          version_key=${COMPOSITOR}_version
+          printf 'target=%s\n%s=%s\nbuild_time=%s\nsource_commit=%s\n' \
+              "$BUILD_TARGET" "$version_key" "$version" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$ANLAND_COMMIT" \
+              > "$stage_dir/$archive_root/.anland-${COMPOSITOR}-build-info"
+          asset_dir="$GITHUB_WORKSPACE/.release-assets/$COMPOSITOR/$BUILD_TARGET"
+          mkdir -p "$asset_dir"
+          asset_path="$asset_dir/anland-${COMPOSITOR}-${BUILD_TARGET}-${version}-${ASSET_ARCH}.tar.gz"
+          tar --owner=0 --group=0 --numeric-owner -C "$stage_dir" -czf "$asset_path" "$archive_root"
+          printf 'asset_path=%s\n' "$asset_path" >> "$GITHUB_OUTPUT"
+          printf 'Packaged %s\n' "$asset_path"
+      - name: 上传构建归档
+        uses: actions/upload-artifact@v6
+        with:
+          name: anland-denial-package-${{ matrix.target }}
+          path: ${{ steps.package.outputs.asset_path }}
+          if-no-files-found: error
+          retention-days: 1
+
+  release-denial:
+    name: 更新 Anland Denial 滚动发布
+    needs: [prepare-denial, build-denial]
+    if: ${{ always() && !cancelled() && needs.prepare-denial.result == 'success' }}
+    runs-on: ubuntu-26.04
+    concurrency:
+      group: anland-denial-package-release
+      cancel-in-progress: false
+    env:
+      COMPOSITOR: denial
+      BUILD_TARGET_INPUT: ${{ inputs.denial_target || 'all' }}
+      ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
+      ANLAND_REF: ${{ inputs.anland_ref || 'Gold' }}
+      ANLAND_COMMIT: ${{ needs.prepare-denial.outputs.anland_commit }}
+      RELEASE_DIR: ${{ github.workspace }}/release-assets
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - name: 确保滚动标签存在
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="anland-${COMPOSITOR}-packages"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "标签 $tag 已存在。"
+          elif git tag "$tag" "$GITHUB_SHA" && git push origin "refs/tags/$tag"; then
+            echo "已创建标签 $tag。"
+          else
+            git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null
+          fi
+      - name: 下载成功的构建归档
+        uses: actions/download-artifact@v7
+        with:
+          pattern: anland-denial-package-*
+          path: release-assets
+          merge-multiple: true
+      - name: 合并成功包、沿用失败平台并更新发布
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'RELEASE_PACKAGES'
+          """Merge successful native builds into an independent rolling release.
+
+          Missing builds reuse verified assets from the current published manifest. A
+          failed single-target request and a run with no successful builds never publish.
+          """
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+          import tarfile
+          import tempfile
+          from datetime import datetime, timezone
+
+
+          def fail(message):
+              raise SystemExit(message)
+
+
+          def gh(*args, check=True):
+              result = subprocess.run(["gh", *args], text=True, capture_output=True)
+              if check and result.returncode:
+                  fail(result.stderr.strip() or f"gh failed: {args}")
+              return result
+
+
+          def digest(path):
+              with path.open("rb") as stream:
+                  return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+          def read_manifest(path):
+              result = {}
+              for line in path.read_text().splitlines():
+                  if not line or line.startswith("#"):
+                      continue
+                  key, separator, value = line.partition("=")
+                  if not separator or key in result:
+                      fail(f"Invalid or duplicate manifest record: {line}")
+                  result[key] = value
+              return result
+
+
+          def release_packages():
+              compositor = os.environ["COMPOSITOR"]
+              if compositor not in {"niri", "hyprland", "mango", "denial"}:
+                  fail(f"Unsupported compositor: {compositor}")
+              targets = ["ubuntu2604", "debian13", "fedora43", "fedora44", "arch"]
+              selected = os.environ.get("BUILD_TARGET_INPUT", "all")
+              if selected != "all" and selected not in targets:
+                  fail(f"Unsupported target: {selected}")
+              repo = os.environ["GITHUB_REPOSITORY"]
+              source_commit = os.environ["ANLAND_COMMIT"]
+              release_dir = Path(os.environ.get("RELEASE_DIR", "release-assets")).resolve()
+              release_dir.mkdir(parents=True, exist_ok=True)
+              tag = f"anland-{compositor}-packages"
+              manifest_name = f"anland-{compositor}-manifest"
+              installer_name = f"install-anland-{compositor}.sh"
+              server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+
+              def asset_pattern(target):
+                  arch = "arm64" if target in {"ubuntu2604", "debian13"} else "aarch64"
+                  return f"anland-{compositor}-{target}-*-{arch}.tar.gz"
+
+              def metadata(path, target, required):
+                  name = f"anland-{compositor}-packages/{target}/.anland-{compositor}-build-info"
+                  try:
+                      with tarfile.open(path, "r:gz") as archive:
+                          entry = archive.getmember(name)
+                          if not entry.isfile() or entry.size > 16384:
+                              fail(f"Invalid build metadata: {path.name}")
+                          stream = archive.extractfile(entry)
+                          records = dict(line.split("=", 1) for line in stream.read().decode().splitlines() if "=" in line)
+                  except (KeyError, tarfile.TarError, UnicodeError, ValueError):
+                      if required:
+                          fail(f"New archive lacks valid build metadata: {path.name}")
+                      return {"build_time": "unknown", "source_commit": "unknown"}
+                  if records.get("target") != target:
+                      fail(f"Archive target mismatch: {path.name}")
+                  if required and (not records.get("build_time") or records.get("source_commit") != source_commit):
+                      fail(f"New archive has missing time or wrong source commit: {path.name}")
+                  return records
+
+              assets = {}
+              info = {}
+              updated = []
+              reused = []
+              for target in targets:
+                  candidates = sorted(release_dir.glob(asset_pattern(target)))
+                  if len(candidates) > 1:
+                      fail(f"Multiple new assets for {target}")
+                  if candidates:
+                      if selected != "all" and target != selected:
+                          fail(f"Single-target run unexpectedly supplied {target}")
+                      path = candidates[0]
+                      info[target] = metadata(path, target, required=True)
+                      assets[target] = path.name
+                      updated.append(target)
+              if selected != "all" and selected not in updated:
+                  fail(f"Selected {selected} build produced no new asset; rolling release was not changed")
+              if not updated:
+                  fail("No successful build assets; rolling release was not changed")
+
+              response = gh("api", f"repos/{repo}/releases/tags/{tag}", check=False)
+              previous = None
+              if response.returncode == 0:
+                  previous = json.loads(response.stdout)
+                  if previous.get("draft") or previous.get("prerelease"):
+                      fail("Refusing to reuse an unpublished or prerelease rolling release")
+              elif "404" not in response.stderr and "Not Found" not in response.stderr:
+                  fail(response.stderr.strip() or "Unable to determine whether the rolling release exists")
+
+              missing = [target for target in targets if target not in assets]
+              if previous and missing:
+                  previous_assets = {entry["name"]: entry for entry in previous["assets"]}
+                  with tempfile.TemporaryDirectory(prefix=f"anland-{compositor}-previous-") as temp:
+                      previous_dir = Path(temp)
+                      manifest = {}
+                      legacy_checksums = None
+                      if manifest_name in previous_assets:
+                          gh("release", "download", tag, "--repo", repo, "--pattern", manifest_name, "--dir", temp)
+                          manifest = read_manifest(previous_dir / manifest_name)
+                          if manifest.get("format") != "1" or manifest.get("release_tag") != tag:
+                              fail("Previous release manifest has an unsupported format/tag")
+                      for target in missing:
+                          asset = manifest.get(target)
+                          # Compatibility with the original Arch-only Niri release.
+                          if not asset:
+                              matches = sorted(name for name in previous_assets if Path(name).match(asset_pattern(target)))
+                              if len(matches) > 1:
+                                  fail(f"Previous release has ambiguous {target} assets")
+                              asset = matches[0] if matches else None
+                          if not asset:
+                              continue
+                          if Path(asset).name != asset or not Path(asset).match(asset_pattern(target)) or asset not in previous_assets:
+                              fail(f"Invalid previous {target} asset: {asset}")
+                          gh("release", "download", tag, "--repo", repo, "--pattern", asset, "--dir", temp)
+                          path = previous_dir / asset
+                          expected = manifest.get(f"{target}_sha256")
+                          api_digest = previous_assets[asset].get("digest") or ""
+                          if not expected and api_digest.startswith("sha256:"):
+                              expected = api_digest.removeprefix("sha256:")
+                          if not expected and "SHA256SUMS" in previous_assets:
+                              # The original Arch-only Niri manifest predates per-target
+                              # hashes, and older GitHub assets may lack an API digest.
+                              if legacy_checksums is None:
+                                  gh("release", "download", tag, "--repo", repo, "--pattern", "SHA256SUMS", "--dir", temp)
+                                  legacy_checksums = {}
+                                  for line in (previous_dir / "SHA256SUMS").read_text().splitlines():
+                                      match = re.fullmatch(r"([0-9a-fA-F]{64}) [ *]([^/\\\s]+)", line)
+                                      if not match or match[2] in legacy_checksums:
+                                          fail("Invalid previous SHA256SUMS")
+                                      legacy_checksums[match[2]] = match[1]
+                              expected = legacy_checksums.get(asset)
+                          if not expected or not re.fullmatch(r"[0-9a-fA-F]{64}", expected) or digest(path) != expected.lower():
+                              fail(f"Previous {target} asset checksum unavailable or mismatched")
+                          shutil.copy2(path, release_dir / asset)
+                          info[target] = metadata(path, target, required=False)
+                          assets[target] = asset
+                          reused.append(target)
+
+              installer = Path(os.environ["GITHUB_WORKSPACE"]) / "scripts" / "tui" / installer_name
+              if not installer.is_file():
+                  fail(f"Missing installer: {installer}")
+              shutil.copy2(installer, release_dir / installer_name)
+              (release_dir / installer_name).chmod(0o755)
+              generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+              records = ["format=1", f"release_tag={tag}",
+                         f"revision=run-{os.environ.get('GITHUB_RUN_ID', 'local')}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}",
+                         f"generated_at={generated}", f"source_repository={os.environ['ANLAND_REPO']}",
+                         f"source_ref={os.environ['ANLAND_REF']}", f"source_commit={source_commit}"]
+              for target in targets:
+                  if target in assets:
+                      records.extend([f"{target}={assets[target]}", f"{target}_sha256={digest(release_dir / assets[target])}",
+                                      f"{target}_source_commit={info[target].get('source_commit', 'unknown')}"])
+              (release_dir / manifest_name).write_text("\n".join(records) + "\n")
+              files = [assets[target] for target in targets if target in assets] + [manifest_name, installer_name]
+              (release_dir / "SHA256SUMS").write_text("".join(f"{digest(release_dir / name)}  {name}\n" for name in files))
+              files.append("SHA256SUMS")
+              title = f"Anland {compositor.title()} ARM64 预编译包"
+              notes = [f"# {title}", "", "发行版原生软件包与 patched Xwayland，使用目标系统的 apt、dnf 或 pacman 管理。",
+                       f"归档内目录：`anland-{compositor}-packages/<target>/`。", "",
+                       f"本次更新：{', '.join(updated)}。", f"沿用上次发布：{', '.join(reused) or '无'}。",
+                       f"暂缺平台：{', '.join(target for target in targets if target not in assets) or '无'}。", "",
+                       "| 平台 | 资产 | 构建时间 | 来源提交 |", "| --- | --- | --- | --- |"]
+              for target in targets:
+                  if target in assets:
+                      name = assets[target]
+                      notes.append(f"| {target} | [{name}]({server}/{repo}/releases/download/{tag}/{name}) | {info[target].get('build_time', 'unknown')} | {info[target].get('source_commit', 'unknown')} |")
+              notes.extend(["", f"`{manifest_name}` 映射平台与资产并记录 SHA-256；`SHA256SUMS` 同时校验安装脚本。",
+                            f"安装/卸载脚本：`{installer_name}`。",
+                            "", f"本次构建来源：`{os.environ['ANLAND_REPO']}` @ `{source_commit}`（请求 `{os.environ['ANLAND_REF']}`）。",
+                            "沿用平台的实际源码提交保留在各平台元数据中。构建成功不代表已完成设备图形会话测试。"])
+              notes_path = release_dir / ".release-notes.md"
+              notes_path.write_text("\n".join(notes) + "\n")
+
+              if previous:
+                  # Same-version daily builds clobber the same asset name. Back up every
+                  # overwritten file before uploading, so a failed manifest/notes upload
+                  # cannot leave old checksums pointing at new archive bytes.
+                  previous_names = {entry["name"] for entry in previous["assets"]}
+                  uploads = [assets[target] for target in updated] + [installer_name, manifest_name, "SHA256SUMS"]
+                  with tempfile.TemporaryDirectory(prefix=f"anland-{compositor}-rollback-") as temp:
+                      backup = Path(temp)
+                      overwritten = [name for name in uploads if name in previous_names]
+                      for name in overwritten:
+                          gh("release", "download", tag, "--repo", repo, "--pattern", name, "--dir", temp)
+                      old_notes = backup / ".previous-notes.md"
+                      old_notes.write_text(previous.get("body") or "")
+                      try:
+                          gh("release", "upload", tag, *(str(release_dir / assets[target]) for target in updated), "--repo", repo, "--clobber")
+                          gh("release", "upload", tag, *(str(release_dir / name) for name in [installer_name, manifest_name, "SHA256SUMS"]), "--repo", repo, "--clobber")
+                          gh("release", "edit", tag, "--repo", repo, "--title", title, "--notes-file", str(notes_path), "--draft=false", "--latest=false")
+                      except SystemExit as error:
+                          restoration_errors = []
+                          if overwritten:
+                              result = gh("release", "upload", tag, *(str(backup / name) for name in overwritten), "--repo", repo, "--clobber", check=False)
+                              if result.returncode:
+                                  restoration_errors.append(result.stderr.strip())
+                          result = gh("release", "edit", tag, "--repo", repo, "--title", previous.get("name") or title,
+                                      "--notes-file", str(old_notes), "--draft=false", "--latest=false", check=False)
+                          if result.returncode:
+                              restoration_errors.append(result.stderr.strip())
+                          current = gh("api", f"repos/{repo}/releases/tags/{tag}", check=False)
+                          if current.returncode:
+                              restoration_errors.append(current.stderr.strip())
+                          else:
+                              for entry in json.loads(current.stdout)["assets"]:
+                                  if entry["name"] in uploads and entry["name"] not in previous_names:
+                                      result = gh("api", "--method", "DELETE", f"repos/{repo}/releases/assets/{entry['id']}", check=False)
+                                      if result.returncode:
+                                          restoration_errors.append(result.stderr.strip())
+                          if restoration_errors:
+                              fail(f"Release update failed: {error}. Rollback also failed: {'; '.join(restoration_errors)}")
+                          fail(f"Release update failed; previous assets and release notes restored: {error}")
+                  # The manifest has committed. Stale assets are only housekeeping now;
+                  # retaining an unused old archive is safer than rolling back good data.
+                  for entry in previous["assets"]:
+                      if any(Path(entry["name"]).match(asset_pattern(target)) and entry["name"] != assets[target] for target in updated):
+                          result = gh("api", "--method", "DELETE", f"repos/{repo}/releases/assets/{entry['id']}", check=False)
+                          if result.returncode:
+                              print(f"Warning: unable to remove stale asset {entry['name']}: {result.stderr.strip()}")
+              else:
+                  try:
+                      gh("release", "create", tag, *(str(release_dir / name) for name in files), "--repo", repo,
+                         "--draft", "--latest=false", "--target", os.environ["GITHUB_SHA"], "--title", title, "--notes-file", str(notes_path))
+                      gh("release", "edit", tag, "--repo", repo, "--title", title, "--notes-file", str(notes_path), "--draft=false", "--latest=false")
+                  except SystemExit:
+                      current = gh("api", f"repos/{repo}/releases/tags/{tag}", check=False)
+                      if current.returncode == 0 and json.loads(current.stdout).get("draft"):
+                          result = gh("release", "delete", tag, "--repo", repo, "--yes", check=False)
+                          if result.returncode:
+                              fail(f"Initial release failed and draft cleanup failed: {result.stderr.strip()}")
+                      raise
+              print(f"Updated {server}/{repo}/releases/tag/{tag}: {', '.join(updated)}; reused: {', '.join(reused) or 'none'}")
+
+
+          if __name__ == "__main__":
+              release_packages()
+          RELEASE_PACKAGES
+      - name: 同步到 CNB 国内镜像
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_cnb }}
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_REPO: ${{ vars.CNB_REPO }}
+        shell: bash
+        run: bash scripts/publish-cnb-release.sh "anland-${COMPOSITOR}-packages"
 
   # ==========================================================================
   # Anland KDE Wayland（kwin + Xwayland）
@@ -469,8 +2981,9 @@ jobs:
       - name: 将请求的源解析为单个提交
         id: resolve
         env:
-          ANLAND_REPO: ${{ inputs.kde_repo || 'https://github.com/superturtlee/anland.git' }}
-          ANLAND_REF: ${{ inputs.kde_ref || 'legacy' }}
+          ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
+          ANLAND_REF: ${{ inputs.anland_ref || 'Gold' }}
+          SELECTED_TARGETS: ${{ steps.targets.outputs.targets }}
         shell: bash
         run: |
           set -euo pipefail
@@ -482,6 +2995,17 @@ jobs:
           git -C "$source_dir" fetch --quiet --depth=1 origin "$ANLAND_REF"
           anland_commit="$(git -C "$source_dir" rev-parse FETCH_HEAD)"
           git -C "$source_dir" cat-file -e "${anland_commit}^{commit}"
+          # Validate the exact commit before launching expensive distro jobs.
+          while IFS= read -r target; do
+            case "$target" in
+              ubuntu2604) recipe=producers/kde/ubuntu2604_v5/build.sh ;;
+              *) recipe="producers/kde/${target}_v5/build.sh" ;;
+            esac
+            git -C "$source_dir" cat-file -e "${anland_commit}:$recipe" || {
+              echo "所选 Anland 提交缺少 $recipe；请先推送本地构建配方或选择包含该文件的 ref。" >&2
+              exit 1
+            }
+          done < <(python3 -c 'import json,os; print("\n".join(json.loads(os.environ["SELECTED_TARGETS"])))')
           echo "anland_commit=$anland_commit" >> "$GITHUB_OUTPUT"
           echo "已将 $ANLAND_REPO @ $ANLAND_REF 解析为 $anland_commit"
 
@@ -497,7 +3021,7 @@ jobs:
         target: ${{ fromJson(needs.prepare-kde.outputs.targets) }}
 
     env:
-      ANLAND_REPO: ${{ inputs.kde_repo || 'https://github.com/superturtlee/anland.git' }}
+      ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
       ANLAND_COMMIT: ${{ needs.prepare-kde.outputs.anland_commit }}
       BUILD_TARGET: ${{ matrix.target }}
 
@@ -538,10 +3062,7 @@ jobs:
               ;;
             Fedora44)
               image=fedora:44
-              # The shared upstream script defaults to Fedora 43's SRPM and
-              # skips Xwayland. Override both to match Fedora 44 and collect
-              # the same KWin + Xwayland package set as Fedora 43.
-              script=producers/kde/Fedora43_v5/build.sh
+              script=producers/kde/Fedora44_v5/build.sh
               build_xwayland=1
               kwin_source=kwin
               package_pattern='*.rpm'
@@ -613,8 +3134,17 @@ jobs:
                   ;;
                 Fedora43|Fedora44)
                   dnf install -y --setopt=install_weak_deps=False \
-                    git ca-certificates sudo \
-                    dnf-plugins-core rpmdevtools rpm-build patch tar xz
+                    git ca-certificates sudo python3 shadow-utils \
+                    rpmdevtools rpm-build patch tar xz
+                  if command -v dnf5 >/dev/null 2>&1; then
+                    dnf install -y dnf5-plugins
+                  else
+                    dnf install -y dnf-plugins-core
+                  fi
+                  useradd -m -s /bin/bash anland
+                  printf 'anland ALL=(root) NOPASSWD: /usr/bin/dnf\n' > /etc/sudoers.d/anland-dnf
+                  chmod 0440 /etc/sudoers.d/anland-dnf
+                  chown -R anland:anland /tmp/kde-packages
                   ;;
                 Arch)
                   pacman -Syu --noconfirm
@@ -643,7 +3173,7 @@ jobs:
                 # anland_backend_* source trees instead.
                 ubuntu2604) backend_dir=/tmp/anland/producers/kde/ubuntu2604_v5/kwin/src/backends/anland ;;
                 Debian13) backend_dir=/tmp/anland/producers/kde/Debian13_v5/kwin/src/backends/anland ;;
-                Fedora43|Fedora44) backend_dir=/tmp/anland/producers/kde/Fedora43_v5/kwin/src/backends/anland ;;
+                Fedora43|Fedora44) backend_dir=/tmp/anland/producers/kde/${BUILD_TARGET}_v5/kwin/src/backends/anland ;;
                 Arch) backend_dir=/tmp/anland/producers/kde/Arch_v5/kwin/src/backends/anland ;;
                 *) echo "不支持的构建目标：$BUILD_TARGET" >&2; exit 1 ;;
               esac
@@ -696,11 +3226,18 @@ jobs:
               if [ "$BUILD_TARGET" = Arch ]; then
                 # CI 只收集软件包，不需要把产物安装进一次性构建容器。
                 # INSTALL=0 也会跳过上游脚本中写 /etc/environment 的安装后配置。
-                su -s /bin/bash anland -c "cd /tmp/anland/$(dirname "$BUILD_SCRIPT") && INSTALL=0 WORKDIR=/tmp/kde-packages ./$(basename "$BUILD_SCRIPT") --noconfirm"
+                chown -R anland:anland /tmp/anland
+                su -s /bin/bash anland -c "cd /tmp/anland/$(dirname "$BUILD_SCRIPT") && ANLAND_INSTALL=0 INSTALL=0 WORKDIR=/tmp/kde-packages ./$(basename "$BUILD_SCRIPT") --noconfirm"
                 chmod -R a+rwX /tmp/kde-packages
+              elif [[ "$BUILD_TARGET" == Fedora* ]]; then
+                chown -R anland:anland /tmp/anland
+                runuser -u anland -- env ANLAND_INSTALL=0 ANLAND_LOCK_PACKAGES=0 \
+                  BUILD_XWAYLAND="$BUILD_XWAYLAND" KWIN_SOURCE="$KWIN_SOURCE" \
+                  WORKDIR=/tmp/kde-packages bash "/tmp/anland/$BUILD_SCRIPT"
+                chmod -R a+rX /tmp/kde-packages
               else
                 cd "/tmp/anland/$(dirname "$BUILD_SCRIPT")"
-                WORKDIR=/root/kde-packages sudo -E "./$(basename "$BUILD_SCRIPT")"
+                ANLAND_INSTALL=0 ANLAND_LOCK_PACKAGES=0 WORKDIR=/root/kde-packages sudo -E "./$(basename "$BUILD_SCRIPT")"
               fi
 
               # 从主 kwin 包读取上游版本；不要把发行版打包修订号放进资产名。
@@ -732,6 +3269,14 @@ jobs:
                 Debian13|ubuntu2604|Arch) kwin_version="${kwin_version%-*}" ;;
               esac
               [ -n "$kwin_version" ] || { echo "无法解析 KWin 版本" >&2; exit 1; }
+              # A build is publishable only if both the compositor and patched Xwayland exist.
+              case "$BUILD_TARGET" in
+                ubuntu2604|Debian13) xwayland_pattern='xwayland_*.deb' ;;
+                Fedora43|Fedora44) xwayland_pattern='xorg-x11-server-Xwayland-[0-9]*.rpm' ;;
+                Arch) xwayland_pattern='xorg-xwayland-[0-9]*.pkg.tar.*' ;;
+              esac
+              xwayland_package="$(find /tmp/kde-packages -type f -name "$xwayland_pattern" -print -quit)"
+              [ -n "$xwayland_package" ] || { echo "缺少 patched Xwayland 包" >&2; exit 1; }
               printf '%s\n' "$kwin_version" > /tmp/kde-packages/.kwin-version
           ANLAND_BUILD
 
@@ -761,13 +3306,8 @@ jobs:
               ! -name 'xorg-x11-server-Xwayland-devel-*' -exec cp -v {} "$package_dir/" \;
           }
 
-          if [ "$BUILD_TARGET" = Arch ]; then
-            copy_packages "$OUTPUT_DIR"
-          else
-            copy_packages "$OUTPUT_DIR/kwin"
-            copy_packages "$OUTPUT_DIR/xwayland"
-            copy_packages "$OUTPUT_DIR/xorg-x11-server-Xwayland"
-          fi
+          # Current APT recipes use versioned build-* directories.
+          copy_packages "$OUTPUT_DIR"
 
           package_count="$(find "$package_dir" -maxdepth 1 -type f -name "$PKG_PATTERN" | wc -l)"
           if [ "$package_count" -eq 0 ]; then
@@ -787,6 +3327,7 @@ jobs:
           build_time="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           printf 'target=%s\nkwin_version=%s\nbuild_time=%s\n' \
             "$ARCHIVE_TARGET" "$kwin_version" "$build_time" > "$package_dir/.anland-kde-build-info"
+          printf 'source_repository=%s\nsource_commit=%s\n' "$ANLAND_REPO" "$ANLAND_COMMIT" >> "$package_dir/.anland-kde-build-info"
           tar -C "$RUNNER_TEMP" -czf "$asset_path" "anland-kde-packages/$ARCHIVE_TARGET"
           echo "asset_path=$asset_path" >> "$GITHUB_OUTPUT"
           echo "已将 $package_count 个文件打包进 $asset_name（构建时间：$build_time）"
@@ -843,8 +3384,8 @@ jobs:
       - name: 创建固定发布与软件包清单
         env:
           GH_TOKEN: ${{ github.token }}
-          ANLAND_REPO: ${{ inputs.kde_repo || 'https://github.com/superturtlee/anland.git' }}
-          ANLAND_REF: ${{ inputs.kde_ref || 'legacy' }}
+          ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
+          ANLAND_REF: ${{ inputs.anland_ref || 'Gold' }}
           ANLAND_COMMIT: ${{ needs.prepare-kde.outputs.anland_commit }}
           BUILD_TARGET_INPUT: ${{ inputs.kde_target || 'all' }}
         shell: bash
@@ -1384,9 +3925,9 @@ jobs:
 
           case "$BUILD_TARGET_INPUT" in
             all)
-              targets='["ubuntu2604","Debian13","Arch"]'
+              targets='["ubuntu2604","Debian13","Fedora43","Fedora44","Arch"]'
               ;;
-            ubuntu2604|Debian13|Arch)
+            ubuntu2604|Debian13|Fedora43|Fedora44|Arch)
               targets="[\"$BUILD_TARGET_INPUT\"]"
               ;;
             *)
@@ -1409,8 +3950,9 @@ jobs:
       - name: 将请求的源解析为单个提交
         id: resolve
         env:
-          ANLAND_REPO: ${{ inputs.gnome_repo || 'https://github.com/superturtlee/anland.git' }}
-          ANLAND_REF: ${{ inputs.gnome_ref || 'legacy' }}
+          ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
+          ANLAND_REF: ${{ inputs.anland_ref || 'Gold' }}
+          SELECTED_TARGETS: ${{ steps.targets.outputs.targets }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1422,6 +3964,17 @@ jobs:
           git -C "$source_dir" fetch --quiet --depth=1 origin "$ANLAND_REF"
           anland_commit="$(git -C "$source_dir" rev-parse FETCH_HEAD)"
           git -C "$source_dir" cat-file -e "${anland_commit}^{commit}"
+          # Validate the exact commit before launching expensive distro jobs.
+          while IFS= read -r target; do
+            case "$target" in
+              ubuntu2604) recipe=producers/gnome/Ubuntu2604_v5/build.sh ;;
+              *) recipe="producers/gnome/${target}_v5/build.sh" ;;
+            esac
+            git -C "$source_dir" cat-file -e "${anland_commit}:$recipe" || {
+              echo "所选 Anland 提交缺少 $recipe；请先推送本地构建配方或选择包含该文件的 ref。" >&2
+              exit 1
+            }
+          done < <(python3 -c 'import json,os; print("\n".join(json.loads(os.environ["SELECTED_TARGETS"])))')
           echo "anland_commit=$anland_commit" >> "$GITHUB_OUTPUT"
           echo "已将 $ANLAND_REPO @ $ANLAND_REF 解析为 $anland_commit"
 
@@ -1437,7 +3990,7 @@ jobs:
         target: ${{ fromJson(needs.prepare-gnome.outputs.targets) }}
 
     env:
-      ANLAND_REPO: ${{ inputs.gnome_repo || 'https://github.com/superturtlee/anland.git' }}
+      ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
       ANLAND_COMMIT: ${{ needs.prepare-gnome.outputs.anland_commit }}
       BUILD_TARGET: ${{ matrix.target }}
 
@@ -1466,6 +4019,15 @@ jobs:
               asset_prefix=anland-gnome-debian13-mutter-
               asset_arch=arm64
               archive_target=debian13
+              ;;
+            Fedora43|Fedora44)
+              image="fedora:${BUILD_TARGET#Fedora}"
+              script="producers/gnome/${BUILD_TARGET}_v5/build.sh"
+              xwayland_patch=''
+              package_pattern='*.rpm'
+              archive_target="${BUILD_TARGET,,}"
+              asset_prefix="anland-gnome-${archive_target}-mutter-"
+              asset_arch=aarch64
               ;;
             Arch)
               image=ogarcia/archlinux:latest
@@ -1533,6 +4095,13 @@ jobs:
                   fi
                   chown -R anland:anland /packages
                   ;;
+                Fedora43|Fedora44)
+                  dnf install -y --setopt=install_weak_deps=False git ca-certificates sudo python3 findutils util-linux
+                  useradd -m -s /bin/bash anland
+                  printf 'anland ALL=(root) NOPASSWD: /usr/bin/dnf\n' > /etc/sudoers.d/anland-dnf
+                  chmod 0440 /etc/sudoers.d/anland-dnf
+                  chown -R anland:anland /packages
+                  ;;
                 ubuntu2604|Debian13)
                   apt-get update
                   apt-get install -y --no-install-recommends \
@@ -1552,6 +4121,9 @@ jobs:
 
               test -f "/tmp/anland/$BUILD_SCRIPT"
               chmod +x "/tmp/anland/$BUILD_SCRIPT"
+              if [ "$BUILD_TARGET" = Arch ] || [[ "$BUILD_TARGET" == Fedora* ]]; then
+                chown -R anland:anland /tmp/anland
+              fi
 
               case "$BUILD_TARGET" in
                 Arch)
@@ -1571,6 +4143,22 @@ jobs:
                   [ -n "$mutter_version" ] || { echo "无法解析 Mutter 版本" >&2; exit 1; }
                   printf '%s\n' "$mutter_version" > /packages/.mutter-version
                   ;;
+                Fedora43|Fedora44)
+                  runuser -u anland -- env ANLAND_INSTALL=0 ANLAND_STAGE=build ANLAND_WITH_DEPS=1 \
+                    JOBS=4 WORKDIR=/packages/work ARTIFACTS_DIR=/packages/artifacts \
+                    bash "/tmp/anland/$BUILD_SCRIPT"
+                  mutter_package=""
+                  while IFS= read -r package; do
+                    if [ "$(rpm -qp --qf '%{NAME}' "$package")" = mutter ]; then
+                      mutter_package="$package"
+                      break
+                    fi
+                  done < <(find /packages/artifacts -maxdepth 1 -type f -name '*.rpm' -print | sort)
+                  [ -n "$mutter_package" ] || { echo "未找到 Mutter RPM 包" >&2; exit 1; }
+                  mutter_version="$(rpm -qp --qf '%{VERSION}' "$mutter_package")"
+                  printf '%s\n' "$mutter_version" > /packages/.mutter-version
+                  chmod -R a+rX /packages
+                  ;;
                 ubuntu2604|Debian13)
                   test -f "/tmp/anland/$XWAYLAND_PATCH"
                   # Debian 13 使用 DEB822 源；上游构建脚本要求 deb-src。
@@ -1580,7 +4168,7 @@ jobs:
                   fi
                   cd "/tmp/anland/$(dirname "$BUILD_SCRIPT")"
                   XWAYLAND_PATCH="/tmp/anland/$XWAYLAND_PATCH" \
-                    WORKDIR=/packages \
+                    ANLAND_INSTALL=0 WORKDIR=/packages \
                     sudo -E "./$(basename "$BUILD_SCRIPT")"
 
                   # 从主 mutter 包读取上游版本；不要把发行版打包修订号放进资产名。
@@ -1590,7 +4178,7 @@ jobs:
                       mutter_package="$package"
                       break
                     fi
-                  done < <(find /packages/mutter -maxdepth 1 -type f -name '*.deb' -print | sort)
+                  done < <(find /packages -type f -name '*.deb' -print | sort)
                   [ -n "$mutter_package" ] || { echo "未找到 mutter deb 包" >&2; exit 1; }
                   mutter_version="$(dpkg-deb -f "$mutter_package" Version)"
                   # 去掉 epoch 和 Debian/Ubuntu 打包修订号，只保留 Mutter 上游版本。
@@ -1601,6 +4189,13 @@ jobs:
                   chmod -R a+rX /packages
                   ;;
               esac
+              case "$BUILD_TARGET" in
+                ubuntu2604|Debian13) xwayland_pattern='xwayland_*.deb' ;;
+                Fedora43|Fedora44) xwayland_pattern='xorg-x11-server-Xwayland-[0-9]*.rpm' ;;
+                Arch) xwayland_pattern='xorg-xwayland-[0-9]*.pkg.tar.*' ;;
+              esac
+              xwayland_package="$(find /packages -type f -name "$xwayland_pattern" -print -quit)"
+              [ -n "$xwayland_package" ] || { echo "缺少 patched Xwayland 包" >&2; exit 1; }
           ANLAND_BUILD
 
       - name: 打包发布资产
@@ -1627,7 +4222,8 @@ jobs:
               ! -name '*debug*' ! -name '*dbgsym*' ! -name '*.src.*' \
               ! -name 'libmutter-*-dev_*' ! -name 'mutter-doc_*' \
               ! -name 'mutter-tests_*' ! -name 'mutter-devkit-*' \
-              ! -name 'mutter-docs-*' -exec cp -v {} "$package_dir/" \;
+              ! -name 'mutter-docs-*' ! -name 'mutter-devel-*' ! -name 'xorg-x11-server-Xwayland-devel-*' \
+              ! -name 'xwayland-dev_*' -exec cp -v {} "$package_dir/" \;
           }
 
           if [ ! -r "$OUTPUT_DIR/.mutter-version" ]; then
@@ -1665,6 +4261,7 @@ jobs:
           build_time="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           printf 'target=%s\nmutter_version=%s\nbuild_time=%s\n' \
             "$ARCHIVE_TARGET" "$mutter_version" "$build_time" > "$package_dir/.anland-gnome-build-info"
+          printf 'source_repository=%s\nsource_commit=%s\n' "$ANLAND_REPO" "$ANLAND_COMMIT" >> "$package_dir/.anland-gnome-build-info"
           tar -C "$RUNNER_TEMP" -czf "$asset_path" "anland-gnome-packages/$ARCHIVE_TARGET"
           echo "asset_path=$asset_path" >> "$GITHUB_OUTPUT"
           echo "已将 $package_count 个文件打包进 $asset_name（构建时间：$build_time）"
@@ -1721,8 +4318,8 @@ jobs:
       - name: 创建固定发布与软件包清单
         env:
           GH_TOKEN: ${{ github.token }}
-          ANLAND_REPO: ${{ inputs.gnome_repo || 'https://github.com/superturtlee/anland.git' }}
-          ANLAND_REF: ${{ inputs.gnome_ref || 'legacy' }}
+          ANLAND_REPO: ${{ inputs.anland_repo || 'https://github.com/Goldzxcbug/anland.git' }}
+          ANLAND_REF: ${{ inputs.anland_ref || 'Gold' }}
           ANLAND_COMMIT: ${{ needs.prepare-gnome.outputs.anland_commit }}
           BUILD_TARGET_INPUT: ${{ inputs.gnome_target || 'all' }}
         shell: bash
@@ -1732,7 +4329,7 @@ jobs:
           release_dir="$GITHUB_WORKSPACE/release-assets"
           mkdir -p "$release_dir"
           rolling_release_tag="anland-gnome-packages"
-          release_targets=(Debian13 ubuntu2604 Arch)
+          release_targets=(Debian13 ubuntu2604 Fedora43 Fedora44 Arch)
           declare -A asset_by_target=()
           declare -A asset_time_by_target=()
           declare -A asset_source_by_target=()
@@ -1745,6 +4342,8 @@ jobs:
               Debian13) printf '%s\n' 'anland-gnome-debian13-mutter-' ;;
               ubuntu2604) printf '%s\n' 'anland-gnome-ubuntu2604-mutter-' ;;
               Arch) printf '%s\n' 'anland-gnome-arch-mutter-' ;;
+              Fedora43) printf '%s\n' 'anland-gnome-fedora43-mutter-' ;;
+              Fedora44) printf '%s\n' 'anland-gnome-fedora44-mutter-' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
           }
@@ -1754,6 +4353,8 @@ jobs:
               Debian13) printf '%s\n' 'Debian 13' ;;
               ubuntu2604) printf '%s\n' 'Ubuntu 26.04' ;;
               Arch) printf '%s\n' 'Arch Linux ARM' ;;
+              Fedora43) printf '%s\n' 'Fedora 43' ;;
+              Fedora44) printf '%s\n' 'Fedora 44' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
           }
@@ -1761,7 +4362,7 @@ jobs:
           asset_arch_for_target() {
             case "$1" in
               Debian13|ubuntu2604) printf '%s\n' 'arm64' ;;
-              Arch) printf '%s\n' 'aarch64' ;;
+              Arch|Fedora43|Fedora44) printf '%s\n' 'aarch64' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
           }
@@ -1771,6 +4372,8 @@ jobs:
               Debian13) printf '%s\n' 'debian13' ;;
               ubuntu2604) printf '%s\n' 'ubuntu2604' ;;
               Arch) printf '%s\n' 'arch' ;;
+              Fedora43) printf '%s\n' 'fedora43' ;;
+              Fedora44) printf '%s\n' 'fedora44' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
           }
@@ -1872,8 +4475,8 @@ jobs:
             Debian13)
               selected_prefix="$(asset_prefix_for_target Debian13)"
               ;;
-            Arch)
-              selected_prefix="$(asset_prefix_for_target Arch)"
+            Fedora43|Fedora44|Arch)
+              selected_prefix="$(asset_prefix_for_target "$BUILD_TARGET_INPUT")"
               ;;
             *)
               echo "不支持的构建目标：$BUILD_TARGET_INPUT" >&2
@@ -2008,7 +4611,7 @@ jobs:
           reused_target_list="$(format_target_list "${reused_targets[@]}")"
           unavailable_target_list="$(format_target_list "${unavailable_targets[@]}")"
           if [ "${#reused_targets[@]}" -eq 0 ] && [ "${#unavailable_targets[@]}" -eq 0 ]; then
-            replacement_note="本次构建重新生成全部三个平台的软件包。"
+            replacement_note="本次构建重新生成全部五个平台的软件包。"
           else
             replacement_note="本次替换：${updated_target_list}"
             if [ "${#reused_targets[@]}" -gt 0 ]; then
@@ -2085,7 +4688,7 @@ jobs:
             case "$target" in
               Debian13) legacy='anland-gnome-debian13-arm64.tar.gz' ;;
               ubuntu2604) legacy='anland-gnome-ubuntu2604-arm64.tar.gz' ;;
-              Arch) legacy='__no_legacy_arch_asset__' ;;
+              Arch|Fedora43|Fedora44) legacy='__no_legacy_asset__' ;;
               *) return 1 ;;
             esac
             case "$name" in
@@ -2682,7 +5285,9 @@ jobs:
               printf '%s=%s\n' "$(archive_target_for_target "$target")" "${asset_by_target[$target]}"
             done
           } > "$manifest_path"
-          release_package_names+=("anland-session-manifest")
+          cp scripts/tui/install-anland-next.sh "$release_dir/install-anland-next.sh"
+          chmod +x "$release_dir/install-anland-next.sh"
+          release_package_names+=("anland-session-manifest" "install-anland-next.sh")
           (
             cd "$release_dir"
             sha256sum "${release_package_names[@]}" > SHA256SUMS
@@ -2737,7 +5342,7 @@ jobs:
             '' \
             "$release_asset_table" \
             '' \
-            '使用 `anland-session-manifest` 将目标系统映射到对应的软件包，使用 `SHA256SUMS` 校验下载内容。' \
+            '使用 `install-anland-next.sh` 安装或卸载会话包；`anland-session-manifest` 将目标系统映射到软件包，`SHA256SUMS` 校验软件包、清单和安装脚本。' \
             '' \
             '## 构建详情' \
             '' \
@@ -2792,7 +5397,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             gh release upload "$release_tag" \
-              "$manifest_path" "$release_dir/SHA256SUMS" \
+              "$manifest_path" "$release_dir/install-anland-next.sh" "$release_dir/SHA256SUMS" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             for target in "${updated_targets[@]}"; do
@@ -2809,7 +5414,7 @@ jobs:
             for target in "${present_targets[@]}"; do
               release_uploads+=("$release_dir/${asset_by_target[$target]}")
             done
-            release_uploads+=("$manifest_path" "$release_dir/SHA256SUMS")
+            release_uploads+=("$manifest_path" "$release_dir/install-anland-next.sh" "$release_dir/SHA256SUMS")
             gh release create "$release_tag" "${release_uploads[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --draft \
