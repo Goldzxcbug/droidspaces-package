@@ -7,7 +7,8 @@
 从 GitHub 下载引导安装器：
 
 ```bash
-curl -fLO https://github.com/Goldzxcbug/droidspaces-package/releases/download/Gold-bug-tui/install-tui.sh | sudo bash --source github
+curl -fsSLO https://github.com/Goldzxcbug/droidspaces-package/releases/download/Gold-bug-tui/install-tui.sh
+sudo bash install-tui.sh --source github
 ```
 
 从 CNB 镜像下载：

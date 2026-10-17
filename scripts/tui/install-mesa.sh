@@ -64,6 +64,8 @@ MEDIA_DRIVER_TEMP_FILE=""
 MEDIA_DRIVER_INSTALL_DIR=""
 MEDIA_DRIVER_INSTALL_PATH=""
 MESA_PACKAGE_NAMES=()
+CONFIG_RESTORE_BACKUP=""
+CONFIG_RESTORE_TARGET=""
 UNINSTALL=false
 
 detect_language() {
@@ -103,6 +105,31 @@ record_component_version() {
     fi
     rm -f -- "$temporary_file" || true
     log "无法记录已安装的 Mesa 版本。" "Could not record the installed Mesa version."
+    return 0
+}
+
+record_mesa_pacman_packages() {
+    local -a packages=("$@")
+    local state_file="$COMPONENT_STATE_DIR/mesa.packages" temporary_file
+
+    ((${#packages[@]} > 0)) || return 0
+    if ! mkdir -p -- "$COMPONENT_STATE_DIR"; then
+        log "无法记录 Mesa 的 Arch 软件包列表，卸载时将回退到内置包名。" \
+            "Could not record the Mesa Arch package list; uninstall will fall back to the built-in package names."
+        return 0
+    fi
+    temporary_file="$(mktemp "$state_file.tmp.XXXXXXXX")" || {
+        log "无法记录 Mesa 的 Arch 软件包列表，卸载时将回退到内置包名。" \
+            "Could not record the Mesa Arch package list; uninstall will fall back to the built-in package names."
+        return 0
+    }
+    if printf '%s\n' "${packages[@]}" > "$temporary_file" && \
+        chmod 0644 "$temporary_file" && mv -f -- "$temporary_file" "$state_file"; then
+        return 0
+    fi
+    rm -f -- "$temporary_file" || true
+    log "无法记录 Mesa 的 Arch 软件包列表，卸载时将回退到内置包名。" \
+        "Could not record the Mesa Arch package list; uninstall will fall back to the built-in package names."
     return 0
 }
 
@@ -181,7 +208,7 @@ parse_arguments() {
 }
 
 uninstall_mesa_apt() {
-    local package candidate backup=""
+    local package candidate
     local -a packages=(libegl-mesa0 libgbm1 libgl1-mesa-dri libglx-mesa0 mesa-libgallium mesa-vulkan-drivers)
     local -a package_specs=()
     command -v apt-cache >/dev/null 2>&1 || die "未找到 apt-cache。" "apt-cache was not found."
@@ -193,81 +220,141 @@ uninstall_mesa_apt() {
             grep -Fqx 'Pin-Priority: -1' "$APT_HOLD_PREFERENCES" || \
             die "Mesa 锁定配置已被修改，拒绝自动删除。" \
                 "The Mesa hold configuration was modified; refusing to remove it automatically."
-        backup="$(mktemp -t install-mesa-apt-hold.XXXXXXXX)"
-        cp -p -- "$APT_HOLD_PREFERENCES" "$backup"
-        rm -f -- "$APT_HOLD_PREFERENCES"
     fi
+    # 版本固定只影响候选版本的选择，不影响显式指定版本的安装请求，
+    # 因此回装期间保留锁定文件，回装成功后再删除。
     for package in "${packages[@]}"; do
-        candidate="$(apt-cache madison "$package" | awk -F '|' 'NR == 1 {
-            value = $2
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-            print value
-        }')"
+        candidate="$(apt-cache policy "$package" | awk '
+            /^[[:space:]]*Candidate:/ {
+                value = $2
+                if (value == "(none)") {
+                    value = ""
+                }
+                print value
+                exit
+            }
+        ')" || candidate=""
         if [[ -z "$candidate" ]]; then
-            [[ -z "$backup" ]] || install -m 0644 "$backup" "$APT_HOLD_PREFERENCES"
-            rm -f -- "$backup"
-            die "找不到 $package 的官方候选版本。" "No distribution candidate was found for $package."
+            log "跳过没有官方候选版本的 ${package}。" \
+                "Skipping ${package}: no distribution candidate version was found."
+            continue
         fi
         package_specs+=("$package=$candidate")
     done
-    if ! apt-get install -y --reinstall --allow-downgrades "${package_specs[@]}"; then
-        [[ -z "$backup" ]] || install -m 0644 "$backup" "$APT_HOLD_PREFERENCES"
-        rm -f -- "$backup"
+    ((${#package_specs[@]} > 0)) || die \
+        "找不到任何发行版 Mesa 软件包的官方候选版本。" \
+        "No distribution candidate version was found for any Mesa package."
+    if ! apt-get install -y --reinstall --allow-downgrades --allow-change-held-packages \
+        "${package_specs[@]}"; then
+        log "回装失败，Mesa 锁定配置保持不变。" \
+            "The restore failed; the Mesa hold configuration was left in place."
         die "恢复发行版 Mesa 失败。" "Failed to restore distribution Mesa packages."
     fi
-    rm -f -- "$backup"
+    rm -f -- "$APT_HOLD_PREFERENCES"
 }
 
 uninstall_mesa_dnf() {
-    local backup stripped package
+    local backup stripped unmerged
     local -a packages=()
     command -v dnf >/dev/null 2>&1 || die "未找到 dnf。" "dnf was not found."
     command -v rpm >/dev/null 2>&1 || die "未找到 rpm。" "rpm was not found."
     [[ -f "$DNF_CONFIG" ]] || die "找不到 DNF 配置。" "The DNF configuration was not found."
+    # 只回装 mesa 自己管理的包名；其它组件追加进托管块里的包名不属于
+    # Mesa，不会传给 dnf。
     mapfile -t packages < <(rpm -qa --queryformat '%{NAME}\n' | awk '/^mesa/ { print }' | sort -u)
     ((${#packages[@]} > 0)) || die "没有找到已安装的 Mesa 包。" "No installed Mesa packages were found."
-    backup="$(mktemp -t install-mesa-uninstall.XXXXXXXX)"
-    stripped="$(mktemp -t install-mesa-uninstall.XXXXXXXX)"
-    cp -p -- "$DNF_CONFIG" "$backup"
     WORK_DIR="$(mktemp -d -t install-mesa-uninstall.XXXXXXXX)"
+    backup="$WORK_DIR/dnf.conf.backup"
+    stripped="$WORK_DIR/dnf.conf.stripped"
+    unmerged="$WORK_DIR/dnf.conf.unmerged"
+    cp -p -- "$DNF_CONFIG" "$backup"
+    CONFIG_RESTORE_BACKUP="$backup"
+    CONFIG_RESTORE_TARGET="$DNF_CONFIG"
+    # 锁定可能位于独立托管块，也可能已并入用户自己的 excludepkgs=
+    # 行（见 write_dnf_config_with_managed_block），两者都要解除，
+    # 否则下面的 distro-sync/reinstall 会被排除规则挡住。
     if ! rewrite_without_managed_block \
         "$DNF_CONFIG" "$stripped" "$DNF_MANAGED_BEGIN" "$DNF_MANAGED_END" || \
-        ! install -m 0644 "$stripped" "$DNF_CONFIG" || \
-        ! dnf distro-sync -y --exclude='systemd*' "${packages[@]}"; then
+        ! strip_dnf_excludepkgs_entries "$stripped" "$unmerged" || \
+        ! install -m 0644 "$unmerged" "$DNF_CONFIG" || \
+        ! dnf distro-sync -y --exclude='systemd*' "${packages[@]}" || \
+        ! dnf reinstall -y --exclude='systemd*' "${packages[@]}"; then
         install -m 0644 "$backup" "$DNF_CONFIG" || true
-        rm -f -- "$backup" "$stripped"
+        CONFIG_RESTORE_BACKUP=""
+        CONFIG_RESTORE_TARGET=""
+        rm -f -- "$backup" "$stripped" "$unmerged"
         die "恢复发行版 Mesa 失败。" "Failed to restore distribution Mesa packages."
     fi
-    rm -f -- "$backup" "$stripped"
+    CONFIG_RESTORE_BACKUP=""
+    CONFIG_RESTORE_TARGET=""
+    rm -f -- "$backup" "$stripped" "$unmerged"
+}
+
+mesa_owned_pacman_packages() {
+    local recorded_file="$COMPONENT_STATE_DIR/mesa.packages"
+    local -a recorded_packages=()
+
+    # 安装时 install_arch_packages 从 Mesa 分发包中算出包名并记录到该
+    # 文件，卸载回装时以它作为唯一事实来源。
+    if [[ -s "$recorded_file" ]]; then
+        mapfile -t recorded_packages < <(sed -nE 's/^([[:alnum:]@._+*-]+)$/\1/p' "$recorded_file" | sort -u)
+    fi
+    if ((${#recorded_packages[@]} > 0)); then
+        printf '%s\n' "${recorded_packages[@]}"
+        return 0
+    fi
+    # 没有记录时（旧版本安装或记录损坏）回退到分发归档中的已知包名。
+    printf '%s\n' mesa mesa-docs vulkan-freedreno \
+        vulkan-mesa-implicit-layers vulkan-mesa-layers
 }
 
 uninstall_mesa_pacman() {
-    local backup stripped protected preserve_kde=false
-    local -a packages=()
+    local backup stripped protected preserve_kde=false package
+    local -a packages=() block_packages=() mesa_packages=()
     command -v pacman >/dev/null 2>&1 || die "未找到 pacman。" "pacman was not found."
     [[ -f "$PACMAN_CONFIG" ]] || die "找不到 pacman.conf。" "pacman.conf was not found."
-    mapfile -t packages < <(awk -v begin="$PACMAN_MANAGED_BEGIN" -v end="$PACMAN_MANAGED_END" '
+    mapfile -t block_packages < <(awk -v begin="$PACMAN_MANAGED_BEGIN" -v end="$PACMAN_MANAGED_END" '
         $0 == begin { inside = 1; next }
         $0 == end { inside = 0; next }
         inside && $1 == "IgnorePkg" {
-            for (i = 3; i <= NF; i++) {
-                if ($i !~ /^systemd(-libs|-sysvcompat)?$/ && \
-                    $i != "kwin" && $i != "xorg-xwayland") print $i
-            }
+            for (i = 3; i <= NF; i++) print $i
         }
     ' "$PACMAN_CONFIG" | sort -u)
+    mapfile -t mesa_packages < <(mesa_owned_pacman_packages)
+    # 只回装 Mesa 自己管理的包名；块内其它组件追加的包名一律跳过，
+    # 绝不传给 pacman。
+    for package in "${block_packages[@]}"; do
+        if ! printf '%s\n' "${mesa_packages[@]}" | grep -Fqx -- "$package"; then
+            log "跳过 ${package}：该软件包不由 Mesa 管理，不会被回装。" \
+                "Skipping ${package}: it is not managed by Mesa and will not be reinstalled."
+            continue
+        fi
+        packages+=("$package")
+    done
+    if ((${#packages[@]} == 0)); then
+        # 托管块缺失或被破坏时，回退到安装记录中仍已安装的 Mesa 包。
+        for package in "${mesa_packages[@]}"; do
+            if pacman -Q "$package" >/dev/null 2>&1; then
+                packages+=("$package")
+            fi
+        done
+    fi
     ((${#packages[@]} > 0)) || packages=(mesa)
-    backup="$(mktemp -t install-mesa-uninstall.XXXXXXXX)"
-    stripped="$(mktemp -t install-mesa-uninstall.XXXXXXXX)"
-    protected="$(mktemp -t install-mesa-uninstall.XXXXXXXX)"
-    cp -p -- "$PACMAN_CONFIG" "$backup"
     WORK_DIR="$(mktemp -d -t install-mesa-uninstall.XXXXXXXX)"
+    backup="$WORK_DIR/pacman.conf.backup"
+    stripped="$WORK_DIR/pacman.conf.stripped"
+    protected="$WORK_DIR/pacman.conf.protected"
+    cp -p -- "$PACMAN_CONFIG" "$backup"
+    CONFIG_RESTORE_BACKUP="$backup"
+    CONFIG_RESTORE_TARGET="$PACMAN_CONFIG"
     if grep -Eq '^[[:space:]]*IgnorePkg[[:space:]]*=.*(^|[[:space:]])kwin([[:space:]]|$)' \
         "$PACMAN_CONFIG"; then
         preserve_kde=true
     fi
     if ! rewrite_without_managed_block \
         "$PACMAN_CONFIG" "$stripped" "$PACMAN_MANAGED_BEGIN" "$PACMAN_MANAGED_END"; then
+        CONFIG_RESTORE_BACKUP=""
+        CONFIG_RESTORE_TARGET=""
         rm -f -- "$backup" "$stripped" "$protected"
         die "无法移除 Mesa 锁定配置。" "Failed to remove the Mesa hold configuration."
     fi
@@ -281,6 +368,8 @@ uninstall_mesa_pacman() {
             }
             END { if (!added) exit 1 }
         ' "$stripped" > "$protected" || {
+            CONFIG_RESTORE_BACKUP=""
+            CONFIG_RESTORE_TARGET=""
             rm -f -- "$backup" "$stripped" "$protected"
             die "无法保留 Anland KDE 锁定。" "Failed to preserve the Anland KDE hold."
         }
@@ -290,9 +379,13 @@ uninstall_mesa_pacman() {
     if ! install -m 0644 "$protected" "$PACMAN_CONFIG" || \
         ! pacman -S --noconfirm "${packages[@]}"; then
         install -m 0644 "$backup" "$PACMAN_CONFIG" || true
+        CONFIG_RESTORE_BACKUP=""
+        CONFIG_RESTORE_TARGET=""
         rm -f -- "$backup" "$stripped" "$protected"
         die "恢复发行版 Mesa 失败。" "Failed to restore distribution Mesa packages."
     fi
+    CONFIG_RESTORE_BACKUP=""
+    CONFIG_RESTORE_TARGET=""
     rm -f -- "$backup" "$stripped" "$protected"
 }
 
@@ -302,13 +395,20 @@ uninstall_mesa() {
         dnf) uninstall_mesa_dnf ;;
         pacman) uninstall_mesa_pacman ;;
     esac
-    rm -f -- "$MEDIA_DRIVER_INSTALL_PATH" "$COMPONENT_STATE_DIR/mesa.version"
+    rm -f -- "$MEDIA_DRIVER_INSTALL_PATH" "$COMPONENT_STATE_DIR/mesa.version" \
+        "$COMPONENT_STATE_DIR/mesa.packages"
     command -v ldconfig >/dev/null 2>&1 && ldconfig || true
     log "自定义 Mesa/MediaCodec 驱动已卸载，发行版 Mesa 已恢复。" \
         "Custom Mesa/MediaCodec drivers were uninstalled and distribution Mesa was restored."
 }
 
 cleanup() {
+    # 配置已被替换、回装尚未完成的窗口内退出（例如 Ctrl-C）时，
+    # 用备份还原配置，避免留下“无锁定 + 补丁文件在位”的状态。
+    if [[ -n "$CONFIG_RESTORE_BACKUP" && -n "$CONFIG_RESTORE_TARGET" && \
+        -e "$CONFIG_RESTORE_BACKUP" ]]; then
+        install -m 0644 "$CONFIG_RESTORE_BACKUP" "$CONFIG_RESTORE_TARGET" || true
+    fi
     if [[ -n "$MEDIA_DRIVER_TEMP_FILE" && -e "$MEDIA_DRIVER_TEMP_FILE" ]]; then
         rm -f -- "$MEDIA_DRIVER_TEMP_FILE"
     fi
@@ -1188,6 +1288,62 @@ rewrite_without_managed_block() {
     ' "$input_file" > "$output_file"
 }
 
+strip_dnf_excludepkgs_entries() {
+    local input_file="$1"
+    local output_file="$2"
+
+    # 只处理 [main] 段内的 excludepkgs= 行，移除其中的 mesa* 标记；
+    # 用户自己的 exclude= 行、其它段落以及未被标记的行都保持原样。
+    awk '
+        function strip(line, equals, value, count, tokens, result, separator, i, removed) {
+            equals = index(line, "=")
+            value = substr(line, equals + 1)
+            gsub(/,/, " ", value)
+            count = split(value, tokens, /[[:space:]]+/)
+            result = ""
+            separator = ""
+            for (i = 1; i <= count; i++) {
+                if (tokens[i] == "") {
+                    continue
+                }
+                if (tokens[i] == "mesa*") {
+                    removed = 1
+                    continue
+                }
+                result = result separator tokens[i]
+                separator = ","
+            }
+            if (!removed) {
+                return line
+            }
+            if (result == "") {
+                return ""
+            }
+            return substr(line, 1, equals) result
+        }
+        /^\[main\][[:space:]]*$/ {
+            in_main = 1
+            print
+            next
+        }
+        /^\[[^]]+\][[:space:]]*$/ {
+            in_main = 0
+            print
+            next
+        }
+        {
+            if (in_main && $0 ~ /^[[:space:]]*excludepkgs[[:space:]]*=/) {
+                sanitized = strip($0)
+                if (sanitized != "") {
+                    print sanitized
+                }
+                next
+            }
+            print
+        }
+    ' "$input_file" > "$output_file"
+}
+
 write_dnf_config_with_managed_block() {
     local input_file="$1"
     local output_file="$2"
@@ -1201,9 +1357,12 @@ write_dnf_config_with_managed_block() {
     rewrite_without_managed_block \
         "$input_file" "$stripped_file" "$DNF_MANAGED_BEGIN" "$DNF_MANAGED_END" || return 1
 
-    # DNF 会把兼容 yum 的 exclude 别名与 excludepkgs 绑定到同一个追加列表。
-    # 使用不同键可以避免 INI 解析器替换重复键，同时兼容 Anland 的
-    # excludepkgs 规则。
+    # DNF 对同一段内重复的键只保留最后一条，先前的值会被静默丢弃
+    # （libdnf5 的 ConfigParser 把每个段存成 key→单值 映射）。因此当
+    # [main] 中已有用户自己的 excludepkgs= 行时，必须把 Mesa 的包名
+    # 并入那一行，绝不再写第二条同键行，否则用户原有的排除项会被托
+    # 管块静默覆盖；只有用户没有该键时才写入独立托管块。用户自己的
+    # exclude= 行始终原样保留。
     awk -v begin="$DNF_MANAGED_BEGIN" -v end="$DNF_MANAGED_END" \
         -v excludes="$excluded_packages" '
         function contains(value, wanted, normalized, count, tokens, i) {
@@ -1234,7 +1393,7 @@ write_dnf_config_with_managed_block() {
         }
         function write_block() {
             print begin
-            print "exclude=" excludes
+            print "excludepkgs=" excludes
             print end
         }
         /^\[main\][[:space:]]*$/ {
@@ -1252,7 +1411,7 @@ write_dnf_config_with_managed_block() {
             next
         }
         {
-            if (in_main && $0 ~ /^[[:space:]]*exclude[[:space:]]*=/) {
+            if (in_main && $0 ~ /^[[:space:]]*excludepkgs[[:space:]]*=/) {
                 print merge_excludes($0)
                 saw_exclude = 1
                 next
@@ -1388,6 +1547,18 @@ configure_package_holds() {
     esac
 }
 
+relax_pacman_signature_policy() {
+    local pacman_config="$1" option="$2" value="$3"
+
+    if grep -Eq "^[[:space:]]*#?[[:space:]]*${option}[[:space:]]*=" "$pacman_config"; then
+        sed -i -E "s/^[[:space:]]*#?[[:space:]]*${option}[[:space:]]*=.*/${option} = ${value}/" "$pacman_config"
+    elif grep -qE '^\[options\][[:space:]]*$' "$pacman_config"; then
+        sed -i "/^\[options\][[:space:]]*$/a ${option} = ${value}" "$pacman_config"
+    else
+        return 1
+    fi
+}
+
 install_arch_packages() {
     local pacman_config
     local entry
@@ -1399,14 +1570,12 @@ install_arch_packages() {
     cp -p "$PACMAN_CONFIG" "$pacman_config"
 
     # Mesa Release 软件包有意不签名，因此仅在此临时 Pacman 配置中
-    # 放宽签名策略。
-    if grep -Eq '^[[:space:]]*#?[[:space:]]*SigLevel[[:space:]]*=' "$pacman_config"; then
-        sed -i -E 's/^[[:space:]]*#?[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Never/' "$pacman_config"
-    elif grep -qE '^\[options\][[:space:]]*$' "$pacman_config"; then
-        sed -i '/^\[options\][[:space:]]*$/a SigLevel = Never' "$pacman_config"
-    else
-        die "pacman.conf 缺少 [options] 段。" "pacman.conf has no [options] section."
-    fi
+    # 放宽签名策略。pacman -U 安装本地未签名包时以
+    # LocalFileSigLevel 为准，所以两者都要处理。
+    relax_pacman_signature_policy "$pacman_config" SigLevel Never || die \
+        "pacman.conf 缺少 [options] 段。" "pacman.conf has no [options] section."
+    relax_pacman_signature_policy "$pacman_config" LocalFileSigLevel Optional || die \
+        "pacman.conf 缺少 [options] 段。" "pacman.conf has no [options] section."
 
     if ! tar -tf "$ARCHIVE_FILE" > "$package_listing_file"; then
         die "无法读取 Arch 下载包内容。" "Unable to read the Arch archive contents."
@@ -1430,6 +1599,7 @@ install_arch_packages() {
     mapfile -t MESA_PACKAGE_NAMES < "$package_names_file"
     ((${#MESA_PACKAGE_NAMES[@]} > 0)) || die \
         "无法读取 Arch Mesa 包名。" "Could not determine the Arch Mesa package names."
+    record_mesa_pacman_packages "${MESA_PACKAGE_NAMES[@]}"
 
     log "正在安装 Arch GPU 初始化所需的 LLVM 22..." \
         "Installing LLVM 22 required for Arch GPU initialization..."

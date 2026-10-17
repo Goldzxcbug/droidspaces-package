@@ -39,6 +39,83 @@ jobs:
             exit 1
           }
 
+      - name: 运行 shellcheck 静态检查
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 存量脚本仍包含风格类告警（SC2034/SC2043/SC2155 等），这里只以
+          # -S error 阻断真正的错误，避免 CI 因既有风格问题变红。
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends shellcheck
+
+          source_dir="$GITHUB_WORKSPACE/scripts/tui"
+          mapfile -t scripts < <(
+            find "$source_dir" -maxdepth 1 -type f -name '*.sh' -printf '%f\n' | sort
+          )
+          ((${#scripts[@]} >= 3)) || {
+            echo "scripts/tui 中的脚本数量异常。" >&2
+            exit 1
+          }
+          for script_name in "${scripts[@]}"; do
+            shellcheck -S error "$source_dir/$script_name"
+          done
+          echo "shellcheck 检查通过（${#scripts[@]} 个脚本）。"
+
+      - name: 校验共享安装器函数一致
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 7 个 Anland 安装器共享同一套 pacman 锁定逻辑，Mesa 与 Anland 的 DNF
+          # 写入都必须并入用户已有的 excludepkgs= 行（DNF 对同段重复键只保留
+          # 最后一条，另写一条会把用户的排除项静默作废）。这里把这些不变量固
+          # 定下来，防止后续只改部分安装器造成行为漂移。
+          source_dir="$GITHUB_WORKSPACE/scripts/tui"
+
+          check_parity() {
+            local function_name="$1"
+            shift
+            local file body digest reference='' checked=0
+            for file in "$@"; do
+              body="$(awk -v fn="$function_name" '
+                $0 ~ "^" fn "\\(\\) \\{" { capture = 1 }
+                capture { print }
+                capture && /^}$/ { exit }
+              ' "$file")"
+              if [[ -z "$body" ]]; then
+                echo "$file 缺少共享函数 $function_name。" >&2
+                exit 1
+              fi
+              digest="$(printf '%s\n' "$body" | sha256sum | awk '{ print $1 }')"
+              if [[ -z "$reference" ]]; then
+                reference="$digest"
+              elif [[ "$digest" != "$reference" ]]; then
+                echo "共享函数 $function_name 在 $file 中与其它安装器不一致。" >&2
+                exit 1
+              fi
+              checked=$((checked + 1))
+            done
+            ((checked >= 2)) || {
+              echo "共享函数 $function_name 的检查文件数不足（$checked）。" >&2
+              exit 1
+            }
+          }
+
+          check_parity write_pacman_hold_block "$source_dir"/install-anland-*.sh
+          check_parity remove_pacman_hold_entries "$source_dir"/install-anland-*.sh
+          check_parity other_xwayland_owner \
+            "$source_dir"/install-anland-{gnome,niri,hyprland,mango,denial,kde}.sh
+
+          for file in "$source_dir"/install-anland-*.sh "$source_dir/install-mesa.sh"; do
+            grep -q 'function merge_excludes(' "$file" || {
+              echo "$file 的 DNF 托管写入未并入用户已有的 excludepkgs= 行。" >&2
+              exit 1
+            }
+          done
+
+          echo "共享安装器函数一致性检查通过。"
+
       - name: 准备脚本与发布清单
         id: assets
         shell: bash

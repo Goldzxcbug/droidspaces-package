@@ -543,14 +543,14 @@ component_supported() {
                 supports_common_packages
             else
                 case "$SYSTEM_ID:$SYSTEM_VERSION" in
-                    arch:*|archarm:*|debian:13*|ubuntu:24.04*|ubuntu:25.10*|ubuntu:26.04*|fedora:43*|fedora:44*) return 0 ;;
+                    arch:*|archarm:*|archlinux:*|debian:13*|ubuntu:24.04*|ubuntu:25.10*|ubuntu:26.04*|fedora:43*|fedora:44*) return 0 ;;
                     *) return 1 ;;
                 esac
             fi
             ;;
         kde)
             case "$SYSTEM_ID:$SYSTEM_VERSION" in
-                arch:*|archarm:*|debian:13*|ubuntu:26.04*|fedora:43*|fedora:44*) return 0 ;;
+                arch:*|archarm:*|archlinux:*|debian:13*|ubuntu:26.04*|fedora:43*|fedora:44*) return 0 ;;
                 *) return 1 ;;
             esac
             ;;
@@ -749,6 +749,14 @@ component_versions_match() {
         hangover)
             [[ "$current" == "$upstream"~* || "$current" == "$upstream"-[0-9]* ]]
             ;;
+        mesa)
+            current="${current#*:}"
+            [[ "$current" == "$upstream"-* ]]
+            ;;
+        fonts)
+            current="${current#*:}"
+            [[ "$current" == "$upstream"-* || "$current" == "$upstream"+* ]]
+            ;;
         kde|gnome)
             current="${current#*:}"
             [[ "$current" == "$upstream"-* ]]
@@ -786,7 +794,7 @@ component_release_parts() {
         hangover)
             tag="hangover-wine-packages"
             case "$SYSTEM_ID:$SYSTEM_VERSION" in
-                arch:*|archarm:*) prefix="hangover-wine-arch-"; suffix="-aarch64.tar.gz" ;;
+                arch:*|archarm:*|archlinux:*) prefix="hangover-wine-arch-"; suffix="-aarch64.tar.gz" ;;
                 debian:13*) prefix="hangover-wine-debian13-"; suffix="-arm64.tar.gz" ;;
                 ubuntu:24.04*) prefix="hangover-wine-ubuntu2404-"; suffix="-arm64.tar.gz" ;;
                 ubuntu:25.10*) prefix="hangover-wine-ubuntu2510-"; suffix="-arm64.tar.gz" ;;
@@ -804,7 +812,7 @@ component_release_parts() {
         kde)
             tag="anland-kde-packages"
             case "$SYSTEM_ID:$SYSTEM_VERSION" in
-                arch:*|archarm:*) prefix="anland-kde-arch-kwin-"; suffix="-aarch64.tar.gz" ;;
+                arch:*|archarm:*|archlinux:*) prefix="anland-kde-arch-kwin-"; suffix="-aarch64.tar.gz" ;;
                 debian:13*) prefix="anland-kde-debian13-kwin-"; suffix="-arm64.tar.gz" ;;
                 ubuntu:26.04*) prefix="anland-kde-ubuntu2604-kwin-"; suffix="-arm64.tar.gz" ;;
                 fedora:43*) prefix="anland-kde-fedora43-kwin-"; suffix="-aarch64.tar.gz" ;;
@@ -1959,6 +1967,9 @@ run_update() {
     if [[ "$scope" == tui || "$scope" == all ]]; then
         if [[ -x "$INSTALLED_TUI_PATH" ]]; then
             printf '\n%s\n' "$(msg 'TUI 已更新，正在重新启动。' 'The TUI was updated and will now restart.')"
+            # exec does not run the EXIT trap, so reclaim the component version
+            # worker directory explicitly before replacing this process.
+            stop_component_version_workers
             cleanup_update_files
             exec "$INSTALLED_TUI_PATH" --source "$DOWNLOAD_SOURCE"
         fi

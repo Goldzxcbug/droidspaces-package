@@ -7,10 +7,10 @@ readonly MANIFEST_NAME="Gold-bug-tui-manifest"
 readonly GITHUB_API_URL="${DROIDSPACES_TUI_API_URL:-https://api.github.com}"
 readonly GITHUB_DOWNLOAD_BASE="${DROIDSPACES_TUI_GITHUB_BASE:-https://github.com/$RELEASE_REPOSITORY/releases/download}"
 readonly GITHUB_PROXY_BASE="${DROIDSPACES_TUI_PROXY_BASE:-https://gh-proxy.com/https://github.com/$RELEASE_REPOSITORY/releases/download}"
-readonly CNB_DOWNLOAD_BASE="${DROIDSPACES_TUI_CNB_BASE:-https://cnb.cool/goldzxcbug/droidspaces-package/-/releases/download}"
+readonly CNB_DOWNLOAD_BASE="${DROIDSPACES_TUI_CNB_BASE:-https://cnb.cool/$RELEASE_REPOSITORY/-/releases/download}"
 readonly TUI_TARGET="/usr/local/bin/droidspaces-tui"
 
-SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/$(basename -- "${BASH_SOURCE[0]}")"
+SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-}")" && pwd -P)/$(basename -- "${BASH_SOURCE[0]:-}")"
 DOWNLOAD_SOURCE="auto"
 UPDATE_SCOPE="all"
 CHECK_ONLY=false
@@ -132,6 +132,12 @@ ensure_root() {
     ((EUID == 0)) && return
     command -v sudo >/dev/null 2>&1 || die '安装需要 root 权限，且系统未安装 sudo。'
     exec sudo --preserve-env=LANG,LC_ALL,LC_MESSAGES -- bash "$SCRIPT_PATH" "${ORIGINAL_ARGUMENTS[@]}"
+}
+
+require_script_file() {
+    if [[ -z "${BASH_SOURCE[0]:-}" || -d "$SCRIPT_PATH" ]]; then
+        die "无法通过管道运行本脚本；请先下载脚本再运行，例如 curl -fsSLO $GITHUB_DOWNLOAD_BASE/$RELEASE_TAG/install-tui.sh && sudo bash install-tui.sh。Cannot run through a pipe; download the script first, e.g. curl -fsSLO $GITHUB_DOWNLOAD_BASE/$RELEASE_TAG/install-tui.sh && sudo bash install-tui.sh."
+    fi
 }
 
 fetch_release_metadata() {
@@ -493,6 +499,7 @@ main() {
     local index asset_sha asset_size manifest_after before_sha after_sha
 
     parse_arguments "$@"
+    require_script_file
     require_commands
     if [[ "$CHECK_ONLY" == false ]]; then
         ensure_root
@@ -510,7 +517,8 @@ main() {
             ;;
         auto)
             if ! load_github_manifest; then
-                log 'GitHub Release 元数据不可用，改用 CNB 清单。'
+                log '警告：GitHub Release 元数据不可用，将改用 CNB 清单（不经 GitHub Release API 校验）。'
+                log 'Warning: GitHub Release metadata is unavailable; falling back to the CNB manifest without GitHub Release API verification.'
                 DOWNLOAD_SOURCE=cnb
                 load_cnb_manifest || die '无法从 GitHub 或 CNB 取得 TUI 清单。'
             fi
