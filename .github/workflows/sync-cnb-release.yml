@@ -1,12 +1,17 @@
 name: 同步 GitHub Release 到 CNB
-run-name: 同步 Release ${{ inputs.release_tag }} 到 CNB
+run-name: 同步 Release ${{ inputs.sync_all && '全部' || inputs.release_tag }} 到 CNB
 
 on:
   workflow_dispatch:
     inputs:
+      sync_all:
+        description: 同步所有已发布的 Release（包含预发布版本）
+        required: true
+        default: false
+        type: boolean
       release_tag:
         description: 要同步到 CNB 的 GitHub Release tag
-        required: true
+        required: false
         type: string
         default: Gold-bug-tui
 
@@ -14,14 +19,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: sync-cnb-release-${{ inputs.release_tag }}
+  group: sync-cnb-release-${{ inputs.sync_all && 'all' || inputs.release_tag }}
   cancel-in-progress: false
 
 jobs:
   sync:
-    name: 同步 ${{ inputs.release_tag }}
+    name: 同步 ${{ inputs.sync_all && '所有 Release' || inputs.release_tag }}
     runs-on: ubuntu-26.04
-    timeout-minutes: 60
+    timeout-minutes: ${{ inputs.sync_all && 360 || 60 }}
     steps:
       - name: 检出同步脚本
         uses: actions/checkout@v6
@@ -29,16 +34,17 @@ jobs:
       - name: 校验同步参数
         shell: bash
         env:
+          SYNC_ALL: ${{ inputs.sync_all }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
           CNB_REPO: ${{ vars.CNB_REPO }}
         run: |
           set -euo pipefail
 
-          [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+          if [[ "$SYNC_ALL" != "true" && ! "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
             echo "不支持的 Release tag：$RELEASE_TAG" >&2
             exit 1
-          }
+          fi
           [[ -n "$CNB_TOKEN" ]] || {
             echo "缺少 GitHub Actions Secret：CNB_TOKEN" >&2
             exit 1
@@ -54,5 +60,48 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
           CNB_REPO: ${{ vars.CNB_REPO }}
+          SYNC_ALL: ${{ inputs.sync_all }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-        run: bash scripts/publish-cnb-release.sh "$RELEASE_TAG"
+        run: |
+          set -euo pipefail
+
+          if [[ "$SYNC_ALL" != "true" ]]; then
+            bash scripts/publish-cnb-release.sh "$RELEASE_TAG"
+            exit 0
+          fi
+
+          release_tags_file="$(mktemp)"
+          trap 'rm -f "$release_tags_file"' EXIT
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.draft == false) | .tag_name' \
+            > "$release_tags_file"
+          mapfile -t release_tags < "$release_tags_file"
+
+          if [[ "${#release_tags[@]}" -eq 0 ]]; then
+            echo "没有可同步的已发布 GitHub Release。"
+            exit 0
+          fi
+
+          echo "准备同步 ${#release_tags[@]} 个已发布 GitHub Release。"
+          declare -a failed_tags=()
+          for tag in "${release_tags[@]}"; do
+            if [[ ! "$tag" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+              echo "不支持的 Release tag，跳过：$tag" >&2
+              failed_tags+=("$tag")
+              continue
+            fi
+
+            echo "正在同步 Release：$tag"
+            if ! bash scripts/publish-cnb-release.sh "$tag"; then
+              failed_tags+=("$tag")
+              echo "同步失败：$tag" >&2
+            fi
+          done
+
+          if [[ "${#failed_tags[@]}" -gt 0 ]]; then
+            printf '以下 Release 同步失败：%s\n' "${failed_tags[*]}" >&2
+            exit 1
+          fi
+
+          echo "所有已发布 GitHub Release 均已同步到 CNB。"
