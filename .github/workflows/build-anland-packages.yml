@@ -22,12 +22,12 @@ on:
         description: KDE、GNOME、Niri、Hyprland、Mango、Denial 共用的 Anland 仓库地址
         required: true
         type: string
-        default: https://github.com/Goldzxcbug/anland.git
+        default: https://github.com/SuperTurtleDev/anland.git
       anland_ref:
         description: 六种 Anland 桌面组件共用的分支、标签或提交
         required: true
         type: string
-        default: Gold
+        default: legacy
       # —— 通用 ——
       publish_cnb:
         description: 同步发布到 CNB 国内镜像
