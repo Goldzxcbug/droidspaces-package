@@ -492,6 +492,10 @@ jobs:
               hyprland:arch) required_packages=(hyprland-anland hyprpm-anland "$xwayland_name") ;;
               hyprland:fedora43|hyprland:fedora44) required_packages=(hyprland-anland "$xwayland_name") ;;
               mango:*) required_packages=(mango-anland "$xwayland_name") ;;
+              # Ubuntu2604 packages Denial through upstream's stage-denial-runtime,
+              # which names the engine and the plugin manager differently; the
+              # other recipes still build the PKGBUILD engine/desktop split.
+              denial:ubuntu2604) required_packages=(denial-flutter-engine denial denial-plugin-manager "$xwayland_name") ;;
               denial:*) required_packages=(denial-anland-engine denial denial-desktop "$xwayland_name") ;;
               niri:arch) required_packages=(niri-anland "$xwayland_name") ;;
               niri:*) required_packages=(niri-anland xwayland-satellite "$xwayland_name") ;;
@@ -1171,6 +1175,10 @@ jobs:
               hyprland:arch) required_packages=(hyprland-anland hyprpm-anland "$xwayland_name") ;;
               hyprland:fedora43|hyprland:fedora44) required_packages=(hyprland-anland "$xwayland_name") ;;
               mango:*) required_packages=(mango-anland "$xwayland_name") ;;
+              # Ubuntu2604 packages Denial through upstream's stage-denial-runtime,
+              # which names the engine and the plugin manager differently; the
+              # other recipes still build the PKGBUILD engine/desktop split.
+              denial:ubuntu2604) required_packages=(denial-flutter-engine denial denial-plugin-manager "$xwayland_name") ;;
               denial:*) required_packages=(denial-anland-engine denial denial-desktop "$xwayland_name") ;;
               niri:arch) required_packages=(niri-anland "$xwayland_name") ;;
               niri:*) required_packages=(niri-anland xwayland-satellite "$xwayland_name") ;;
@@ -1840,6 +1848,10 @@ jobs:
               hyprland:arch) required_packages=(hyprland-anland hyprpm-anland "$xwayland_name") ;;
               hyprland:fedora43|hyprland:fedora44) required_packages=(hyprland-anland "$xwayland_name") ;;
               mango:*) required_packages=(mango-anland "$xwayland_name") ;;
+              # Ubuntu2604 packages Denial through upstream's stage-denial-runtime,
+              # which names the engine and the plugin manager differently; the
+              # other recipes still build the PKGBUILD engine/desktop split.
+              denial:ubuntu2604) required_packages=(denial-flutter-engine denial denial-plugin-manager "$xwayland_name") ;;
               denial:*) required_packages=(denial-anland-engine denial denial-desktop "$xwayland_name") ;;
               niri:arch) required_packages=(niri-anland "$xwayland_name") ;;
               niri:*) required_packages=(niri-anland xwayland-satellite "$xwayland_name") ;;
@@ -2509,6 +2521,10 @@ jobs:
               hyprland:arch) required_packages=(hyprland-anland hyprpm-anland "$xwayland_name") ;;
               hyprland:fedora43|hyprland:fedora44) required_packages=(hyprland-anland "$xwayland_name") ;;
               mango:*) required_packages=(mango-anland "$xwayland_name") ;;
+              # Ubuntu2604 packages Denial through upstream's stage-denial-runtime,
+              # which names the engine and the plugin manager differently; the
+              # other recipes still build the PKGBUILD engine/desktop split.
+              denial:ubuntu2604) required_packages=(denial-flutter-engine denial denial-plugin-manager "$xwayland_name") ;;
               denial:*) required_packages=(denial-anland-engine denial denial-desktop "$xwayland_name") ;;
               niri:arch) required_packages=(niri-anland "$xwayland_name") ;;
               niri:*) required_packages=(niri-anland xwayland-satellite "$xwayland_name") ;;
