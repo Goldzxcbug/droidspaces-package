@@ -5,6 +5,8 @@ readonly TUI_VERSION="1.5"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 readonly DESKTOP_CONFIG="${DROIDSPACES_DESKTOP_CONFIG:-/etc/droidspaces-desktop.conf}"
+readonly GPU_HELPER_LOCAL="$SCRIPT_DIR/droidspaces-gpu.sh"
+readonly GPU_HELPER_INSTALLED="/usr/local/bin/droidspaces-gpu"
 readonly HANGOVER_CACHE_DIR="/var/cache/hangover-wine"
 readonly HANGOVER_MANIFEST_NAME="hangover-wine-manifest"
 readonly COMPONENT_STATE_DIR="${DROIDSPACES_COMPONENT_STATE_DIR:-/var/lib/droidspaces-tui/components}"
@@ -63,6 +65,7 @@ COLOR_BLUE=""
 COLOR_CYAN=""
 COLOR_GREEN=""
 COLOR_YELLOW=""
+COLOR_LIGHT_YELLOW=""
 COLOR_RED=""
 COLOR_DIM=""
 
@@ -174,6 +177,7 @@ init_colors() {
         COLOR_CYAN=$'\033[36m'
         COLOR_GREEN=$'\033[32m'
         COLOR_YELLOW=$'\033[33m'
+        COLOR_LIGHT_YELLOW=$'\033[93m'
         COLOR_RED=$'\033[31m'
         COLOR_DIM=$'\033[2m'
     fi
@@ -1194,10 +1198,19 @@ confirm_run() {
 }
 
 run_component() {
-    local component="$1"
-    local label="$2"
-    local installer status
+    local component="${1:-}"
+    local label="${2:-}"
+    local installer status skip_confirm=false argument
     local -a source_argument=()
+
+    if [[ $# -ge 2 ]]; then
+        shift 2
+    else
+        set --
+    fi
+    for argument in "$@"; do
+        [[ "$argument" != --choose-version ]] || skip_confirm=true
+    done
 
     clear_screen
     draw_header
@@ -1222,7 +1235,9 @@ run_component() {
 
     printf '%s: %s\n' "$(msg '安装器' 'Installer')" "$installer"
     printf '%s: %s\n\n' "$(msg '下载源' 'Source')" "$(source_label)"
-    confirm_run "$label" || return
+    if [[ "$skip_confirm" == false ]]; then
+        confirm_run "$label" || return
+    fi
 
     case "$DOWNLOAD_SOURCE" in
         1) source_argument=(--1) ;;
@@ -1233,7 +1248,7 @@ run_component() {
     printf '\n%b%s%b\n\n' "$COLOR_BLUE" \
         "$(msg '安装器开始运行。' 'Starting installer.')" "$COLOR_RESET"
     COMPONENT_REFRESH_REQUIRED=true
-    if "$installer" "${source_argument[@]}"; then
+    if "$installer" "${source_argument[@]}" "$@"; then
         status=0
     else
         status=$?
@@ -1359,6 +1374,30 @@ desktop_component_selection_menu() {
     done
 }
 
+gpu_helper() {
+    local helper="$GPU_HELPER_INSTALLED"
+    [[ ! -f "$GPU_HELPER_LOCAL" ]] || helper="$GPU_HELPER_LOCAL"
+    if [[ ! -f "$helper" || ! -r "$helper" ]]; then
+        printf '%s' "$(msg 'GPU 切换脚本未安装，请更新 TUI。' 'GPU helper is missing; update the TUI.')" >&2
+        return 1
+    fi
+    bash "$helper" "$@"
+}
+
+gpu_status_display() {
+    local scope="$1" api="$2" value
+    if ! value="$(gpu_helper --status "$scope" "$api" 2>/dev/null)"; then
+        printf '%s' "$(msg '未知' 'unknown')"
+        return
+    fi
+    value="${value//$'\n'/ }"
+    value="${value//$'\r'/ }"
+    if [[ -z "$value" ]]; then
+        value="$(msg '未指定' 'not specified')"
+    fi
+    printf '%s' "$value"
+}
+
 component_menu() {
     local component="$1" label="$2" choice read_status
     begin_dynamic_menu
@@ -1374,8 +1413,20 @@ component_menu() {
                 "${COMPONENT_CURRENT_VERSIONS[$component]}"
             printf '  %s: %s\n\n' "$(msg '上游版本' 'Upstream version')" \
                 "$(component_upstream_display "$component")"
+            if [[ "$component" == mesa ]]; then
+                printf '  %s: %b%s%b\n' "$(msg '当前 OpenGL 配置' 'Current OpenGL configuration')" "$COLOR_GREEN" "$(gpu_status_display current opengl)" "$COLOR_RESET"
+                printf '  %s: %b%s%b\n' "$(msg '下次启动 OpenGL 配置' 'Saved OpenGL configuration')" "$COLOR_LIGHT_YELLOW" "$(gpu_status_display saved opengl)" "$COLOR_RESET"
+                printf '  %s: %b%s%b\n' "$(msg '当前 Vulkan 配置' 'Current Vulkan configuration')" "$COLOR_GREEN" "$(gpu_status_display current vulkan)" "$COLOR_RESET"
+                printf '  %s: %b%s%b\n\n' "$(msg '下次启动 Vulkan 配置' 'Saved Vulkan configuration')" "$COLOR_LIGHT_YELLOW" "$(gpu_status_display saved vulkan)" "$COLOR_RESET"
+            fi
             printf '  %b[1]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '更新/安装' 'Update/install')"
             printf '  %b[2]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '卸载' 'Uninstall')"
+            if [[ "$component" == mesa ]]; then
+                printf '  %b[3]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '切换 OpenGL / Vulkan 路径' 'Switch OpenGL / Vulkan paths')"
+                printf '  %b[4]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '选择 Mesa 版本' 'Select Mesa version')"
+                printf '  %b[5]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '更新媒体解码驱动' 'Update media decode driver')"
+                printf '  %b[6]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '卸载媒体解码驱动' 'Uninstall media decode driver')"
+            fi
             printf '  %b[0]%b %s\n\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '返回' 'Back')"
         fi
         draw_dynamic_menu_prompt
@@ -1398,6 +1449,24 @@ component_menu() {
                 restore_dynamic_menu_echo
                 run_component_uninstall "$component" "$label"
                 return
+                ;;
+            3)
+                if [[ "$component" == mesa ]]; then
+                    restore_dynamic_menu_echo
+                    gpu_helper || pause_menu
+                    begin_dynamic_menu
+                fi
+                ;;
+            4|5|6)
+                if [[ "$component" == mesa ]]; then
+                    restore_dynamic_menu_echo
+                    case "$choice" in
+                        4) run_component mesa "$(msg '选择 Mesa 版本' 'Select Mesa version')" --choose-version --mesa-only ;;
+                        5) run_component mesa "$(msg '更新媒体解码驱动' 'Update media decode driver')" --media-only ;;
+                        6) run_component mesa "$(msg '卸载媒体解码驱动' 'Uninstall media decode driver')" --media-only --uninstall ;;
+                    esac
+                    return
+                fi
                 ;;
             0|q)
                 restore_dynamic_menu_echo

@@ -4,13 +4,13 @@
 # 本工作流不修改上游 Mesa 资产内容。
 
 name: 分发 Mesa for Android Container
-run-name: 分发 Mesa ${{ inputs.upstream_tag || '最新稳定版本' }}
+run-name: 分发 Mesa ${{ inputs.upstream_tag || '最新正式 Release' }}
 
 on:
   workflow_dispatch:
     inputs:
       upstream_tag:
-        description: 可选的上游 mesa-* Release tag；留空自动选择最新稳定版本
+        description: 可选的上游 mesa-* 正式 Release tag；留空自动选择最新正式 Release
         required: false
         type: string
         default: ''
@@ -45,6 +45,13 @@ jobs:
       - name: 检出分发脚本
         uses: actions/checkout@v6
 
+      - name: 检查 Mesa 安装器语法
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/tui/install-mesa.sh
+          bash -n scripts/tui/droidspaces-tui.sh
+
       - name: 要求从 main 分支触发
         shell: bash
         run: |
@@ -64,30 +71,27 @@ jobs:
 
           mesa_metadata="$RUNNER_TEMP/mesa-upstream-release.json"
           media_metadata="$RUNNER_TEMP/media-upstream-release.json"
-          if [[ -n "$REQUESTED_TAG" ]]; then
-            [[ "$REQUESTED_TAG" =~ ^mesa-[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || {
-              echo "上游标签必须使用 mesa-* 格式：$REQUESTED_TAG" >&2
-              exit 1
-            }
-            gh api "repos/$UPSTREAM_REPOSITORY/releases/tags/$REQUESTED_TAG" \
-              > "$mesa_metadata"
-          else
-            gh api "repos/$UPSTREAM_REPOSITORY/releases?per_page=100" | jq -ce '
-              [
-                .[]
-                | select(.draft == false and .prerelease == false)
-                | select(.tag_name | test("^mesa-[A-Za-z0-9][A-Za-z0-9._+-]*$"))
-                | select(any(.assets[]?; .name | startswith("mesa-for-android-container_")))
-              ][0] // error("没有找到可分发的 mesa-* Release")
-            ' > "$mesa_metadata"
-          fi
-
-          jq -e '
-            .draft == false and
-            .prerelease == false and
-            (.tag_name | test("^mesa-[A-Za-z0-9][A-Za-z0-9._+-]*$"))
-          ' "$mesa_metadata" >/dev/null
+          [[ -z "$REQUESTED_TAG" || "$REQUESTED_TAG" =~ ^mesa-[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || {
+            echo "上游标签必须使用 mesa-* 格式：$REQUESTED_TAG" >&2
+            exit 1
+          }
+          gh api --paginate --slurp "repos/$UPSTREAM_REPOSITORY/releases?per_page=100" | jq -ce --arg requested "$REQUESTED_TAG" '
+            add | [.[] | select(.draft == false and .prerelease == false)
+              | select(.tag_name | test("^mesa-[A-Za-z0-9][A-Za-z0-9._+-]*$"))
+              | select(any(.assets[]?; .name | startswith("mesa-for-android-container_")))]
+            | sort_by(.published_at) | reverse
+            | if $requested == "" then .[0:4]
+              else (map(.tag_name) | index($requested)) as $index
+                | if $index == null then error("指定版本不在上游正式 Release 中")
+                  else .[$index:($index + 4)] end
+              end
+            | if length > 0 then . else error("没有找到可分发的 mesa-* Release") end
+          ' > "$RUNNER_TEMP/mesa-upstream-releases.json"
+          jq -c '.[0]' "$RUNNER_TEMP/mesa-upstream-releases.json" > "$mesa_metadata"
           mesa_tag="$(jq -er '.tag_name' "$mesa_metadata")"
+          jq -r '.[].tag_name' "$RUNNER_TEMP/mesa-upstream-releases.json" > "$RUNNER_TEMP/mesa-tags.txt"
+          echo "可选的上游正式 Release："
+          cat "$RUNNER_TEMP/mesa-tags.txt"
 
           gh api "repos/$MEDIA_REPOSITORY/releases/latest" > "$media_metadata"
           jq -e '
@@ -149,10 +153,17 @@ jobs:
           for pattern in "${patterns[@]}"; do
             download_arguments+=(--pattern "mesa-for-android-container_${pattern}")
           done
-          gh release download "$MESA_TAG" \
-            --repo "$UPSTREAM_REPOSITORY" \
-            --dir "$asset_dir" \
-            "${download_arguments[@]}"
+          version_index=0
+          while IFS= read -r version_tag; do
+            version_dir="$RUNNER_TEMP/mesa-version-$version_index"
+            mkdir -p "$version_dir"
+            jq -c ".[${version_index}]" "$RUNNER_TEMP/mesa-upstream-releases.json" > "$RUNNER_TEMP/mesa-version-$version_index.json"
+            gh release download "$version_tag" \
+              --repo "$UPSTREAM_REPOSITORY" \
+              --dir "$version_dir" \
+              "${download_arguments[@]}"
+            version_index=$((version_index + 1))
+          done < "$RUNNER_TEMP/mesa-tags.txt"
           gh release download "$MEDIA_TAG" \
             --repo "$MEDIA_REPOSITORY" \
             --dir "$asset_dir" \
@@ -163,12 +174,12 @@ jobs:
             "repos/$MEDIA_REPOSITORY/contents/LICENSE?ref=$MEDIA_TAG" \
             > "$asset_dir/droidspaces-media-decode-LICENSE"
 
-          mapfile -t mesa_assets < <(
-            find "$asset_dir" -maxdepth 1 -type f \
+          mapfile -t latest_mesa_assets < <(
+            find "$RUNNER_TEMP/mesa-version-0" -maxdepth 1 -type f \
               -name 'mesa-for-android-container_*' -print | sort
           )
-          [[ "${#mesa_assets[@]}" -eq 7 ]] || {
-            echo "应当下载 7 个 Mesa 资产，实际为 ${#mesa_assets[@]} 个。" >&2
+          [[ "${#latest_mesa_assets[@]}" -eq 7 ]] || {
+            echo "最新版应有 7 个 Mesa 资产，实际为 ${#latest_mesa_assets[@]} 个。" >&2
             exit 1
           }
           media_driver_asset_file="$asset_dir/$MEDIA_DRIVER_ASSET"
@@ -197,9 +208,20 @@ jobs:
             }
           }
 
-          for asset in "${mesa_assets[@]}"; do
-            verify_upstream_asset "$mesa_metadata" "$asset"
-          done
+          version_index=0
+          while IFS= read -r version_tag; do
+            version_dir="$RUNNER_TEMP/mesa-version-$version_index"
+            mapfile -t version_assets < <(find "$version_dir" -maxdepth 1 -type f -name 'mesa-for-android-container_*' -print | sort)
+            ((${#version_assets[@]} > 0 && ${#version_assets[@]} <= 7)) || {
+              echo "版本 $version_tag 的资产数量无效。" >&2; exit 1;
+            }
+            for asset in "${version_assets[@]}"; do
+              verify_upstream_asset "$RUNNER_TEMP/mesa-version-$version_index.json" "$asset"
+              [[ ! -e "$asset_dir/${asset##*/}" ]] || { echo "Mesa 附件名称重复：${asset##*/}" >&2; exit 1; }
+              cp -- "$asset" "$asset_dir/${asset##*/}"
+            done
+            version_index=$((version_index + 1))
+          done < "$RUNNER_TEMP/mesa-tags.txt"
           verify_upstream_asset "$media_metadata" "$media_driver_asset_file"
           verify_upstream_asset "$media_metadata" "$media_checksums_asset_file"
 
@@ -228,24 +250,44 @@ jobs:
                 "$asset_dir/SHA256SUMS")" == 1 ]]
 
           install -m 0755 scripts/tui/install-mesa.sh "$asset_dir/install-mesa.sh"
+          versions_manifest="$asset_dir/mesa-versions-manifest"
+          {
+            printf 'format=1\nrelease_tag=%s\n' "$DISTRIBUTION_TAG"
+            printf 'generated_at=%s\n\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            printf 'sha256\tsize\tasset\n'
+            version_index=0
+            while IFS= read -r version_tag; do
+              version_dir="$RUNNER_TEMP/mesa-version-$version_index"
+              while IFS= read -r -d '' asset; do
+                printf '%s\t%s\t%s\n' \
+                  "$(sha256sum "$asset" | awk '{print $1}')" \
+                  "$(stat -c '%s' "$asset")" "${asset##*/}"
+              done < <(find "$version_dir" -maxdepth 1 -type f -name 'mesa-for-android-container_*' -print0 | sort -z)
+              version_index=$((version_index + 1))
+            done < "$RUNNER_TEMP/mesa-tags.txt"
+          } > "$versions_manifest"
+
           manifest="$asset_dir/$MANIFEST_NAME"
           {
-            printf 'format=1\n'
-            printf 'release_tag=%s\n' "$DISTRIBUTION_TAG"
+            printf 'format=1\nrelease_tag=%s\n' "$DISTRIBUTION_TAG"
             printf 'source_repository=%s\n' "$UPSTREAM_URL"
             printf 'source_release=%s/tag/%s\n' "$UPSTREAM_RELEASES_URL" "$MESA_TAG"
             printf 'source_tag=%s\n' "$MESA_TAG"
             printf 'media_repository=%s\n' "$MEDIA_URL"
             printf 'media_release=%s/releases/tag/%s\n' "$MEDIA_URL" "$MEDIA_TAG"
             printf 'media_tag=%s\n' "$MEDIA_TAG"
-            printf 'generated_at=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-            printf '\nsha256\tsize\tasset\n'
-            find "$asset_dir" -maxdepth 1 -type f ! -name "$MANIFEST_NAME" \
-              -print0 | sort -z | while IFS= read -r -d '' asset; do
-                printf '%s\t%s\t%s\n' \
-                  "$(sha256sum "$asset" | awk '{print $1}')" \
-                  "$(stat -c '%s' "$asset")" "${asset##*/}"
-              done
+            printf 'generated_at=%s\n\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            printf 'sha256\tsize\tasset\n'
+            while IFS= read -r -d '' asset; do
+              name="${asset##*/}"
+              if [[ "$name" == mesa-for-android-container_* ]] && \
+                 ! jq -e --arg name "$name" 'any(.assets[]?; .name == $name)' "$mesa_metadata" >/dev/null; then
+                continue
+              fi
+              printf '%s\t%s\t%s\n' \
+                "$(sha256sum "$asset" | awk '{print $1}')" \
+                "$(stat -c '%s' "$asset")" "$name"
+            done < <(find "$asset_dir" -maxdepth 1 -type f ! -name "$MANIFEST_NAME" -print0 | sort -z)
           } > "$manifest"
 
           echo "asset_dir=$asset_dir" >> "$GITHUB_OUTPUT"
@@ -286,7 +328,7 @@ jobs:
 
           对应上游 Release：[$MESA_TAG]($UPSTREAM_RELEASES_URL/tag/$MESA_TAG)
 
-          本 Release 中的 Mesa 资产内容保持不变。安装脚本还会安装 Apache-2.0 媒体解码驱动 $MEDIA_TAG，其许可证随附件提供。
+          本 Release 保留所选上游正式 Release 及其之前最多三个版本的 Mesa 资产。媒体解码驱动独立保留最新版本 $MEDIA_TAG，并可单独安装；许可证随附件提供。
 
           安装脚本：
 

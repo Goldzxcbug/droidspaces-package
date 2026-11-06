@@ -291,7 +291,7 @@ parse_manifest() {
         case "$role" in tui|bootstrap|installer) ;; *) die "TUI 清单包含无效类型：$role" ;; esac
         safe_asset_name "$asset" || die "TUI 清单包含不安全的附件名：$asset"
         case "$asset:$role:$target" in
-            "droidspaces-tui.sh:tui:$TUI_TARGET"|"install-tui.sh:bootstrap:-") ;;
+            "droidspaces-tui.sh:tui:$TUI_TARGET"|"droidspaces-gpu.sh:tui:/usr/local/bin/droidspaces-gpu"|"install-tui.sh:bootstrap:-") ;;
             install-*.sh:installer:/usr/local/sbin/install-*)
                 [[ "$target" == "/usr/local/sbin/${asset%.sh}" ]] || \
                     die "安装脚本与目标路径不匹配：$asset"
@@ -314,9 +314,13 @@ parse_manifest() {
 
     [[ "$format" == 1 && "$tag" == "$RELEASE_TAG" && "$seen_header" == true ]] || \
         die 'TUI 清单格式或 Release tag 无效。'
-    ((${#ASSET_NAMES[@]} >= 3)) || die 'TUI 清单没有包含必要脚本。'
+    ((${#ASSET_NAMES[@]} >= 2)) || die 'TUI 清单没有包含必要脚本。'
     [[ "${seen_assets[droidspaces-tui.sh]:-}" == 1 && \
        "${seen_assets[install-tui.sh]:-}" == 1 ]] || die 'TUI 清单缺少核心脚本。'
+    if [[ -n "${seen_assets[droidspaces-gpu.sh]:-}" && \
+          "${seen_assets[droidspaces-gpu.sh]}" != 1 ]]; then
+        die 'TUI 清单中的 GPU 脚本记录无效。'
+    fi
 }
 
 reset_manifest_state() {

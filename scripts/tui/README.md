@@ -43,6 +43,19 @@ Anland Niri、Hyprland、Mango 和 Denial 的独立安装器支持 Ubuntu 26.04�
 卸载时移除 Anland 专用包并恢复发行版图形包，保留已有桌面配置。Next session 也采用 KDE 的下载、
 包安装和锁定流程，保留单包发布格式、私有 Xwayland 检查及用户服务启停。
 
+主菜单 `[1] Mesa + MediaCodec VA-API` 的二级菜单提供统一的 OpenGL 和 Vulkan 路径切换界面。
+OpenGL 可选 Freedreno KGSL、Zink、LLVMpipe 和 Softpipe；Vulkan 可选 Turnip 和 Lavapipe。
+Vulkan 还可清除 `/etc/environment` 中的 `VK_DRIVER_FILES` 和 `VK_ICD_FILENAMES`，
+由 Vulkan Loader 按默认规则发现驱动；其他位置的环境变量和过滤设置仍可能影响结果。
+Zink 使用单独选择的 Vulkan 驱动；每个选项只修改对应的配置，原生 Vulkan 程序也会使用所选 Vulkan 驱动。
+绿色显示当前 TUI 进程环境中指定的路径，浅黄色显示其他选项；环境变量未指定时并不代表没有驱动。
+脚本保存配置到 `/etc/environment`，并备份到 `/etc/environment.droidspaces-gpu.bak`；
+重启容器后生效。路径由独立脚本 `droidspaces-gpu.sh` 管理，也可运行
+`droidspaces-gpu` 单独打开菜单。驱动文件存在不保证硬件支持。
+Vulkan 清单会从常见系统和 XDG 目录查找；有多个候选时可选择，也可输入任意位置的 JSON 绝对路径。
+脚本通过 Python 3 或 jq 检查清单中的驱动库名称和 64 位架构，并将所选清单写入 `VK_DRIVER_FILES`。
+自定义清单和它引用的驱动库还需能被运行图形程序的用户读取和加载。
+
 图形组件选择 CNB 时采用 KDE 的校验方式，从同一 CNB Release 清单读取附件名称和 SHA-256，
 兼容缺少摘要的旧清单；Next session 使用同一 CNB Release 的 `SHA256SUMS`。
 GitHub 直连使用官方附件，代理模式通过 GitHub Release API 交叉核验附件摘要。
@@ -58,6 +71,12 @@ GitHub 直连使用官方附件，代理模式通过 GitHub Release API 交叉�
 身份运行脚本；该脚本会交互式选择并修改当前容器的系统软件源配置。
 
 安装器成功完成后会将精确的 Release 版本记录到 `/var/lib/droidspaces-tui/components`。
+Mesa 的原有 `[1] 更新/安装` 仍安装最新 Mesa 和最新媒体解码驱动；新增 `[4] 选择 Mesa 版本`
+只切换 Mesa，列出分发 Release 提供的最新及之前最多三个上游正式 Release。上游正式 Release
+可能带有 `devel` 标签，界面会原样显示，不将其称为 Mesa 稳定版。历史版本若没有当前发行版的软件包，
+不会出现在该发行版的列表中。`[5]`、`[6]` 分别单独安装最新版或移除媒体解码驱动；单独切换 Mesa
+时会保留已有媒体驱动。原有卸载仍恢复发行版 Mesa 并移除媒体驱动。
+分发工作流同时保留旧版最新清单和独立的多版本清单，先校验清单和软件包，再执行安装。
 卸载 Mesa、KWin、Mutter 或 Niri 补丁时会恢复发行版官方包，而不是直接删除系统图形栈；
 Hangover Wine 和 Wine 字体则会移除各自的软件包或受管目录。
 

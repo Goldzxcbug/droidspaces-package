@@ -11,6 +11,7 @@ readonly RELEASE_REPOSITORY="Goldzxcbug/droidspaces-package"
 readonly CNB_RELEASE_REPOSITORY="goldzxcbug/droidspaces-package"
 readonly DISTRIBUTION_TAG="mesa-for-android-container"
 readonly DISTRIBUTION_MANIFEST_NAME="mesa-distribution-manifest"
+readonly VERSIONS_MANIFEST_NAME="mesa-versions-manifest"
 readonly MEDIA_DRIVER_NAME="msm_drm_drv_video.so"
 readonly MEDIA_CHECKSUMS_NAME="SHA256SUMS"
 readonly SOURCE_PROBE_TIMEOUT_SECONDS=2
@@ -61,8 +62,13 @@ MEDIA_CHECKSUMS_FILE=""
 MEDIA_DRIVER_TEMP_FILE=""
 MEDIA_DRIVER_INSTALL_DIR=""
 MEDIA_DRIVER_INSTALL_PATH=""
+MEDIA_PRESERVED_FILE=""
+MEDIA_PRESERVED_DIR=""
+MEDIA_RESTORE_PENDING=false
 MESA_PACKAGE_NAMES=()
 UNINSTALL=false
+INSTALL_SCOPE="all"
+CHOOSE_VERSION=false
 
 detect_language() {
     local locale_name="${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}"
@@ -133,6 +139,9 @@ $(msg '用法' 'Usage'): $0
   -2, --2       $(msg '使用 gh-proxy.com 并跳过测速。' 'Use gh-proxy.com and skip latency checks.')
   -3, --3       $(msg '使用 CNB 国内镜像并跳过测速。' 'Use the CNB mirror and skip latency checks.')
   --uninstall   $(msg '卸载自定义驱动并恢复发行版 Mesa' 'Uninstall custom drivers and restore distribution Mesa')
+  --choose-version  $(msg '交互选择 Mesa 版本' 'Choose a Mesa version interactively')
+  --mesa-only   $(msg '只操作 Mesa 驱动' 'Operate on Mesa only')
+  --media-only  $(msg '只操作最新媒体解码驱动' 'Operate on the latest media decode driver only')
   -h, --help    $(msg '显示此帮助。' 'Show this help.')
 
 $(msg '未指定下载源时，将测试三个源并提示选择。' 'Without a source option, all three sources are probed before prompting.')
@@ -166,6 +175,13 @@ parse_arguments() {
             --uninstall)
                 UNINSTALL=true
                 ;;
+            --choose-version) CHOOSE_VERSION=true ;;
+            --mesa-only)
+                [[ "$INSTALL_SCOPE" != media ]] || die '不能同时选择两种单独安装模式。' 'Conflicting component modes.'
+                INSTALL_SCOPE=mesa ;;
+            --media-only)
+                [[ "$INSTALL_SCOPE" != mesa ]] || die '不能同时选择两种单独安装模式。' 'Conflicting component modes.'
+                INSTALL_SCOPE=media ;;
             -h|--help)
                 usage
                 exit 0
@@ -300,18 +316,54 @@ uninstall_mesa() {
         dnf) uninstall_mesa_dnf ;;
         pacman) uninstall_mesa_pacman ;;
     esac
-    rm -f -- "$MEDIA_DRIVER_INSTALL_PATH" "$COMPONENT_STATE_DIR/mesa.version"
+    rm -f -- "$COMPONENT_STATE_DIR/mesa.version"
     command -v ldconfig >/dev/null 2>&1 && ldconfig || true
-    log "自定义 Mesa/MediaCodec 驱动已卸载，发行版 Mesa 已恢复。" \
-        "Custom Mesa/MediaCodec drivers were uninstalled and distribution Mesa was restored."
+    log "自定义 Mesa 已卸载，发行版 Mesa 已恢复。" "Custom Mesa was uninstalled and distribution Mesa was restored."
+}
+
+uninstall_media_driver() {
+    rm -f -- "$MEDIA_DRIVER_INSTALL_PATH"
+    command -v ldconfig >/dev/null 2>&1 && ldconfig || true
+    log '媒体解码驱动已移除。' 'Media decode driver removed.'
+}
+
+preserve_media() {
+    [[ -e "$MEDIA_DRIVER_INSTALL_PATH" || -L "$MEDIA_DRIVER_INSTALL_PATH" ]] || return 0
+    [[ -f "$MEDIA_DRIVER_INSTALL_PATH" && ! -L "$MEDIA_DRIVER_INSTALL_PATH" ]] || \
+        die '媒体驱动路径不是普通文件，无法安全保留。' 'Media driver path is not a regular file and cannot be safely preserved.'
+    MEDIA_PRESERVED_DIR="$(mktemp -d -t mesa-preserve-media.XXXXXXXX)" || die '无法创建媒体驱动备份目录。' 'Could not create a media backup directory.'
+    MEDIA_PRESERVED_FILE="$MEDIA_PRESERVED_DIR/driver"
+    cp -p -- "$MEDIA_DRIVER_INSTALL_PATH" "$MEDIA_PRESERVED_FILE" || die '无法备份现有媒体驱动。' 'Could not back up the existing media driver.'
+    MEDIA_RESTORE_PENDING=true
+}
+
+restore_preserved_media() {
+    local staged
+    [[ "$MEDIA_RESTORE_PENDING" == true ]] || return 0
+    [[ -d "$MEDIA_DRIVER_INSTALL_DIR" ]] || \
+        install -d -m 0755 "$MEDIA_DRIVER_INSTALL_DIR" || return 1
+    staged="$(mktemp "${MEDIA_DRIVER_INSTALL_PATH}.restore.XXXXXXXX")" || return 1
+    if ! cp -p -- "$MEDIA_PRESERVED_FILE" "$staged" || ! mv -f -- "$staged" "$MEDIA_DRIVER_INSTALL_PATH"; then
+        rm -f -- "$staged"
+        return 1
+    fi
+    MEDIA_RESTORE_PENDING=false
 }
 
 cleanup() {
+    local restore_failed=false
+    if ! restore_preserved_media; then
+        restore_failed=true
+        printf '%s\n' "$(msg "媒体驱动恢复失败，备份保存在 $MEDIA_PRESERVED_FILE。" "Media driver restoration failed; backup retained at $MEDIA_PRESERVED_FILE.")" >&2
+    fi
     if [[ -n "$MEDIA_DRIVER_TEMP_FILE" && -e "$MEDIA_DRIVER_TEMP_FILE" ]]; then
         rm -f -- "$MEDIA_DRIVER_TEMP_FILE"
     fi
     if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
         rm -rf -- "$WORK_DIR"
+    fi
+    if [[ "$restore_failed" == false && -n "$MEDIA_PRESERVED_DIR" && -d "$MEDIA_PRESERVED_DIR" ]]; then
+        rm -rf -- "$MEDIA_PRESERVED_DIR"
     fi
 }
 trap cleanup EXIT
@@ -511,7 +563,7 @@ download_manifest_for_source() {
 # 构建矩阵并发很高，走 api.github.com 会因匿名配额（60 次/小时/IP）被限流。
 parse_distribution_manifest() {
     local manifest_file="$1"
-    local manifest_size rows checksum size asset archive_name canonical_base
+    local manifest_size rows checksum size asset archive_name="" canonical_base
     local archive_count=0 driver_count=0 checksums_count=0
     local archive_checksum="" archive_size=""
     local driver_checksum="" driver_size=""
@@ -547,16 +599,19 @@ parse_distribution_manifest() {
         esac
     done <<< "$rows"
 
-    (( archive_count == 1 )) || die \
-        "${TARGET} 在 Mesa 分发清单中没有唯一的 ARM64 包。" \
-        "The Mesa distribution manifest has no unique ARM64 archive for ${TARGET}."
-    (( driver_count == 1 && checksums_count == 1 )) || die \
-        "Mesa 分发清单缺少或重复媒体解码驱动资产。" \
-        "The Mesa distribution manifest has missing or duplicate media decode driver assets."
-    (( archive_size <= MAX_ARCHIVE_BYTES && driver_size <= MAX_MEDIA_DRIVER_BYTES && \
-       checksums_size <= MAX_CHECKSUMS_BYTES )) || die \
-        "Mesa 分发清单中的资产超过大小限制。" \
-        "An asset in the Mesa distribution manifest exceeds its size limit."
+    if [[ "$INSTALL_SCOPE" != media ]]; then
+        (( archive_count == 1 )) || die \
+            "${TARGET} 在 Mesa 分发清单中没有唯一的 ARM64 包。" \
+            "The Mesa distribution manifest has no unique ARM64 archive for ${TARGET}."
+        (( archive_size <= MAX_ARCHIVE_BYTES )) || die 'Mesa 包超过大小限制。' 'Mesa archive exceeds the size limit.'
+    fi
+    if [[ "$INSTALL_SCOPE" != mesa ]]; then
+        (( driver_count == 1 && checksums_count == 1 )) || die \
+            "Mesa 分发清单缺少或重复媒体解码驱动资产。" \
+            "The Mesa distribution manifest has missing or duplicate media decode driver assets."
+        (( driver_size <= MAX_MEDIA_DRIVER_BYTES && checksums_size <= MAX_CHECKSUMS_BYTES )) || \
+            die '媒体驱动资产超过大小限制。' 'Media driver assets exceed the size limit.'
+    fi
 
     ARCHIVE_NAME="$archive_name"
     RELEASE_TAG="$DISTRIBUTION_TAG"
@@ -600,7 +655,57 @@ resolve_release_asset() {
             "${source_name} 的 Mesa 分发清单与 GitHub 不一致。" \
             "The Mesa distribution manifest on ${source_name} differs from GitHub."
     fi
-    log "已选择 Mesa 包: ${ARCHIVE_NAME}" "Selected Mesa asset: ${ARCHIVE_NAME}"
+    if [[ "$INSTALL_SCOPE" != media ]]; then
+        log "已选择 Mesa 包: ${ARCHIVE_NAME}" "Selected Mesa asset: ${ARCHIVE_NAME}"
+    fi
+}
+
+choose_mesa_version() {
+    local catalog="$WORK_DIR/$VERSIONS_MANIFEST_NAME" authoritative url rows checksum size asset choice index catalog_row expected_sha expected_size actual_sha answer
+    local -a names=() digests=() sizes=()
+    url="$(versions_manifest_url_for_source "$DOWNLOAD_SOURCE")" || die '无法构造版本清单地址。' 'Could not build version catalog URL.'
+    download_file "$url" "$catalog" || die '无法下载 Mesa 版本清单；请先发布新版分发工作流。' 'Could not download Mesa version catalog; publish the updated distribution workflow first.'
+    if [[ "$DOWNLOAD_SOURCE" == 2 ]]; then
+        authoritative="$WORK_DIR/$VERSIONS_MANIFEST_NAME.github"
+        url="$(versions_manifest_url_for_source 1)" || die '无法构造 GitHub 版本清单地址。' 'Could not build the GitHub version catalog URL.'
+        download_file "$url" "$authoritative" && cmp -s -- "$catalog" "$authoritative" || \
+            die '代理版本清单与 GitHub 不一致。' 'The proxy version catalog differs from GitHub.'
+    fi
+    size="$(stat -c '%s' "$catalog")" || die '无法读取版本清单。' 'Cannot read version catalog.'
+    [[ "$size" =~ ^[0-9]+$ && "$size" -gt 0 && "$size" -le "$MAX_MANIFEST_BYTES" ]] || die '版本清单大小无效。' 'Invalid version catalog size.'
+    catalog_row="$(manifest_asset_rows "$MESA_MANIFEST_FILE" | awk -F '\t' -v name="$VERSIONS_MANIFEST_NAME" '$3 == name { print; count++ } END { if (count != 1) exit 1 }')" || \
+        die '分发清单缺少唯一的版本清单摘要。' 'Distribution manifest lacks a unique version catalog digest.'
+    IFS=$'\t' read -r expected_sha expected_size asset <<< "$catalog_row"
+    actual_sha="$(sha256sum "$catalog" | awk '{print $1}')" || die '无法计算版本清单摘要。' 'Could not hash version catalog.'
+    [[ "$size" == "$expected_size" && "$actual_sha" == "$expected_sha" ]] || \
+        die '版本清单与分发清单的摘要或大小不一致。' 'Version catalog digest or size does not match the distribution manifest.'
+    rows="$(manifest_asset_rows "$catalog")" || die '版本清单无效。' 'Invalid version catalog.'
+    while IFS=$'\t' read -r checksum size asset; do
+        [[ "$asset" =~ $ASSET_PATTERN ]] || continue
+        ((size <= MAX_ARCHIVE_BYTES)) || die 'Mesa 包超过大小限制。' 'Mesa archive exceeds the size limit.'
+        names+=("$asset"); digests+=("$checksum"); sizes+=("$size")
+    done <<< "$rows"
+    ((${#names[@]} > 0)) || die '当前系统没有可用版本或版本清单异常。' 'No available versions for this system, or invalid version catalog.'
+    printf '\n%s\n' "$(msg '选择 Mesa 版本（默认最新，输入 0 返回）：' 'Select a Mesa version (default latest, 0 to cancel):')"
+    for index in "${!names[@]}"; do
+        ARCHIVE_NAME="${names[$index]}"
+        printf '  [%s] %s%s\n' "$((index + 1))" "$(mesa_archive_version)" "$(if ((index == 0)); then msg '（最新）' ' (latest)'; fi)"
+    done
+    printf '%s: ' "$(msg '请选择' 'Select')"
+    IFS= read -r choice || exit 0
+    [[ -n "$choice" ]] || choice=1
+    [[ "$choice" != 0 ]] || exit 0
+    [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#names[@]})) || \
+        die '无效的版本选择。' 'Invalid version selection.'
+    index=$((choice - 1))
+    ARCHIVE_NAME="${names[$index]}"
+    EXPECTED_ARCHIVE_SHA256="${digests[$index]}"
+    EXPECTED_ARCHIVE_SIZE="${sizes[$index]}"
+    OFFICIAL_DOWNLOAD_URL="$GITHUB_RELEASE_URL/$RELEASE_REPOSITORY/releases/download/$DISTRIBUTION_TAG/$ARCHIVE_NAME"
+    log "已选择 Mesa 包: $ARCHIVE_NAME" "Selected Mesa asset: $ARCHIVE_NAME"
+    printf '%s [y/N]: ' "$(msg "确认安装 Mesa $(mesa_archive_version)？" "Install Mesa $(mesa_archive_version)?")"
+    IFS= read -r answer || exit 0
+    case "${answer,,}" in y|yes|1|是) ;; *) exit 0 ;; esac
 }
 
 manifest_asset_rows() {
@@ -652,19 +757,30 @@ download_url_for_source() {
     download_url_for_release_asset "$source" "$RELEASE_REPOSITORY" "$OFFICIAL_DOWNLOAD_URL"
 }
 
-distribution_manifest_url_for_source() {
-    case "$1" in
+release_asset_url_for_source() {
+    local source="$1"
+    local asset_name="$2"
+
+    case "$source" in
         1) printf '%s/%s/releases/download/%s/%s' \
             "$GITHUB_RELEASE_URL" "$RELEASE_REPOSITORY" \
-            "$DISTRIBUTION_TAG" "$DISTRIBUTION_MANIFEST_NAME" ;;
+            "$DISTRIBUTION_TAG" "$asset_name" ;;
         2) printf '%s/%s/releases/download/%s/%s' \
             "$GH_PROXY_RELEASE_URL" "$RELEASE_REPOSITORY" \
-            "$DISTRIBUTION_TAG" "$DISTRIBUTION_MANIFEST_NAME" ;;
+            "$DISTRIBUTION_TAG" "$asset_name" ;;
         3) printf '%s/%s/-/releases/download/%s/%s' \
             "$CNB_RELEASE_URL" "$CNB_RELEASE_REPOSITORY" \
-            "$DISTRIBUTION_TAG" "$DISTRIBUTION_MANIFEST_NAME" ;;
+            "$DISTRIBUTION_TAG" "$asset_name" ;;
         *) return 1 ;;
     esac
+}
+
+distribution_manifest_url_for_source() {
+    release_asset_url_for_source "$1" "$DISTRIBUTION_MANIFEST_NAME"
+}
+
+versions_manifest_url_for_source() {
+    release_asset_url_for_source "$1" "$VERSIONS_MANIFEST_NAME"
 }
 
 download_url_for_release_asset() {
@@ -1359,14 +1475,23 @@ install_media_decode_driver() {
 }
 
 install_mesa() {
-    log "正在下载并安装最新版 Mesa 和媒体解码驱动..." \
-        "Downloading and installing the latest Mesa and media decode drivers..."
+    log "正在准备 Mesa / 媒体解码驱动..." "Preparing Mesa / media decode drivers..."
     WORK_DIR="$(mktemp -d -t install-mesa.XXXXXXXX)" || die \
         "无法创建临时目录。" "Unable to create a temporary directory."
     chmod 0700 "$WORK_DIR" || die \
         "无法保护临时目录。" "Unable to secure the temporary directory."
     resolve_release_asset
-    resolve_media_decode_release
+    if [[ "$INSTALL_SCOPE" != mesa ]]; then
+        resolve_media_decode_release
+    fi
+    if [[ "$INSTALL_SCOPE" == media ]]; then
+        download_media_decode_driver
+        install_media_decode_driver
+        return 0
+    fi
+    if [[ "$CHOOSE_VERSION" == true ]]; then
+        choose_mesa_version
+    fi
     resolve_expected_archive_sha256
     DOWNLOAD_URL="$(download_url_for_source "$DOWNLOAD_SOURCE")" || die \
         "无法构造所选下载源的地址。" "Could not build the selected download-source URL."
@@ -1382,7 +1507,13 @@ install_mesa() {
             "Downloaded ${ARCHIVE_NAME} failed SHA-256 verification."
     fi
     validate_archive_paths "$ARCHIVE_FILE"
-    download_media_decode_driver
+    if [[ "$INSTALL_SCOPE" == all ]]; then
+        download_media_decode_driver
+    fi
+
+    # Mesa archives may replace the media driver at the same path. Preserve
+    # the existing independent driver across the package transaction.
+    [[ "$INSTALL_SCOPE" != mesa ]] || preserve_media
 
     case "$PACKAGE_MANAGER" in
         pacman)
@@ -1399,7 +1530,10 @@ install_mesa() {
             ;;
     esac
     configure_package_holds
-    install_media_decode_driver
+    restore_preserved_media || die '无法恢复现有媒体驱动。' 'Could not restore the existing media driver.'
+    if [[ "$INSTALL_SCOPE" == all ]]; then
+        install_media_decode_driver
+    fi
     record_component_version "$(mesa_archive_version)"
 }
 
@@ -1409,15 +1543,26 @@ main() {
     detect_target
     check_architecture
     require_root "$@"
+    if [[ "$CHOOSE_VERSION" == true && ( "$INSTALL_SCOPE" == media || "$UNINSTALL" == true ) ]]; then
+        die '版本选择只能用于安装 Mesa。' 'Version selection only applies when installing Mesa.'
+    fi
     if [[ "$UNINSTALL" == true ]]; then
+        if [[ "$INSTALL_SCOPE" == media ]]; then
+            uninstall_media_driver
+            return
+        fi
+        [[ "$INSTALL_SCOPE" != mesa ]] || preserve_media
         uninstall_mesa
+        if [[ "$INSTALL_SCOPE" == all ]]; then
+            uninstall_media_driver
+        fi
+        restore_preserved_media || die '无法恢复现有媒体驱动。' 'Could not restore the existing media driver.'
         return
     fi
     select_download_source
     require_commands
     install_mesa
-    log "Mesa 和媒体解码驱动安装完成，相关软件包已锁定。" \
-        "Mesa and media decode driver installation completed; related packages are now held."
+    log "所选驱动安装完成。" "Selected driver installation completed."
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

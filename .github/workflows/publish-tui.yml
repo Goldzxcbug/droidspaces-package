@@ -135,8 +135,9 @@ jobs:
             exit 1
           }
           [[ " ${scripts[*]} " == *' droidspaces-tui.sh '* && \
-             " ${scripts[*]} " == *' install-tui.sh '* ]] || {
-            echo "scripts/tui 缺少 droidspaces-tui.sh 或 install-tui.sh。" >&2
+             " ${scripts[*]} " == *' install-tui.sh '* && \
+             " ${scripts[*]} " == *' droidspaces-gpu.sh '* ]] || {
+            echo "scripts/tui 缺少 droidspaces-tui.sh、install-tui.sh 或 droidspaces-gpu.sh。" >&2
             exit 1
           }
 
@@ -146,7 +147,7 @@ jobs:
               exit 1
             }
             case "$script_name" in
-              droidspaces-tui.sh|install-tui.sh|install-*.sh) ;;
+              droidspaces-tui.sh|droidspaces-gpu.sh|install-tui.sh|install-*.sh) ;;
               *)
                 echo "未登记的脚本命名：$script_name" >&2
                 exit 1
@@ -168,6 +169,10 @@ jobs:
                 droidspaces-tui.sh)
                   role=tui
                   target=/usr/local/bin/droidspaces-tui
+                  ;;
+                droidspaces-gpu.sh)
+                  role=tui
+                  target=/usr/local/bin/droidspaces-gpu
                   ;;
                 install-tui.sh)
                   role=bootstrap
