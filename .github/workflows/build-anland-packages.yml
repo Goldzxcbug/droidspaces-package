@@ -4243,7 +4243,7 @@ jobs:
             find "$source_dir" -type f -name "$PKG_PATTERN" \
               ! -name '*debug*' ! -name '*dbgsym*' ! -name '*.src.*' \
               ! -name 'libmutter-*-dev_*' ! -name 'mutter-doc_*' \
-              ! -name 'mutter-tests_*' ! -name 'mutter-devkit-*' \
+              ! -name 'mutter-tests_*' ! -name 'mutter-tests-*' ! -name 'mutter-devkit-*' \
               ! -name 'mutter-docs-*' ! -name 'mutter-devel-*' ! -name 'xorg-x11-server-Xwayland-devel-*' \
               ! -name 'xwayland-dev_*' -exec cp -v {} "$package_dir/" \;
           }

@@ -540,13 +540,24 @@ require_commands() {
 download_file() {
     local url="$1"
     local destination="$2"
+    local quiet="${3:-false}"
 
     if command -v curl >/dev/null 2>&1; then
-        curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 300 \
-            --continue-at - "$url" -o "$destination"
+        if [[ "$quiet" == true ]]; then
+            curl -fsSL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 300 \
+                --continue-at - "$url" -o "$destination"
+        else
+            curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 300 \
+                --continue-at - "$url" -o "$destination"
+        fi
     else
-        wget --continue --tries=5 --timeout=20 --waitretry=3 --retry-connrefused \
-            -O "$destination" "$url"
+        if [[ "$quiet" == true ]]; then
+            wget -q --continue --tries=5 --timeout=20 --waitretry=3 --retry-connrefused \
+                -O "$destination" "$url"
+        else
+            wget --continue --tries=5 --timeout=20 --waitretry=3 --retry-connrefused \
+                -O "$destination" "$url"
+        fi
     fi
 }
 
@@ -556,7 +567,7 @@ download_manifest_for_source() {
     local manifest_url
 
     manifest_url="$(distribution_manifest_url_for_source "$source")" || return 1
-    download_file "$manifest_url" "$destination"
+    download_file "$manifest_url" "$destination" true
 }
 
 # 分发清单是 Release 中的普通资产，读取它不消耗 GitHub API 配额；
@@ -656,21 +667,27 @@ resolve_release_asset() {
             "The Mesa distribution manifest on ${source_name} differs from GitHub."
     fi
     if [[ "$INSTALL_SCOPE" != media ]]; then
-        log "已选择 Mesa 包: ${ARCHIVE_NAME}" "Selected Mesa asset: ${ARCHIVE_NAME}"
+        if [[ "$CHOOSE_VERSION" == true ]]; then
+            log "默认 Mesa 包: ${ARCHIVE_NAME}" "Default Mesa asset: ${ARCHIVE_NAME}"
+        else
+            log "已选择 Mesa 包: ${ARCHIVE_NAME}" "Selected Mesa asset: ${ARCHIVE_NAME}"
+        fi
     fi
 }
 
 choose_mesa_version() {
     local catalog="$WORK_DIR/$VERSIONS_MANIFEST_NAME" authoritative url rows checksum size asset choice index catalog_row expected_sha expected_size actual_sha answer
     local -a names=() digests=() sizes=()
+    log "正在获取 Mesa 版本列表..." "Fetching the Mesa version catalog..."
     url="$(versions_manifest_url_for_source "$DOWNLOAD_SOURCE")" || die '无法构造版本清单地址。' 'Could not build version catalog URL.'
-    download_file "$url" "$catalog" || die '无法下载 Mesa 版本清单；请先发布新版分发工作流。' 'Could not download Mesa version catalog; publish the updated distribution workflow first.'
+    download_file "$url" "$catalog" true || die '无法下载 Mesa 版本清单；请先发布新版分发工作流。' 'Could not download Mesa version catalog; publish the updated distribution workflow first.'
     if [[ "$DOWNLOAD_SOURCE" == 2 ]]; then
         authoritative="$WORK_DIR/$VERSIONS_MANIFEST_NAME.github"
         url="$(versions_manifest_url_for_source 1)" || die '无法构造 GitHub 版本清单地址。' 'Could not build the GitHub version catalog URL.'
-        download_file "$url" "$authoritative" && cmp -s -- "$catalog" "$authoritative" || \
+        download_file "$url" "$authoritative" true && cmp -s -- "$catalog" "$authoritative" || \
             die '代理版本清单与 GitHub 不一致。' 'The proxy version catalog differs from GitHub.'
     fi
+    log "正在校验 Mesa 版本列表..." "Verifying the Mesa version catalog..."
     size="$(stat -c '%s' "$catalog")" || die '无法读取版本清单。' 'Cannot read version catalog.'
     [[ "$size" =~ ^[0-9]+$ && "$size" -gt 0 && "$size" -le "$MAX_MANIFEST_BYTES" ]] || die '版本清单大小无效。' 'Invalid version catalog size.'
     catalog_row="$(manifest_asset_rows "$MESA_MANIFEST_FILE" | awk -F '\t' -v name="$VERSIONS_MANIFEST_NAME" '$3 == name { print; count++ } END { if (count != 1) exit 1 }')" || \

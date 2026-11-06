@@ -48,6 +48,7 @@ usage() {
   --source auto|github|proxy|cnb  选择附件下载源（默认：auto）
   --only tui|scripts|all         只更新 TUI、受管脚本或全部（默认：all）
   --check                        只检查，不写入系统
+                                 退出码：0=已是最新，2=有更新，1=检查失败
   -y, --yes                      不询问，直接安装
   -h, --help                     显示帮助
 
@@ -317,10 +318,8 @@ parse_manifest() {
     ((${#ASSET_NAMES[@]} >= 2)) || die 'TUI 清单没有包含必要脚本。'
     [[ "${seen_assets[droidspaces-tui.sh]:-}" == 1 && \
        "${seen_assets[install-tui.sh]:-}" == 1 ]] || die 'TUI 清单缺少核心脚本。'
-    if [[ -n "${seen_assets[droidspaces-gpu.sh]:-}" && \
-          "${seen_assets[droidspaces-gpu.sh]}" != 1 ]]; then
-        die 'TUI 清单中的 GPU 脚本记录无效。'
-    fi
+    # GPU 脚本属于可选项：旧版清单没有它也能正常工作。清单一旦包含它，
+    # 上面的资产名/角色/目标映射与重复检查已经保证记录唯一且合法。
 }
 
 reset_manifest_state() {
@@ -542,7 +541,8 @@ main() {
             printf '  %s -> %s\n' "${ASSET_NAMES[$index]}" "${ASSET_TARGETS[$index]}"
         done
         aliases_need_update && printf '  %s\n' '命令别名 dstui / ds-tui'
-        exit 0
+        # 2 表示“检查成功且存在可用更新”，供 TUI 区分已是最新与检查失败。
+        exit 2
     fi
     confirm_install
 

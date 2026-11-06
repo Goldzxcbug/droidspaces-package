@@ -850,59 +850,145 @@ validate_release_asset_checksum() {
     fi
 }
 
+is_test_package() {
+    case "$1" in
+        mutter-tests|mutter-*-tests|mutter-test) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 validate_package_architecture() {
     local -a files=()
-    local file package_arch package_name mutter_count=0 xwayland_count=0 package_info
+    local file package_arch package_name package_info require_arch
+    local mutter_count=0 xwayland_count=0
 
     case "$PACKAGE_TYPE" in
         deb)
             mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.deb' -print | sort)
             for file in "${files[@]}"; do
-                package_arch="$(dpkg-deb -f "$file" Architecture)" || return 1
-                package_name="$(dpkg-deb -f "$file" Package)" || return 1
-                case "$package_arch" in arm64|all) ;; *) return 1 ;; esac
+                package_arch="$(dpkg-deb -f "$file" Architecture)" || {
+                    log "无法读取 deb 架构：$(basename -- "$file")" \
+                        "Could not read the deb architecture: $(basename -- "$file")"
+                    return 1
+                }
+                package_name="$(dpkg-deb -f "$file" Package)" || {
+                    log "无法读取 deb 包名：$(basename -- "$file")" \
+                        "Could not read the deb package name: $(basename -- "$file")"
+                    return 1
+                }
+                require_arch=""
                 case "$package_name" in
-                    mutter) [[ "$package_arch" == arm64 ]] || return 1; ((mutter_count += 1)) ;;
+                    mutter) ((mutter_count += 1)); require_arch=arm64 ;;
+                    xwayland) ((xwayland_count += 1)); require_arch=arm64 ;;
+                    libmutter-*|gir1.2-mutter-*|mutter-*-tests) require_arch=arm64 ;;
                     mutter-common|mutter-common-bin|mutter-dev-bin) ;;
-                    libmutter-*|gir1.2-mutter-*|mutter-*-tests) [[ "$package_arch" == arm64 ]] || return 1 ;;
-                    xwayland) [[ "$package_arch" == arm64 ]] || return 1; ((xwayland_count += 1)) ;;
-                    *) return 1 ;;
+                    *)
+                        log "归档包含未预期的 deb 包：${package_name}（${package_arch}）" \
+                            "Archive contains an unexpected deb package: ${package_name} (${package_arch})"
+                        return 1
+                        ;;
                 esac
+                if [[ -n "$require_arch" && "$package_arch" != "$require_arch" ]]; then
+                    log "${package_name} 的架构应为 ${require_arch}，实际为 ${package_arch}。" \
+                        "${package_name} should be ${require_arch} but is ${package_arch}."
+                    return 1
+                fi
+                if [[ -z "$require_arch" && "$package_arch" != arm64 && "$package_arch" != all ]]; then
+                    log "${package_name} 的架构应为 arm64 或 all，实际为 ${package_arch}。" \
+                        "${package_name} should be arm64 or all but is ${package_arch}."
+                    return 1
+                fi
             done
-            ((mutter_count == 1 && xwayland_count == 1))
+            if ((mutter_count != 1 || xwayland_count != 1)); then
+                log "deb 归档应恰好包含一个 mutter 和一个 xwayland，实际 mutter=${mutter_count} xwayland=${xwayland_count}。" \
+                    "The deb archive should contain exactly one mutter and one xwayland, found mutter=${mutter_count} xwayland=${xwayland_count}."
+                return 1
+            fi
             ;;
         rpm)
             mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.rpm' -print | sort)
             for file in "${files[@]}"; do
-                package_arch="$(rpm -qp --queryformat '%{ARCH}' "$file")" || return 1
-                package_name="$(rpm -qp --queryformat '%{NAME}' "$file")" || return 1
-                case "$package_arch" in aarch64|noarch) ;; *) return 1 ;; esac
+                package_arch="$(rpm -qp --queryformat '%{ARCH}' "$file")" || {
+                    log "无法读取 rpm 架构：$(basename -- "$file")" \
+                        "Could not read the rpm architecture: $(basename -- "$file")"
+                    return 1
+                }
+                package_name="$(rpm -qp --queryformat '%{NAME}' "$file")" || {
+                    log "无法读取 rpm 包名：$(basename -- "$file")" \
+                        "Could not read the rpm package name: $(basename -- "$file")"
+                    return 1
+                }
+                require_arch=""
                 case "$package_name" in
-                    mutter) [[ "$package_arch" == aarch64 ]] || return 1; ((mutter_count += 1)) ;;
+                    mutter) ((mutter_count += 1)); require_arch=aarch64 ;;
+                    xorg-x11-server-Xwayland) ((xwayland_count += 1)); require_arch=aarch64 ;;
                     mutter-common|mutter-common-x11) ;;
-                    xorg-x11-server-Xwayland) [[ "$package_arch" == aarch64 ]] || return 1; ((xwayland_count += 1)) ;;
-                    *) return 1 ;;
+                    mutter-tests|mutter-*-tests) ;;
+                    *)
+                        log "归档包含未预期的 rpm 包：${package_name}（${package_arch}）" \
+                            "Archive contains an unexpected rpm package: ${package_name} (${package_arch})"
+                        return 1
+                        ;;
                 esac
+                if [[ -n "$require_arch" && "$package_arch" != "$require_arch" ]]; then
+                    log "${package_name} 的架构应为 ${require_arch}，实际为 ${package_arch}。" \
+                        "${package_name} should be ${require_arch} but is ${package_arch}."
+                    return 1
+                fi
+                if [[ -z "$require_arch" && "$package_arch" != aarch64 && "$package_arch" != noarch ]]; then
+                    log "${package_name} 的架构应为 aarch64 或 noarch，实际为 ${package_arch}。" \
+                        "${package_name} should be aarch64 or noarch but is ${package_arch}."
+                    return 1
+                fi
             done
-            ((mutter_count == 1 && xwayland_count == 1))
+            if ((mutter_count != 1 || xwayland_count != 1)); then
+                log "rpm 归档应恰好包含一个 mutter 和一个 xorg-x11-server-Xwayland，实际 mutter=${mutter_count} xwayland=${xwayland_count}。" \
+                    "The rpm archive should contain exactly one mutter and one xorg-x11-server-Xwayland, found mutter=${mutter_count} xwayland=${xwayland_count}."
+                return 1
+            fi
             ;;
         pkg.tar.*)
             mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.pkg.tar.*' -print | sort)
             for file in "${files[@]}"; do
-                package_info="$(LC_ALL=C pacman -Qip "$file")" || return 1
+                package_info="$(LC_ALL=C pacman -Qip "$file")" || {
+                    log "无法读取 Arch 包信息：$(basename -- "$file")" \
+                        "Could not read the Arch package metadata: $(basename -- "$file")"
+                    return 1
+                }
                 package_name="$(awk -F: '/^[[:space:]]*Name[[:space:]]*:/ { sub(/^[[:space:]]*/, "", $2); print $2; exit }' <<< "$package_info")"
                 package_arch="$(awk -F: '/^[[:space:]]*Architecture[[:space:]]*:/ { sub(/^[[:space:]]*/, "", $2); print $2; exit }' <<< "$package_info")"
-                [[ "$package_name" =~ ^[A-Za-z0-9@.+_-]+$ ]] || return 1
-                case "$package_arch" in aarch64|any) ;; *) return 1 ;; esac
+                if [[ ! "$package_name" =~ ^[A-Za-z0-9@.+_-]+$ ]]; then
+                    log "Arch 包名无效：${package_name}" "Invalid Arch package name: ${package_name}"
+                    return 1
+                fi
+                case "$package_arch" in
+                    aarch64|any) ;;
+                    *)
+                        log "${package_name} 的架构应为 aarch64 或 any，实际为 ${package_arch}。" \
+                            "${package_name} should be aarch64 or any but is ${package_arch}."
+                        return 1
+                        ;;
+                esac
                 case "$package_name" in
                     mutter) ((mutter_count += 1)) ;;
                     xorg-xwayland) ((xwayland_count += 1)) ;;
-                    *) return 1 ;;
+                    *)
+                        log "归档包含未预期的 Arch 包：${package_name}" \
+                            "Archive contains an unexpected Arch package: ${package_name}"
+                        return 1
+                        ;;
                 esac
             done
-            (( ${#files[@]} == 2 && mutter_count == 1 && xwayland_count == 1 ))
+            if (( ${#files[@]} != 2 || mutter_count != 1 || xwayland_count != 1 )); then
+                log "Arch 归档应恰好包含一个 mutter 和一个 xorg-xwayland，实际总数=${#files[@]} mutter=${mutter_count} xwayland=${xwayland_count}。" \
+                    "The Arch archive should contain exactly one mutter and one xorg-xwayland, found total=${#files[@]} mutter=${mutter_count} xwayland=${xwayland_count}."
+                return 1
+            fi
             ;;
-        *) return 1 ;;
+        *)
+            log "无法识别软件包类型：${PACKAGE_TYPE}" "Unknown package type: ${PACKAGE_TYPE}"
+            return 1
+            ;;
     esac
 }
 
@@ -1035,6 +1121,16 @@ install_deb_packages() {
     command -v apt-get >/dev/null 2>&1 || die "未找到 apt-get。" "apt-get was not found."
     command -v dpkg-deb >/dev/null 2>&1 || die "未找到 dpkg-deb。" "dpkg-deb was not found."
     mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.deb' -print | sort)
+    local -a selected=()
+    for file in "${files[@]}"; do
+        package="$(dpkg-deb -f "$file" Package 2>/dev/null || true)"
+        if is_test_package "$package"; then
+            log "跳过测试软件包：${package}" "Skipping test package: ${package}"
+            continue
+        fi
+        selected+=("$file")
+    done
+    files=("${selected[@]}")
     ((${#files[@]} > 0)) || die "没有可安装的 deb 包。" "No installable deb packages were found."
 
     log "正在安装 ${#files[@]} 个 deb 包并自动处理依赖..." \
@@ -1318,6 +1414,16 @@ install_rpm_packages() {
     command -v dnf >/dev/null 2>&1 || die "未找到 dnf。" "dnf was not found."
     command -v rpm >/dev/null 2>&1 || die "未找到 rpm。" "rpm was not found."
     mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.rpm' -print | sort)
+    local -a selected=()
+    for file in "${files[@]}"; do
+        package_name="$(rpm -qp --queryformat '%{NAME}' "$file" 2>/dev/null || true)"
+        if is_test_package "$package_name"; then
+            log "跳过测试软件包：${package_name}" "Skipping test package: ${package_name}"
+            continue
+        fi
+        selected+=("$file")
+    done
+    files=("${selected[@]}")
     ((${#files[@]} > 0)) || die "没有可安装的 rpm 包。" "No installable rpm packages were found."
 
     for file in "${files[@]}"; do

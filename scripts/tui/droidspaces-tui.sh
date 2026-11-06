@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-readonly TUI_VERSION="1.5"
+readonly TUI_VERSION="1.6"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 readonly DESKTOP_CONFIG="${DROIDSPACES_DESKTOP_CONFIG:-/etc/droidspaces-desktop.conf}"
@@ -1481,7 +1481,7 @@ select_download_source() {
     while :; do
         clear_screen
         draw_header
-        printf '\n%b%s%b\n\n' "$COLOR_BOLD" "$(msg '选择下载源' 'Select download source')" "$COLOR_RESET"
+        printf '\n%b%s%b\n\n' "$COLOR_BOLD" "$(msg '安装器下载源' 'Installer download source')" "$COLOR_RESET"
         printf '  %b[1]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" \
             "$(msg '自动测速并由安装器提示选择' 'Probe sources and let the installer prompt')"
         printf '  %b[2]%b GitHub\n' "$COLOR_CYAN" "$COLOR_RESET"
@@ -1503,6 +1503,28 @@ select_download_source() {
             COMPONENT_REFRESH_REQUIRED=true
         fi
         return
+    done
+}
+
+source_settings_menu() {
+    local choice
+    while :; do
+        clear_screen
+        draw_header
+        printf '\n%b%s%b\n\n' "$COLOR_BOLD" "$(msg '软件源设置' 'Source settings')" "$COLOR_RESET"
+        printf '  %b[1]%b %s - %s\n' "$COLOR_CYAN" "$COLOR_RESET" \
+            "$(msg '安装器下载源' 'Installer download source')" "$(source_label)"
+        printf '  %b[2]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" \
+            "$(msg '系统软件源（LinuxMirrors）' 'System software mirrors (LinuxMirrors)')"
+        printf '  %b[0]%b %s\n\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '返回' 'Back')"
+        printf '%s: ' "$(msg '请选择' 'Select')"
+        IFS= read -r choice || return
+        case "$choice" in
+            1) select_download_source ;;
+            2) switch_system_mirrors ;;
+            0|q|Q) return ;;
+            *) continue ;;
+        esac
     done
 }
 
@@ -1978,8 +2000,37 @@ prepare_updater() {
     return 0
 }
 
+run_updater_install() {
+    local updater="$1" scope="$2" status
+    local -a source_argument=(--source "$DOWNLOAD_SOURCE")
+
+    printf '\n'
+    if "$updater" "${source_argument[@]}" --only "$scope" --yes; then
+        status=0
+    else
+        status=$?
+    fi
+    if ((status != 0)); then
+        printf '\n%b%s%b\n' "$COLOR_RED" \
+            "$(msg "更新失败，退出码：$status。" "Update failed with exit code $status.")" "$COLOR_RESET"
+        return "$status"
+    fi
+
+    if [[ "$scope" == tui || "$scope" == all ]]; then
+        if [[ -x "$INSTALLED_TUI_PATH" ]]; then
+            printf '\n%s\n' "$(msg 'TUI 已更新，正在重新启动。' 'The TUI was updated and will now restart.')"
+            # exec does not run the EXIT trap, so reclaim the component version
+            # worker directory explicitly before replacing this process.
+            stop_component_version_workers
+            cleanup_update_files
+            exec "$INSTALLED_TUI_PATH" --source "$DOWNLOAD_SOURCE"
+        fi
+    fi
+    return 0
+}
+
 run_update_check() {
-    local updater
+    local updater status output
     local -a source_argument=(--source "$DOWNLOAD_SOURCE")
 
     clear_screen
@@ -1994,17 +2045,49 @@ run_update_check() {
     fi
     updater="$UPDATE_UPDATER_PATH"
     source_argument=(--source "$DOWNLOAD_SOURCE")
-    if ! "$updater" "${source_argument[@]}" --check --only all; then
-        printf '\n%b%s%b\n' "$COLOR_RED" \
-            "$(msg '检查更新失败。' 'The update check failed.')" "$COLOR_RESET"
+    printf '%s\n\n' "$(msg '正在读取 Release 清单...' 'Reading the Release manifest...')"
+    if output="$("$updater" "${source_argument[@]}" --check --only all 2>&1)"; then
+        status=0
+    else
+        status=$?
     fi
+    printf '%s\n' "$output"
+
+    # 兼容旧版一次性安装器：它们发现更新时仍返回 0，只输出更新列表。
+    if ((status == 0)) && [[ "$output" == *"发现 "*"项需要安装或更新"* ]]; then
+        status=2
+    fi
+
+    case "$status" in
+        0)
+            printf '\n%b%s%b\n' "$COLOR_GREEN" \
+                "$(msg '当前已是最新版本。' 'Everything is up to date.')" "$COLOR_RESET"
+            ;;
+        2)
+            printf '\n%b%s%b\n' "$COLOR_YELLOW" \
+                "$(msg '发现可用更新。' 'Updates are available.')" "$COLOR_RESET"
+            if confirm_run "$(msg '安装全部更新' 'install all updates')"; then
+                if run_updater_install "$updater" all; then
+                    printf '\n%b%s%b\n' "$COLOR_GREEN" \
+                        "$(msg '更新完成。' 'Update completed.')" "$COLOR_RESET"
+                fi
+                cleanup_update_files
+                pause_menu
+                return
+            fi
+            ;;
+        *)
+            printf '\n%b%s%b\n' "$COLOR_RED" \
+                "$(msg "检查更新失败，退出码：$status。" \
+                    "The update check failed with exit code $status.")" "$COLOR_RESET"
+            ;;
+    esac
     cleanup_update_files
     pause_menu
 }
 
 run_update() {
-    local scope="$1" label="$2" updater status
-    local -a source_argument=(--source "$DOWNLOAD_SOURCE")
+    local scope="$1" label="$2"
 
     clear_screen
     draw_header
@@ -2017,31 +2100,10 @@ run_update() {
         pause_menu
         return
     fi
-    updater="$UPDATE_UPDATER_PATH"
-    source_argument=(--source "$DOWNLOAD_SOURCE")
-    printf '\n'
-    if "$updater" "${source_argument[@]}" --only "$scope" --yes; then
-        status=0
-    else
-        status=$?
-    fi
-    if ((status != 0)); then
+    if ! run_updater_install "$UPDATE_UPDATER_PATH" "$scope"; then
         cleanup_update_files
-        printf '\n%b%s%b\n' "$COLOR_RED" \
-            "$(msg "更新失败，退出码：$status。" "Update failed with exit code $status.")" "$COLOR_RESET"
         pause_menu
         return
-    fi
-
-    if [[ "$scope" == tui || "$scope" == all ]]; then
-        if [[ -x "$INSTALLED_TUI_PATH" ]]; then
-            printf '\n%s\n' "$(msg 'TUI 已更新，正在重新启动。' 'The TUI was updated and will now restart.')"
-            # exec does not run the EXIT trap, so reclaim the component version
-            # worker directory explicitly before replacing this process.
-            stop_component_version_workers
-            cleanup_update_files
-            exec "$INSTALLED_TUI_PATH" --source "$DOWNLOAD_SOURCE"
-        fi
     fi
     cleanup_update_files
     printf '\n%b%s%b\n' "$COLOR_GREEN" "$(msg '更新完成。' 'Update completed.')" "$COLOR_RESET"
@@ -2053,15 +2115,15 @@ manage_updates() {
     while :; do
         clear_screen
         draw_header
-        printf '\n%b%s%b\n\n' "$COLOR_BOLD" "$(msg '更新管理' 'Update management')" "$COLOR_RESET"
+        printf '\n%b%s%b\n\n' "$COLOR_BOLD" "$(msg '检查与安装更新' 'Check and install updates')" "$COLOR_RESET"
+        printf '  %s: %s\n' "$(msg '当前 TUI 版本' 'Current TUI version')" "$TUI_VERSION"
+        printf '  %s: %s\n\n' "$(msg '下载源' 'Source')" "$(source_label)"
         printf '  %b[1]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" \
-            "$(msg '检查更新' 'Check for updates')"
+            "$(msg '检查更新（发现后可安装）' 'Check for updates (install after check)')"
         printf '  %b[2]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" \
-            "$(msg '更新 TUI' 'Update the TUI')"
+            "$(msg '仅更新 TUI' 'Update the TUI only')"
         printf '  %b[3]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" \
-            "$(msg '更新受管安装脚本' 'Update managed installer scripts')"
-        printf '  %b[4]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" \
-            "$(msg '更新全部' 'Update everything')"
+            "$(msg '仅更新受管安装脚本' 'Update managed installer scripts only')"
         printf '  %b[0]%b %s\n\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '返回' 'Back')"
         printf '%s: ' "$(msg '请选择' 'Select')"
         IFS= read -r choice || return
@@ -2069,7 +2131,6 @@ manage_updates() {
             1) run_update_check ;;
             2) run_update tui "$(msg '更新 TUI' 'Update the TUI')" ;;
             3) run_update scripts "$(msg '更新受管安装脚本' 'Update managed installer scripts')" ;;
-            4) run_update all "$(msg '更新全部' 'Update everything')" ;;
             0|q|Q) return ;;
         esac
     done
@@ -2114,12 +2175,10 @@ main_menu() {
                     "$(desktop_selection_status_display)"
             fi
             printf '\n'
-            printf '  %b[S]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '切换下载源' 'Change download source')"
+            printf '  %b[S]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '软件源设置' 'Source settings')"
             printf '  %b[C]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '清理下载缓存' 'Clean download cache')"
             printf '  %b[R]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" \
                 "$(msg '回收存储空间（稀疏镜像）' 'Reclaim storage (sparse image)')"
-            printf '  %b[M]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" \
-                "$(msg '切换系统软件源' 'Switch system software mirrors')"
             printf '  %b[U]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '检查与安装更新' 'Check for and install updates')"
             printf '  %b[A]%b %s\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '关于与支持范围' 'About and support')"
             printf '  %b[Q]%b %s\n\n' "$COLOR_CYAN" "$COLOR_RESET" "$(msg '退出' 'Quit')"
@@ -2135,7 +2194,7 @@ main_menu() {
         choice="$MENU_CHOICE"
         [[ -n "$choice" ]] || continue
         case "${choice,,}" in
-            0|1|2|3|4|q|s|c|r|m|u|a) restore_dynamic_menu_echo ;;
+            0|1|2|3|4|q|s|c|r|u|a) restore_dynamic_menu_echo ;;
             *) continue ;;
         esac
         case "${choice,,}" in
@@ -2149,10 +2208,9 @@ main_menu() {
                     desktop_component_selection_menu
                 fi
                 ;;
-            s) select_download_source ;;
+            s) source_settings_menu ;;
             c) manage_cache ;;
             r) reclaim_sparse_storage ;;
-            m) switch_system_mirrors ;;
             u) manage_updates ;;
             a) show_about ;;
             q|0) return ;;
