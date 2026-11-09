@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       upstream_tag:
-        description: 可选的上游 mesa-* 正式 Release tag；留空自动选择最新正式 Release
+        description: 可选的上游 mesa-* 正式 Release tag；留空自动选择最新正式 Release；同一版本号只取最新构建
         required: false
         type: string
         default: ''
@@ -76,15 +76,34 @@ jobs:
             exit 1
           }
           gh api --paginate --slurp "repos/$UPSTREAM_REPOSITORY/releases?per_page=100" | jq -ce --arg requested "$REQUESTED_TAG" '
-            add | [.[] | select(.draft == false and .prerelease == false)
-              | select(.tag_name | test("^mesa-[A-Za-z0-9][A-Za-z0-9._+-]*$"))
-              | select(any(.assets[]?; .name | startswith("mesa-for-android-container_")))]
+            def version_number:
+              (.tag_name
+               | capture("^mesa-(?<version>[0-9]+(?:\\.[0-9]+){1,2})(?:$|[-+])")? | .version)
+              // .tag_name;
+
+            add
+            | [.[]
+               | select(.draft == false and .prerelease == false)
+               | select(.tag_name | test("^mesa-[A-Za-z0-9][A-Za-z0-9._+-]*$"))
+               | select(any(.assets[]?; .name | startswith("mesa-for-android-container_")))]
             | sort_by(.published_at) | reverse
-            | if $requested == "" then .[0:4]
-              else (map(.tag_name) | index($requested)) as $index
-                | if $index == null then error("指定版本不在上游正式 Release 中")
-                  else .[$index:($index + 4)] end
-              end
+            | if length == 0 then error("没有找到可分发的 mesa-* Release") else . end
+            | . as $all
+            | (if $requested == "" then $all[0]
+               else (($all | map(.tag_name) | index($requested)) as $index
+                 | if $index == null then error("指定版本不在上游正式 Release 中")
+                   else $all[$index] end)
+               end | version_number) as $anchor_version
+            | reduce $all[] as $release
+                ({seen: {}, releases: []};
+                 ($release | version_number) as $version
+                 | if .seen[$version] then .
+                   else .seen[$version] = true
+                     | .releases += [$release]
+                   end)
+            | .releases
+            | (map(version_number) | index($anchor_version)) as $index
+            | .[$index:($index + 3)]
             | if length > 0 then . else error("没有找到可分发的 mesa-* Release") end
           ' > "$RUNNER_TEMP/mesa-upstream-releases.json"
           jq -c '.[0]' "$RUNNER_TEMP/mesa-upstream-releases.json" > "$mesa_metadata"
@@ -328,7 +347,7 @@ jobs:
 
           对应上游 Release：[$MESA_TAG]($UPSTREAM_RELEASES_URL/tag/$MESA_TAG)
 
-          本 Release 保留所选上游正式 Release 及其之前最多三个版本的 Mesa 资产。媒体解码驱动独立保留最新版本 $MEDIA_TAG，并可单独安装；许可证随附件提供。
+          本 Release 对上游正式 Release 按版本号去重，每个版本号只保留最新一次构建，并保留所选版本及其之前最多两个不同版本号的 Mesa 资产。媒体解码驱动独立保留最新版本 $MEDIA_TAG，并可单独安装；许可证随附件提供。
 
           安装脚本：
 
