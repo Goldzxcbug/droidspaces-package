@@ -43,7 +43,7 @@ Anland Niri、Hyprland、Mango 和 Denial 的独立安装器支持 Ubuntu 26.04�
 卸载时移除 Anland 专用包并恢复发行版图形包，保留已有桌面配置。Next session 也采用 KDE 的下载、
 包安装和锁定流程，保留单包发布格式、私有 Xwayland 检查及用户服务启停。
 
-主菜单 `[1] Mesa + MediaCodec VA-API` 的二级菜单提供统一的 OpenGL 和 Vulkan 路径切换界面。
+主菜单 `[1] Mesa + VA-API` 的二级菜单提供统一的 OpenGL 和 Vulkan 路径切换界面。
 OpenGL 可选 Freedreno KGSL、Zink、LLVMpipe 和 Softpipe；Vulkan 可选 Turnip 和 Lavapipe。
 Vulkan 还可清除 `/etc/environment` 中的 `VK_DRIVER_FILES` 和 `VK_ICD_FILENAMES`，
 由 Vulkan Loader 按默认规则发现驱动；其他位置的环境变量和过滤设置仍可能影响结果。
@@ -77,20 +77,53 @@ GitHub 直连使用官方附件，代理模式通过 GitHub Release API 交叉�
 兼容识别。
 
 安装器成功完成后会将精确的 Release 版本记录到 `/var/lib/droidspaces-tui/components`。
-Mesa 的原有 `[1] 更新/安装` 仍安装最新 Mesa 和最新媒体解码驱动；新增 `[4] 选择 Mesa 版本`
+Mesa 的 `[1] 更新/安装 Mesa（包含视频驱动）` 安装最新 Mesa 和最新视频编解码驱动；`[4] 选择 Mesa 版本`
 只切换 Mesa，列出分发 Release 提供的最新及之前最多三个上游正式 Release。上游正式 Release
 可能带有 `devel` 标签，界面会原样显示，不将其称为 Mesa 稳定版。历史版本若没有当前发行版的软件包，
-不会出现在该发行版的列表中。`[5]`、`[6]` 分别单独安装最新版或移除媒体解码驱动；单独切换 Mesa
-时会保留已有媒体驱动。原有卸载仍恢复发行版 Mesa 并移除媒体驱动。
+不会出现在该发行版的列表中。`[5] 视频编解码` 子菜单提供独立的更新/安装、卸载和实时监控。
+前两项都限定为 `--media-only`，只替换或移除视频驱动，不更换 Mesa 软件包；单独切换 Mesa
+时也保留已有视频驱动。Mesa 整体卸载仍恢复发行版 Mesa 并移除视频驱动。
+视频版本独立记录在 `/var/lib/droidspaces-tui/components/video.version`，并保存已安装文件的
+SHA-256，避免外部替换驱动后仍显示旧版本。手工安装或缺少有效记录时显示版本未知和文件短摘要；
+旧分发清单没有媒体版本时使用 `sha256-` 短摘要标识，不把滚动 Mesa 标签当作视频版本。
+更新或卸载后需要重新启动相关应用。
+
+监控脚本使用 Bash、jq 和 GNU coreutils/findutils，本地源码目录优先，安装后位于
+`/usr/local/bin/droidspaces-video.sh`，不依赖 Python。菜单继承当前用户身份运行监控，不提升权限；
+非交互调用传入 `--once`，缺少 jq 等工具时给出提示。独立运行支持 `--json` 和 `--interval 秒数`。
+监控内按 `q`、`Esc` 或 `Ctrl+C` 返回视频子菜单，返回后恢复 TUI 原有的 `Ctrl+C` 退出行为。
+视频子菜单通过磁盘驱动中的 `DMD_VIDEO_STATS_PROTOCOL=1` 标记区分未安装、支持监控及旧版不支持。
+磁盘状态不能证明已运行应用加载了该版本；需重启相关应用并以监控读到的会话数据为准。
+驱动会话统计仅报告当前用户有权读取且由支持协议的驱动发布的数据，无法据此判断所有应用的软硬件路径。
+可读的 mpv、VLC、OBS 进程没有驱动会话时仍出现在应用概览，明确显示状态未知，格式、尺寸和 FPS 为 `--`；
+进程存在或没有 memfd 都不能证明软件解码。概览不读取媒体路径或应用完整启动参数，不增加 IPC／常驻服务。
+监控只读扫描 `/proc` 中的 `dmd-video-v1` memfd，核对进程身份、文件所有者及稳定序号，
+重复描述符只计一个会话。输出 FPS 根据相邻采集的输出帧增量和内核采样时钟计算，
+避免容器虚拟 uptime 影响；首次采集显示 `--`，暂停后显示 0，不代表屏幕播放帧率。处理尺寸可能包含硬件对齐，
+例如 1920×1088，不强行改报源画面的 1920×1080。权限限制、旧驱动或其他接口都可能使会话不可见。
 分发工作流同时保留旧版最新清单和独立的多版本清单，先校验清单和软件包，再执行安装。
 卸载 Mesa、KWin、Mutter 或 Niri 补丁时会恢复发行版官方包，而不是直接删除系统图形栈；
 Hangover Wine 和 Wine 字体则会移除各自的软件包或受管目录。
+
+## 终端布局
+
+TUI 1.7 使用三行紧凑页头和轻分隔线；主菜单按图形与桌面、Windows 应用、工具分组。
+组件状态与名称按终端显示宽度对齐，中文不会按字节数补空格。Mesa 页分开显示版本、当前
+渲染路径、下次启动配置和管理操作；视频页按驱动状态、维护、运行状态排列，版本单独显示。
+60×24、80×24 和 120×30 终端均保留返回和输入区。主菜单依次为 `[1] Mesa + VA-API`、
+`[2] Anland`、`[3] Hangover Wine` 和 `[4] Wine 字体`，使用数字/字母快捷键并按 Enter 确认。
+`--no-color` 同时传给监控子进程，终端背景和用户主题不被改写。
+
+实时监控先显示解码、编码和应用数量，再按应用及 UID 分组；80 列起使用紧凑表，较窄终端
+改为两行详情。绿色表示已确认硬件工作，黄色表示待确认或状态未知，红色表示驱动错误。
+底部保留退出键、速率口径和无法显示的条目数量；逐行清理旧内容，防止刷新残留。
+`--once` 保持纯文本，`--json` 输出当前会话快照。
 
 ## 发布
 
 在 GitHub Actions 中手动运行 `发布 Droidspaces TUI`。工作流会：
 
-1. 对目录中的全部 shell 脚本执行 `bash -n`。
+1. 对目录中的全部 Shell 脚本执行 ShellCheck 错误级检查和 `bash -n`。
 2. 生成包含安装目标、大小和 SHA-256 的 `Gold-bug-tui-manifest`。
 3. 更新固定标签 `Gold-bug-tui` 的 GitHub Release。
 4. 在公开 Release 前核验 GitHub 生成的附件摘要。
