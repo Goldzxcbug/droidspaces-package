@@ -1,6 +1,378 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# BEGIN DROIDSPACES SHARED operations
+# shellcheck shell=bash
+# Shared installer transaction support. Embedded into standalone release scripts.
+# Keep this file independent of the installer's language and package manager.
+DS_OP_ACTIVE=false
+DS_OP_COMPONENT=''
+DS_OP_PHASE=''
+DS_OP_DIR=''
+DS_OP_TRANSACTION=''
+DS_OP_LOG=''
+DS_OP_ID=''
+DS_OP_PREVIOUS_EXIT=''
+DS_OP_PREVIOUS_INT=''
+DS_OP_PREVIOUS_TERM=''
+DS_OP_PREVIOUS_HUP=''
+DS_OP_CONFIG_RECOVERED=false
+DS_PREFLIGHT_ACTIVE=false
+
+ds_operation_preflight() {
+    local component="$1" directory path
+    if ((EUID == 0)); then ds_operation_begin "$component"; return; fi
+    [[ "${DS_PREFLIGHT_ACTIVE:-false}" == false ]] || return 0
+    [[ "$component" =~ ^[a-z][a-z0-9-]*$ ]] || return 1
+    directory="${DROIDSPACES_USER_LOG_DIR:-${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}/droidspaces-tui/logs}"
+    ds_operation_safe_path "$directory" || return 1
+    path="$directory"
+    while [[ "$path" != / ]]; do
+        [[ ! -L "$path" ]] || return 1
+        path="${path%/*}"; [[ -n "$path" ]] || path=/
+    done
+    mkdir -p -m 0700 -- "$directory" || return 1
+    [[ "$(stat -c %u "$directory")" == "$EUID" ]] || return 1
+    chmod 0700 "$directory" || return 1
+    DS_PREFLIGHT_LOG="$(mktemp "$directory/$component-preflight.XXXXXXXX.log")" || return 1
+    DS_PREFLIGHT_PREVIOUS_EXIT="$(trap -p EXIT)"
+    DS_PREFLIGHT_PREVIOUS_INT="$(trap -p INT)"
+    DS_PREFLIGHT_PREVIOUS_TERM="$(trap -p TERM)"
+    DS_PREFLIGHT_PREVIOUS_HUP="$(trap -p HUP)"
+    exec {DS_PREFLIGHT_STDOUT}>&1 {DS_PREFLIGHT_STDERR}>&2
+    exec > >(exec tee -a -- "$DS_PREFLIGHT_LOG") 2>&1
+    DS_PREFLIGHT_LOG_PID=$!
+    DS_PREFLIGHT_ACTIVE=true
+    trap 'ds_operation_preflight_exit "$?"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    printf 'Droidspaces pre-download log / 预下载日志: %s\n' "$DS_PREFLIGHT_LOG"
+}
+
+ds_operation_preflight_finish() {
+    local status="$1"
+    [[ "${DS_PREFLIGHT_ACTIVE:-false}" == true ]] || return "$status"
+    printf 'Pre-download/privilege handoff finished (exit=%s). Log: %s\n' "$status" "$DS_PREFLIGHT_LOG"
+    DS_PREFLIGHT_ACTIVE=false
+    exec 1>&"$DS_PREFLIGHT_STDOUT" 2>&"$DS_PREFLIGHT_STDERR"
+    exec {DS_PREFLIGHT_STDOUT}>&- {DS_PREFLIGHT_STDERR}>&-
+    ds_operation_drain_logger "$DS_PREFLIGHT_LOG_PID"
+    trap - EXIT INT TERM HUP
+    [[ -z "$DS_PREFLIGHT_PREVIOUS_EXIT" ]] || eval "$DS_PREFLIGHT_PREVIOUS_EXIT"
+    [[ -z "$DS_PREFLIGHT_PREVIOUS_INT" ]] || eval "$DS_PREFLIGHT_PREVIOUS_INT"
+    [[ -z "$DS_PREFLIGHT_PREVIOUS_TERM" ]] || eval "$DS_PREFLIGHT_PREVIOUS_TERM"
+    [[ -z "$DS_PREFLIGHT_PREVIOUS_HUP" ]] || eval "$DS_PREFLIGHT_PREVIOUS_HUP"
+    return "$status"
+}
+
+ds_operation_preflight_exit() {
+    local status="$1"
+    trap - EXIT INT TERM HUP
+    if declare -F cleanup >/dev/null 2>&1; then cleanup || status=1; fi
+    ds_operation_preflight_finish "$status" || status=$?
+    trap - EXIT
+    exit "$status"
+}
+
+ds_operation_safe_path() {
+    [[ "$1" == /* && "$1" != *$'\n'* && "$1" != *$'\t'* &&
+       "$1" != */../* && "$1" != */.. && "$1" != */./* ]]
+}
+
+ds_operation_drain_logger() {
+    local logger_pid="$1" attempt
+    # A service started by a package hook can inherit the logging pipe. Do not
+    # let that unrelated service hold up completion or keep the modification lock.
+    for ((attempt=0; attempt<40; attempt++)); do
+        if ! kill -0 "$logger_pid" 2>/dev/null; then
+            wait "$logger_pid" 2>/dev/null || true
+            return 0
+        fi
+        sleep 0.05
+    done
+    kill -TERM "$logger_pid" 2>/dev/null || true
+    sleep 0.05
+    kill -KILL "$logger_pid" 2>/dev/null || true
+    # Only wait after confirming termination: even a logger blocked by a sick
+    # filesystem must not turn installer cleanup into an unbounded wait.
+    if ! kill -0 "$logger_pid" 2>/dev/null; then wait "$logger_pid" 2>/dev/null || true; fi
+}
+
+ds_operation_write_state() {
+    local status="$1" code="${2:-0}" temporary
+    temporary="$DS_OP_DIR/.active.$BASHPID"
+    {
+        printf 'format=1\noperation=%s\ncomponent=%s\nphase=%s\nstatus=%s\nexit_code=%s\n' \
+            "$DS_OP_ID" "$DS_OP_COMPONENT" "$DS_OP_PHASE" "$status" "$code"
+        printf 'pid=%s\nlog=%s\ntransaction=%s\nupdated_at=%s\n' \
+            "$$" "$DS_OP_LOG" "$DS_OP_TRANSACTION" "$(date -u +%FT%TZ)"
+        printf 'config_recovered=%s\n' "$DS_OP_CONFIG_RECOVERED"
+    } > "$temporary" && chmod 0600 "$temporary" && mv -f -- "$temporary" "$DS_OP_DIR/active"
+}
+
+ds_operation_phase() {
+    if [[ "${DS_OP_ACTIVE:-false}" != true ]]; then
+        [[ "${DS_PREFLIGHT_ACTIVE:-false}" != true ]] || printf '[droidspaces preflight] phase=%s\n' "$1"
+        return 0
+    fi
+    [[ "$1" =~ ^[a-z][a-z0-9_-]*$ ]] || return 1
+    DS_OP_PHASE="$1"
+    ds_operation_write_state running
+    printf '[droidspaces operation] %s phase=%s\n' "$DS_OP_COMPONENT" "$DS_OP_PHASE"
+}
+
+ds_operation_backup() {
+    local target="$1" number snapshot present
+    [[ "${DS_OP_ACTIVE:-false}" == true ]] || return 0
+    ds_operation_safe_path "$target" || return 1
+    # Never dereference a user-supplied target when saving/restoring configuration.
+    [[ ! -d "$target" || -L "$target" ]] || return 1
+    if [[ -f "$DS_OP_TRANSACTION/configs" ]] &&
+        awk -F '\t' -v target="$target" '$3 == target { found=1 } END { exit !found }' \
+            "$DS_OP_TRANSACTION/configs"; then
+        return 0
+    fi
+    number="$(wc -l < "$DS_OP_TRANSACTION/configs")"
+    snapshot="$DS_OP_TRANSACTION/config.$number"
+    present=missing
+    if [[ -e "$target" || -L "$target" ]]; then
+        cp -a -- "$target" "$snapshot" || return 1
+        present=present
+    fi
+    printf '%s\t%s\t%s\n' "$present" "$snapshot" "$target" >> "$DS_OP_TRANSACTION/configs"
+}
+
+ds_operation_snapshot_installer_config() {
+    local path
+    for path in "${DESKTOP_CONFIG:-/etc/droidspaces-desktop.conf}" \
+        /etc/dnf/dnf.conf /etc/pacman.conf /etc/apt/preferences.d/hold-anland-package \
+        "${APT_HOLD_STATE:-}" "${PACMAN_PACKAGE_STATE:-}" \
+        "${COMPONENT_STATE_DIR:-/var/lib/droidspaces-tui/components}/$DS_OP_COMPONENT.version" \
+        "${COMPONENT_STATE_DIR:-/var/lib/droidspaces-tui/components}/$DS_OP_COMPONENT.packages.tsv" \
+        "${COMPONENT_STATE_DIR:-/var/lib/droidspaces-tui/components}/$DS_OP_COMPONENT.files.sha256"; do
+        [[ -n "$path" ]] || continue
+        ds_operation_backup "$path"
+    done
+}
+
+ds_operation_record_packages() {
+    local component="$1" state_dir="$2" directory file package output version temporary digest unexpected
+    local -a candidates=()
+    local -A names=()
+    ds_operation_safe_path "$state_dir" || return 1
+    mkdir -p -- "$state_dir" || return 1
+    if [[ "$component" == fonts ]]; then
+        [[ -n "${FONT_TARGET:-}" && -d "$FONT_TARGET" && ! -L "$FONT_TARGET" ]] || return 1
+        unexpected="$(find "$FONT_TARGET" -mindepth 1 ! -type f ! -type d -print -quit)" || return 1
+        [[ -z "$unexpected" ]] || return 1
+        digest="$(find "$FONT_TARGET" -type f -print0 | LC_ALL=C sort -z | \
+            xargs -0 -r sha256sum -b -z | sha256sum)" || return 1
+        digest="${digest%% *}"
+        [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+        temporary="$(mktemp "$state_dir/.fonts.files.XXXXXXXX")" || return 1
+        printf '%s\n' "$digest" > "$temporary" && chmod 0644 "$temporary" && \
+            mv -f -- "$temporary" "$state_dir/fonts.files.sha256"
+        return
+    fi
+    temporary="$(mktemp "$state_dir/.$component.packages.XXXXXXXX")" || return 1
+    directory="${PACKAGE_DIR:-${WORK_DIR:-}}"
+    if [[ -n "$directory" && -d "$directory" ]]; then
+        while IFS= read -r -d '' file; do
+            package=''
+            case "$file" in
+                *.deb) package="$(dpkg-deb -f "$file" Package 2>/dev/null)" || true ;;
+                *.rpm) package="$(rpm -qp --queryformat '%{NAME}' "$file" 2>/dev/null)" || true ;;
+                *.pkg.tar.*)
+                    output="$(pacman -Qp -- "$file" 2>/dev/null)" || true
+                    package="${output%% *}"
+                    ;;
+            esac
+            [[ "$package" =~ ^[A-Za-z0-9][A-Za-z0-9.+:_-]*$ ]] && names["$package"]=1
+        done < <(find "$directory" -maxdepth 4 -type f \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.pkg.tar.*' \) -print0)
+    fi
+    # Also cover a single-package session and old archives with no unpacked metadata.
+    case "$component" in
+        mesa) candidates=(mesa mesa-vulkan-drivers libglx-mesa0 libegl-mesa0 mesa-dri-drivers) ;;
+        kde) candidates=(kwin kwin-wayland kwin-x11 kwin-common xwayland xorg-x11-server-Xwayland) ;;
+        gnome) candidates=(mutter mutter-common xwayland xorg-x11-server-Xwayland) ;;
+        niri) candidates=(niri-anland xwayland-satellite xwayland xorg-x11-server-Xwayland) ;;
+        hyprland) candidates=(hyprland-anland hyprland xwayland xorg-x11-server-Xwayland) ;;
+        mango) candidates=(mango-anland xwayland xorg-x11-server-Xwayland) ;;
+        denial) candidates=(denial xwayland xorg-x11-server-Xwayland) ;;
+        anland-next) candidates=(anland-session) ;;
+        hangover) candidates=(hangover-wine) ;;
+    esac
+    for package in "${candidates[@]}"; do names["$package"]=1; done
+    for package in "${!names[@]}"; do
+        version=''
+        case "${PACKAGE_TYPE:-${PACKAGE_MANAGER:-${TARGET:-}}}" in
+            deb|apt|debian*|ubuntu*)
+                output="$(dpkg-query -W -f='${db:Status-Abbrev}\t${Version}\n' "$package" 2>/dev/null)" || continue
+                [[ "$output" == ?i$' '*$'\t'* ]] || continue
+                version="${output#*$'\t'}"
+                ;;
+            rpm|dnf|fedora*) version="$(rpm -q --queryformat '%{VERSION}-%{RELEASE}' "$package" 2>/dev/null)" || continue ;;
+            pkg.tar.*|pacman|arch*)
+                output="$(pacman -Q -- "$package" 2>/dev/null)" || continue
+                version="${output#* }"
+                ;;
+        esac
+        [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+:~_-]*$ ]] || continue
+        printf '%s\t%s\n' "$package" "$version" >> "$temporary"
+    done
+    if [[ -s "$temporary" ]]; then
+        LC_ALL=C sort -o "$temporary" "$temporary" && chmod 0644 "$temporary" && \
+            mv -f -- "$temporary" "$state_dir/$component.packages.tsv"
+    else
+        rm -f -- "$temporary" "$state_dir/$component.packages.tsv"
+    fi
+}
+
+ds_operation_restore_configs() {
+    local transaction="$1" present snapshot target temporary failed=0
+    [[ -f "$transaction/configs" && ! -L "$transaction/configs" ]] || return 0
+    while IFS=$'\t' read -r present snapshot target; do
+        [[ -n "$target" ]] || continue
+        if ! ds_operation_safe_path "$target" || [[ "$snapshot" != "$transaction"/config.* ]]; then
+            failed=1; continue
+        fi
+        if [[ "$present" == present && ( -f "$snapshot" || -L "$snapshot" ) ]]; then
+            temporary="${target}.droidspaces-restore-$BASHPID"
+            if ! cp -a -- "$snapshot" "$temporary" || ! mv -Tf -- "$temporary" "$target"; then
+                failed=1
+            fi
+        elif [[ "$present" == missing ]]; then
+            rm -f -- "$target" || failed=1
+        else
+            failed=1
+        fi
+    done < "$transaction/configs"
+    return "$failed"
+}
+
+ds_operation_recover_previous() {
+    local previous_status previous_transaction previous_phase already_recovered
+    [[ -f "$DS_OP_DIR/active" && ! -L "$DS_OP_DIR/active" ]] || return 0
+    previous_status="$(awk -F= '$1=="status" {print $2}' "$DS_OP_DIR/active")"
+    case "$previous_status" in running|incomplete|recovery_failed) ;; *) return 0 ;; esac
+    previous_transaction="$(awk -F= '$1=="transaction" {sub(/^[^=]*=/, ""); print}' "$DS_OP_DIR/active")"
+    previous_phase="$(awk -F= '$1=="phase" {print $2}' "$DS_OP_DIR/active")"
+    already_recovered="$(awk -F= '$1=="config_recovered" {print $2}' "$DS_OP_DIR/active")"
+    [[ "$previous_transaction" == "$DS_OP_DIR"/transactions/* && -d "$previous_transaction" &&
+       ! -L "$previous_transaction" ]] || {
+        printf 'Unfinished Droidspaces operation has an invalid recovery record: %s\n' "$DS_OP_DIR/active" >&2
+        return 1
+    }
+    if [[ "$already_recovered" != true ]]; then
+        printf 'Recovering configuration from unfinished operation (phase=%s): %s\n' \
+            "$previous_phase" "$previous_transaction" >&2
+        ds_operation_restore_configs "$previous_transaction" || return 1
+    else
+        printf 'Previous operation was interrupted at phase=%s; its configuration was already recovered.\n' "$previous_phase" >&2
+    fi
+    cp -a -- "$DS_OP_DIR/active" "$previous_transaction/interrupted-state" || return 1
+    printf 'Configuration recovered. Package changes may already have completed; re-run the installer to verify/repair them.\n' >&2
+}
+
+ds_operation_begin() {
+    local component="$1" path old_umask
+    [[ "${DS_OP_ACTIVE:-false}" == false ]] || return 0
+    [[ "$component" =~ ^[a-z][a-z0-9-]*$ ]] || return 1
+    command -v flock >/dev/null 2>&1 || {
+        printf 'Droidspaces: missing flock (install util-linux). / 缺少 flock，请安装 util-linux。\n' >&2
+        return 1
+    }
+    DS_OP_DIR="${DROIDSPACES_OPERATION_DIR:-/var/lib/droidspaces-tui/operations}"
+    ds_operation_safe_path "$DS_OP_DIR" || return 1
+    # Reject symlink components before creating privileged persistent files.
+    path="$DS_OP_DIR"
+    while [[ "$path" != / ]]; do
+        [[ ! -L "$path" ]] || { printf 'Unsafe operation directory: %s\n' "$path" >&2; return 1; }
+        path="${path%/*}"; [[ -n "$path" ]] || path=/
+    done
+    old_umask="$(umask)"; umask 077
+    mkdir -p -- "$DS_OP_DIR/transactions" || { umask "$old_umask"; return 1; }
+    umask "$old_umask"
+    [[ "$(stat -c %u "$DS_OP_DIR")" == "$EUID" && ! -L "$DS_OP_DIR/lock" &&
+       ! -L "$DS_OP_DIR/transactions" && ! -L "$DS_OP_DIR/active" ]] || return 1
+    chmod 0700 "$DS_OP_DIR" "$DS_OP_DIR/transactions" || return 1
+    exec {DS_OP_LOCK_FD}>"$DS_OP_DIR/lock" || return 1
+    if ! flock -n "$DS_OP_LOCK_FD"; then
+        printf 'Another Droidspaces modification is running. / 另一个 Droidspaces 修改操作正在运行。\n' >&2
+        exec {DS_OP_LOCK_FD}>&-
+        return 75
+    fi
+    ds_operation_recover_previous || { exec {DS_OP_LOCK_FD}>&-; return 1; }
+    DS_OP_COMPONENT="$component"
+    DS_OP_CONFIG_RECOVERED=false
+    DS_OP_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+    DS_OP_TRANSACTION="$DS_OP_DIR/transactions/$DS_OP_ID"
+    mkdir -m 0700 -- "$DS_OP_TRANSACTION" || return 1
+    : > "$DS_OP_TRANSACTION/configs"
+    DS_OP_LOG="$DS_OP_TRANSACTION/operation.log"
+    DS_OP_PREVIOUS_EXIT="$(trap -p EXIT)"
+    DS_OP_PREVIOUS_INT="$(trap -p INT)"
+    DS_OP_PREVIOUS_TERM="$(trap -p TERM)"
+    DS_OP_PREVIOUS_HUP="$(trap -p HUP)"
+    exec {DS_OP_STDOUT}>&1 {DS_OP_STDERR}>&2
+    exec > >(exec {DS_OP_LOCK_FD}>&-; exec tee -a -- "$DS_OP_LOG") 2>&1
+    DS_OP_LOG_PID=$!
+    DS_OP_ACTIVE=true
+    trap 'ds_operation_exit "$?"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    printf 'Droidspaces operation log / 操作日志: %s\n' "$DS_OP_LOG"
+    ds_operation_phase prepare
+}
+
+ds_operation_finish() {
+    local status="${1:-0}" result=complete
+    [[ "${DS_OP_ACTIVE:-false}" == true ]] || return "$status"
+    if ((status != 0)); then
+        result=incomplete
+        if ! ds_operation_restore_configs "$DS_OP_TRANSACTION"; then
+            result=recovery_failed
+        else
+            DS_OP_CONFIG_RECOVERED=true
+        fi
+        printf 'Operation failed at phase=%s (exit=%s). Log: %s\n' "$DS_OP_PHASE" "$status" "$DS_OP_LOG" >&2
+        printf 'Configuration backups: %s. Package changes may require re-running this installer.\n' "$DS_OP_TRANSACTION" >&2
+    else
+        DS_OP_PHASE=complete
+        printf 'Operation completed. Log: %s\n' "$DS_OP_LOG"
+    fi
+    ds_operation_write_state "$result" "$status" || status=1
+    DS_OP_ACTIVE=false
+    exec 1>&"$DS_OP_STDOUT" 2>&"$DS_OP_STDERR"
+    exec {DS_OP_STDOUT}>&- {DS_OP_STDERR}>&-
+    flock -u "$DS_OP_LOCK_FD" || true
+    exec {DS_OP_LOCK_FD}>&-
+    ds_operation_drain_logger "$DS_OP_LOG_PID"
+    trap - EXIT INT TERM HUP
+    [[ -z "$DS_OP_PREVIOUS_EXIT" ]] || eval "$DS_OP_PREVIOUS_EXIT"
+    [[ -z "$DS_OP_PREVIOUS_INT" ]] || eval "$DS_OP_PREVIOUS_INT"
+    [[ -z "$DS_OP_PREVIOUS_TERM" ]] || eval "$DS_OP_PREVIOUS_TERM"
+    [[ -z "$DS_OP_PREVIOUS_HUP" ]] || eval "$DS_OP_PREVIOUS_HUP"
+    return "$status"
+}
+
+ds_operation_exit() {
+    local status="$1"
+    trap - EXIT INT TERM HUP
+    if declare -F ds_installer_rollback >/dev/null 2>&1; then
+        if ! ds_installer_rollback "$status"; then status=1; fi
+    fi
+    # Existing per-installer cleanup includes preserved media/fonts recovery.
+    if declare -F cleanup >/dev/null 2>&1; then cleanup || status=1; fi
+    ds_operation_finish "$status" || status=$?
+    trap - EXIT
+    exit "$status"
+}
+# END DROIDSPACES SHARED operations
+
 readonly DEFAULT_REPOSITORY="Goldzxcbug/droidspaces-package"
 readonly RELEASE_REPOSITORY="${WINEFONTS_RELEASE_REPOSITORY:-$DEFAULT_REPOSITORY}"
 readonly RELEASE_TAG="${WINEFONTS_RELEASE_TAG:-winefonts}"
@@ -57,6 +429,7 @@ log() {
 }
 
 record_component_version() {
+    ds_operation_phase verify
     local version="$1" state_file="$COMPONENT_STATE_DIR/fonts.version" temporary_file
     [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+:~_-]{0,63}$ ]] || return 0
     if ! mkdir -p -- "$COMPONENT_STATE_DIR"; then
@@ -69,6 +442,8 @@ record_component_version() {
     }
     if printf '%s\n' "$version" > "$temporary_file" && \
         chmod 0644 "$temporary_file" && mv -f -- "$temporary_file" "$state_file"; then
+        ds_operation_record_packages fonts "$COMPONENT_STATE_DIR" || \
+            printf 'Could not record native package identity; status will remain conservative.\n' >&2
         return 0
     fi
     rm -f -- "$temporary_file" || true
@@ -119,13 +494,14 @@ parse_arguments() {
 }
 
 uninstall_fonts() {
+    ds_operation_phase uninstall
     if [[ -e "$FONT_TARGET" || -L "$FONT_TARGET" ]]; then
         [[ -d "$FONT_TARGET" && ! -L "$FONT_TARGET" ]] || \
             die "管理目录不是普通目录，拒绝删除：$FONT_TARGET" \
                 "The managed path is not a regular directory; refusing to remove it: $FONT_TARGET"
         rm -rf -- "$FONT_TARGET"
     fi
-    rm -f -- "$COMPONENT_STATE_DIR/fonts.version"
+    rm -f -- "$COMPONENT_STATE_DIR/fonts.version" "$COMPONENT_STATE_DIR/fonts.packages.tsv" "$COMPONENT_STATE_DIR/fonts.files.sha256"
     if command -v fc-cache >/dev/null 2>&1; then
         fc-cache -f || die "刷新 Fontconfig 缓存失败。" "Failed to refresh the Fontconfig cache."
     fi
@@ -210,6 +586,7 @@ require_release_metadata_parser() {
             "jq was not found; GitHub Release metadata cannot be verified."
 }
 
+# shellcheck shell=bash
 download_source_name() {
     case "$1" in
         1) printf 'GitHub' ;;
@@ -260,6 +637,7 @@ probe_download_source() {
 }
 
 select_download_source() {
+    ds_operation_phase source
     local source latency recommendation choice
     if [[ "$SKIP_SOURCE_PROBE" == true ]]; then
         log "已按参数选择 $(download_source_name "$DOWNLOAD_SOURCE")，跳过延迟测试。" \
@@ -504,6 +882,7 @@ validate_extracted_tree() {
 }
 
 download_and_extract() {
+    ds_operation_phase download
     local base manifest archive actual_sha actual_size attempt extract_dir
     WORK_DIR="$(mktemp -d -t winefonts.XXXXXXXX)"
     chmod 0700 "$WORK_DIR"
@@ -580,6 +959,7 @@ confirm_replacement() {
 }
 
 install_fonts() {
+    ds_operation_phase fonts
     local source="$1"
     local target="$2"
     local parent backup_template
@@ -636,6 +1016,8 @@ main() {
     parse_arguments "$@"
     validate_release_settings
     require_root "$@"
+    ds_operation_begin fonts
+    ds_operation_snapshot_installer_config
     if [[ "$UNINSTALL" == true ]]; then
         uninstall_fonts
         return

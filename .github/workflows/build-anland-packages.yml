@@ -722,7 +722,7 @@ jobs:
               release_dir.mkdir(parents=True, exist_ok=True)
               tag = f"anland-{compositor}-packages"
               manifest_name = f"anland-{compositor}-manifest"
-              installer_name = f"install-anland-{compositor}.sh"
+              bundle_name = "Gold-bug-tui.tar.gz"
               server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
 
               def asset_pattern(target):
@@ -826,11 +826,11 @@ jobs:
                           assets[target] = asset
                           reused.append(target)
 
-              installer = Path(os.environ["GITHUB_WORKSPACE"]) / "scripts" / "tui" / installer_name
-              if not installer.is_file():
-                  fail(f"Missing installer: {installer}")
-              shutil.copy2(installer, release_dir / installer_name)
-              (release_dir / installer_name).chmod(0o755)
+              workspace = Path(os.environ["GITHUB_WORKSPACE"])
+              with tempfile.TemporaryDirectory(prefix=f"anland-{compositor}-tui-") as bundle_dir:
+                  subprocess.run(["bash", str(workspace / "scripts" / "package-tui.sh"),
+                                  "--output", bundle_dir, "--revision", os.environ["GITHUB_SHA"]], check=True)
+                  shutil.copy2(Path(bundle_dir) / bundle_name, release_dir / bundle_name)
               generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
               records = ["format=1", f"release_tag={tag}",
                          f"revision=run-{os.environ.get('GITHUB_RUN_ID', 'local')}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}",
@@ -841,7 +841,7 @@ jobs:
                       records.extend([f"{target}={assets[target]}", f"{target}_sha256={digest(release_dir / assets[target])}",
                                       f"{target}_source_commit={info[target].get('source_commit', 'unknown')}"])
               (release_dir / manifest_name).write_text("\n".join(records) + "\n")
-              files = [assets[target] for target in targets if target in assets] + [manifest_name, installer_name]
+              files = [assets[target] for target in targets if target in assets] + [manifest_name, bundle_name]
               (release_dir / "SHA256SUMS").write_text("".join(f"{digest(release_dir / name)}  {name}\n" for name in files))
               files.append("SHA256SUMS")
               title = f"Anland {compositor.title()} ARM64 预编译包"
@@ -854,8 +854,11 @@ jobs:
                   if target in assets:
                       name = assets[target]
                       notes.append(f"| {target} | [{name}]({server}/{repo}/releases/download/{tag}/{name}) | {info[target].get('build_time', 'unknown')} | {info[target].get('source_commit', 'unknown')} |")
-              notes.extend(["", f"`{manifest_name}` 映射平台与资产并记录 SHA-256；`SHA256SUMS` 同时校验安装脚本。",
-                            f"安装/卸载脚本：`{installer_name}`。",
+              notes.extend(["", f"`{manifest_name}` 映射平台与资产并记录 SHA-256；`SHA256SUMS` 同时校验安装器压缩包。",
+                            f"下载 `{bundle_name}`，保持解压后的 `tui/` 目录完整：",
+                            "", "```bash", f"tar -xzf {bundle_name}",
+                            f"sudo bash tui/install-anland-{compositor}.sh --1", "```",
+                            "卸载时将 `--1` 替换为 `--uninstall`。",
                             "", f"本次构建来源：`{os.environ['ANLAND_REPO']}` @ `{source_commit}`（请求 `{os.environ['ANLAND_REF']}`）。",
                             "沿用平台的实际源码提交保留在各平台元数据中。构建成功不代表已完成设备图形会话测试。"])
               notes_path = release_dir / ".release-notes.md"
@@ -866,7 +869,7 @@ jobs:
                   # overwritten file before uploading, so a failed manifest/notes upload
                   # cannot leave old checksums pointing at new archive bytes.
                   previous_names = {entry["name"] for entry in previous["assets"]}
-                  uploads = [assets[target] for target in updated] + [installer_name, manifest_name, "SHA256SUMS"]
+                  uploads = [assets[target] for target in updated] + [bundle_name, manifest_name, "SHA256SUMS"]
                   with tempfile.TemporaryDirectory(prefix=f"anland-{compositor}-rollback-") as temp:
                       backup = Path(temp)
                       overwritten = [name for name in uploads if name in previous_names]
@@ -876,7 +879,7 @@ jobs:
                       old_notes.write_text(previous.get("body") or "")
                       try:
                           gh("release", "upload", tag, *(str(release_dir / assets[target]) for target in updated), "--repo", repo, "--clobber")
-                          gh("release", "upload", tag, *(str(release_dir / name) for name in [installer_name, manifest_name, "SHA256SUMS"]), "--repo", repo, "--clobber")
+                          gh("release", "upload", tag, *(str(release_dir / name) for name in [bundle_name, manifest_name, "SHA256SUMS"]), "--repo", repo, "--clobber")
                           gh("release", "edit", tag, "--repo", repo, "--title", title, "--notes-file", str(notes_path), "--draft=false", "--latest=false")
                       except SystemExit as error:
                           restoration_errors = []
@@ -903,7 +906,8 @@ jobs:
                   # The manifest has committed. Stale assets are only housekeeping now;
                   # retaining an unused old archive is safer than rolling back good data.
                   for entry in previous["assets"]:
-                      if any(Path(entry["name"]).match(asset_pattern(target)) and entry["name"] != assets[target] for target in updated):
+                      if (entry["name"] == f"install-anland-{compositor}.sh" or
+                              any(Path(entry["name"]).match(asset_pattern(target)) and entry["name"] != assets[target] for target in updated)):
                           result = gh("api", "--method", "DELETE", f"repos/{repo}/releases/assets/{entry['id']}", check=False)
                           if result.returncode:
                               print(f"Warning: unable to remove stale asset {entry['name']}: {result.stderr.strip()}")
@@ -1397,7 +1401,7 @@ jobs:
               release_dir.mkdir(parents=True, exist_ok=True)
               tag = f"anland-{compositor}-packages"
               manifest_name = f"anland-{compositor}-manifest"
-              installer_name = f"install-anland-{compositor}.sh"
+              bundle_name = "Gold-bug-tui.tar.gz"
               server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
 
               def asset_pattern(target):
@@ -1501,11 +1505,11 @@ jobs:
                           assets[target] = asset
                           reused.append(target)
 
-              installer = Path(os.environ["GITHUB_WORKSPACE"]) / "scripts" / "tui" / installer_name
-              if not installer.is_file():
-                  fail(f"Missing installer: {installer}")
-              shutil.copy2(installer, release_dir / installer_name)
-              (release_dir / installer_name).chmod(0o755)
+              workspace = Path(os.environ["GITHUB_WORKSPACE"])
+              with tempfile.TemporaryDirectory(prefix=f"anland-{compositor}-tui-") as bundle_dir:
+                  subprocess.run(["bash", str(workspace / "scripts" / "package-tui.sh"),
+                                  "--output", bundle_dir, "--revision", os.environ["GITHUB_SHA"]], check=True)
+                  shutil.copy2(Path(bundle_dir) / bundle_name, release_dir / bundle_name)
               generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
               records = ["format=1", f"release_tag={tag}",
                          f"revision=run-{os.environ.get('GITHUB_RUN_ID', 'local')}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}",
@@ -1516,7 +1520,7 @@ jobs:
                       records.extend([f"{target}={assets[target]}", f"{target}_sha256={digest(release_dir / assets[target])}",
                                       f"{target}_source_commit={info[target].get('source_commit', 'unknown')}"])
               (release_dir / manifest_name).write_text("\n".join(records) + "\n")
-              files = [assets[target] for target in targets if target in assets] + [manifest_name, installer_name]
+              files = [assets[target] for target in targets if target in assets] + [manifest_name, bundle_name]
               (release_dir / "SHA256SUMS").write_text("".join(f"{digest(release_dir / name)}  {name}\n" for name in files))
               files.append("SHA256SUMS")
               title = f"Anland {compositor.title()} ARM64 预编译包"
@@ -1529,8 +1533,11 @@ jobs:
                   if target in assets:
                       name = assets[target]
                       notes.append(f"| {target} | [{name}]({server}/{repo}/releases/download/{tag}/{name}) | {info[target].get('build_time', 'unknown')} | {info[target].get('source_commit', 'unknown')} |")
-              notes.extend(["", f"`{manifest_name}` 映射平台与资产并记录 SHA-256；`SHA256SUMS` 同时校验安装脚本。",
-                            f"安装/卸载脚本：`{installer_name}`。",
+              notes.extend(["", f"`{manifest_name}` 映射平台与资产并记录 SHA-256；`SHA256SUMS` 同时校验安装器压缩包。",
+                            f"下载 `{bundle_name}`，保持解压后的 `tui/` 目录完整：",
+                            "", "```bash", f"tar -xzf {bundle_name}",
+                            f"sudo bash tui/install-anland-{compositor}.sh --1", "```",
+                            "卸载时将 `--1` 替换为 `--uninstall`。",
                             "", f"本次构建来源：`{os.environ['ANLAND_REPO']}` @ `{source_commit}`（请求 `{os.environ['ANLAND_REF']}`）。",
                             "沿用平台的实际源码提交保留在各平台元数据中。构建成功不代表已完成设备图形会话测试。"])
               notes_path = release_dir / ".release-notes.md"
@@ -1541,7 +1548,7 @@ jobs:
                   # overwritten file before uploading, so a failed manifest/notes upload
                   # cannot leave old checksums pointing at new archive bytes.
                   previous_names = {entry["name"] for entry in previous["assets"]}
-                  uploads = [assets[target] for target in updated] + [installer_name, manifest_name, "SHA256SUMS"]
+                  uploads = [assets[target] for target in updated] + [bundle_name, manifest_name, "SHA256SUMS"]
                   with tempfile.TemporaryDirectory(prefix=f"anland-{compositor}-rollback-") as temp:
                       backup = Path(temp)
                       overwritten = [name for name in uploads if name in previous_names]
@@ -1551,7 +1558,7 @@ jobs:
                       old_notes.write_text(previous.get("body") or "")
                       try:
                           gh("release", "upload", tag, *(str(release_dir / assets[target]) for target in updated), "--repo", repo, "--clobber")
-                          gh("release", "upload", tag, *(str(release_dir / name) for name in [installer_name, manifest_name, "SHA256SUMS"]), "--repo", repo, "--clobber")
+                          gh("release", "upload", tag, *(str(release_dir / name) for name in [bundle_name, manifest_name, "SHA256SUMS"]), "--repo", repo, "--clobber")
                           gh("release", "edit", tag, "--repo", repo, "--title", title, "--notes-file", str(notes_path), "--draft=false", "--latest=false")
                       except SystemExit as error:
                           restoration_errors = []
@@ -1578,7 +1585,8 @@ jobs:
                   # The manifest has committed. Stale assets are only housekeeping now;
                   # retaining an unused old archive is safer than rolling back good data.
                   for entry in previous["assets"]:
-                      if any(Path(entry["name"]).match(asset_pattern(target)) and entry["name"] != assets[target] for target in updated):
+                      if (entry["name"] == f"install-anland-{compositor}.sh" or
+                              any(Path(entry["name"]).match(asset_pattern(target)) and entry["name"] != assets[target] for target in updated)):
                           result = gh("api", "--method", "DELETE", f"repos/{repo}/releases/assets/{entry['id']}", check=False)
                           if result.returncode:
                               print(f"Warning: unable to remove stale asset {entry['name']}: {result.stderr.strip()}")
@@ -2070,7 +2078,7 @@ jobs:
               release_dir.mkdir(parents=True, exist_ok=True)
               tag = f"anland-{compositor}-packages"
               manifest_name = f"anland-{compositor}-manifest"
-              installer_name = f"install-anland-{compositor}.sh"
+              bundle_name = "Gold-bug-tui.tar.gz"
               server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
 
               def asset_pattern(target):
@@ -2174,11 +2182,11 @@ jobs:
                           assets[target] = asset
                           reused.append(target)
 
-              installer = Path(os.environ["GITHUB_WORKSPACE"]) / "scripts" / "tui" / installer_name
-              if not installer.is_file():
-                  fail(f"Missing installer: {installer}")
-              shutil.copy2(installer, release_dir / installer_name)
-              (release_dir / installer_name).chmod(0o755)
+              workspace = Path(os.environ["GITHUB_WORKSPACE"])
+              with tempfile.TemporaryDirectory(prefix=f"anland-{compositor}-tui-") as bundle_dir:
+                  subprocess.run(["bash", str(workspace / "scripts" / "package-tui.sh"),
+                                  "--output", bundle_dir, "--revision", os.environ["GITHUB_SHA"]], check=True)
+                  shutil.copy2(Path(bundle_dir) / bundle_name, release_dir / bundle_name)
               generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
               records = ["format=1", f"release_tag={tag}",
                          f"revision=run-{os.environ.get('GITHUB_RUN_ID', 'local')}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}",
@@ -2189,7 +2197,7 @@ jobs:
                       records.extend([f"{target}={assets[target]}", f"{target}_sha256={digest(release_dir / assets[target])}",
                                       f"{target}_source_commit={info[target].get('source_commit', 'unknown')}"])
               (release_dir / manifest_name).write_text("\n".join(records) + "\n")
-              files = [assets[target] for target in targets if target in assets] + [manifest_name, installer_name]
+              files = [assets[target] for target in targets if target in assets] + [manifest_name, bundle_name]
               (release_dir / "SHA256SUMS").write_text("".join(f"{digest(release_dir / name)}  {name}\n" for name in files))
               files.append("SHA256SUMS")
               title = f"Anland {compositor.title()} ARM64 预编译包"
@@ -2202,8 +2210,11 @@ jobs:
                   if target in assets:
                       name = assets[target]
                       notes.append(f"| {target} | [{name}]({server}/{repo}/releases/download/{tag}/{name}) | {info[target].get('build_time', 'unknown')} | {info[target].get('source_commit', 'unknown')} |")
-              notes.extend(["", f"`{manifest_name}` 映射平台与资产并记录 SHA-256；`SHA256SUMS` 同时校验安装脚本。",
-                            f"安装/卸载脚本：`{installer_name}`。",
+              notes.extend(["", f"`{manifest_name}` 映射平台与资产并记录 SHA-256；`SHA256SUMS` 同时校验安装器压缩包。",
+                            f"下载 `{bundle_name}`，保持解压后的 `tui/` 目录完整：",
+                            "", "```bash", f"tar -xzf {bundle_name}",
+                            f"sudo bash tui/install-anland-{compositor}.sh --1", "```",
+                            "卸载时将 `--1` 替换为 `--uninstall`。",
                             "", f"本次构建来源：`{os.environ['ANLAND_REPO']}` @ `{source_commit}`（请求 `{os.environ['ANLAND_REF']}`）。",
                             "沿用平台的实际源码提交保留在各平台元数据中。构建成功不代表已完成设备图形会话测试。"])
               notes_path = release_dir / ".release-notes.md"
@@ -2214,7 +2225,7 @@ jobs:
                   # overwritten file before uploading, so a failed manifest/notes upload
                   # cannot leave old checksums pointing at new archive bytes.
                   previous_names = {entry["name"] for entry in previous["assets"]}
-                  uploads = [assets[target] for target in updated] + [installer_name, manifest_name, "SHA256SUMS"]
+                  uploads = [assets[target] for target in updated] + [bundle_name, manifest_name, "SHA256SUMS"]
                   with tempfile.TemporaryDirectory(prefix=f"anland-{compositor}-rollback-") as temp:
                       backup = Path(temp)
                       overwritten = [name for name in uploads if name in previous_names]
@@ -2224,7 +2235,7 @@ jobs:
                       old_notes.write_text(previous.get("body") or "")
                       try:
                           gh("release", "upload", tag, *(str(release_dir / assets[target]) for target in updated), "--repo", repo, "--clobber")
-                          gh("release", "upload", tag, *(str(release_dir / name) for name in [installer_name, manifest_name, "SHA256SUMS"]), "--repo", repo, "--clobber")
+                          gh("release", "upload", tag, *(str(release_dir / name) for name in [bundle_name, manifest_name, "SHA256SUMS"]), "--repo", repo, "--clobber")
                           gh("release", "edit", tag, "--repo", repo, "--title", title, "--notes-file", str(notes_path), "--draft=false", "--latest=false")
                       except SystemExit as error:
                           restoration_errors = []
@@ -2251,7 +2262,8 @@ jobs:
                   # The manifest has committed. Stale assets are only housekeeping now;
                   # retaining an unused old archive is safer than rolling back good data.
                   for entry in previous["assets"]:
-                      if any(Path(entry["name"]).match(asset_pattern(target)) and entry["name"] != assets[target] for target in updated):
+                      if (entry["name"] == f"install-anland-{compositor}.sh" or
+                              any(Path(entry["name"]).match(asset_pattern(target)) and entry["name"] != assets[target] for target in updated)):
                           result = gh("api", "--method", "DELETE", f"repos/{repo}/releases/assets/{entry['id']}", check=False)
                           if result.returncode:
                               print(f"Warning: unable to remove stale asset {entry['name']}: {result.stderr.strip()}")
@@ -2743,7 +2755,7 @@ jobs:
               release_dir.mkdir(parents=True, exist_ok=True)
               tag = f"anland-{compositor}-packages"
               manifest_name = f"anland-{compositor}-manifest"
-              installer_name = f"install-anland-{compositor}.sh"
+              bundle_name = "Gold-bug-tui.tar.gz"
               server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
 
               def asset_pattern(target):
@@ -2847,11 +2859,11 @@ jobs:
                           assets[target] = asset
                           reused.append(target)
 
-              installer = Path(os.environ["GITHUB_WORKSPACE"]) / "scripts" / "tui" / installer_name
-              if not installer.is_file():
-                  fail(f"Missing installer: {installer}")
-              shutil.copy2(installer, release_dir / installer_name)
-              (release_dir / installer_name).chmod(0o755)
+              workspace = Path(os.environ["GITHUB_WORKSPACE"])
+              with tempfile.TemporaryDirectory(prefix=f"anland-{compositor}-tui-") as bundle_dir:
+                  subprocess.run(["bash", str(workspace / "scripts" / "package-tui.sh"),
+                                  "--output", bundle_dir, "--revision", os.environ["GITHUB_SHA"]], check=True)
+                  shutil.copy2(Path(bundle_dir) / bundle_name, release_dir / bundle_name)
               generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
               records = ["format=1", f"release_tag={tag}",
                          f"revision=run-{os.environ.get('GITHUB_RUN_ID', 'local')}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}",
@@ -2862,7 +2874,7 @@ jobs:
                       records.extend([f"{target}={assets[target]}", f"{target}_sha256={digest(release_dir / assets[target])}",
                                       f"{target}_source_commit={info[target].get('source_commit', 'unknown')}"])
               (release_dir / manifest_name).write_text("\n".join(records) + "\n")
-              files = [assets[target] for target in targets if target in assets] + [manifest_name, installer_name]
+              files = [assets[target] for target in targets if target in assets] + [manifest_name, bundle_name]
               (release_dir / "SHA256SUMS").write_text("".join(f"{digest(release_dir / name)}  {name}\n" for name in files))
               files.append("SHA256SUMS")
               title = f"Anland {compositor.title()} ARM64 预编译包"
@@ -2875,8 +2887,11 @@ jobs:
                   if target in assets:
                       name = assets[target]
                       notes.append(f"| {target} | [{name}]({server}/{repo}/releases/download/{tag}/{name}) | {info[target].get('build_time', 'unknown')} | {info[target].get('source_commit', 'unknown')} |")
-              notes.extend(["", f"`{manifest_name}` 映射平台与资产并记录 SHA-256；`SHA256SUMS` 同时校验安装脚本。",
-                            f"安装/卸载脚本：`{installer_name}`。",
+              notes.extend(["", f"`{manifest_name}` 映射平台与资产并记录 SHA-256；`SHA256SUMS` 同时校验安装器压缩包。",
+                            f"下载 `{bundle_name}`，保持解压后的 `tui/` 目录完整：",
+                            "", "```bash", f"tar -xzf {bundle_name}",
+                            f"sudo bash tui/install-anland-{compositor}.sh --1", "```",
+                            "卸载时将 `--1` 替换为 `--uninstall`。",
                             "", f"本次构建来源：`{os.environ['ANLAND_REPO']}` @ `{source_commit}`（请求 `{os.environ['ANLAND_REF']}`）。",
                             "沿用平台的实际源码提交保留在各平台元数据中。构建成功不代表已完成设备图形会话测试。"])
               notes_path = release_dir / ".release-notes.md"
@@ -2887,7 +2902,7 @@ jobs:
                   # overwritten file before uploading, so a failed manifest/notes upload
                   # cannot leave old checksums pointing at new archive bytes.
                   previous_names = {entry["name"] for entry in previous["assets"]}
-                  uploads = [assets[target] for target in updated] + [installer_name, manifest_name, "SHA256SUMS"]
+                  uploads = [assets[target] for target in updated] + [bundle_name, manifest_name, "SHA256SUMS"]
                   with tempfile.TemporaryDirectory(prefix=f"anland-{compositor}-rollback-") as temp:
                       backup = Path(temp)
                       overwritten = [name for name in uploads if name in previous_names]
@@ -2897,7 +2912,7 @@ jobs:
                       old_notes.write_text(previous.get("body") or "")
                       try:
                           gh("release", "upload", tag, *(str(release_dir / assets[target]) for target in updated), "--repo", repo, "--clobber")
-                          gh("release", "upload", tag, *(str(release_dir / name) for name in [installer_name, manifest_name, "SHA256SUMS"]), "--repo", repo, "--clobber")
+                          gh("release", "upload", tag, *(str(release_dir / name) for name in [bundle_name, manifest_name, "SHA256SUMS"]), "--repo", repo, "--clobber")
                           gh("release", "edit", tag, "--repo", repo, "--title", title, "--notes-file", str(notes_path), "--draft=false", "--latest=false")
                       except SystemExit as error:
                           restoration_errors = []
@@ -2924,7 +2939,8 @@ jobs:
                   # The manifest has committed. Stale assets are only housekeeping now;
                   # retaining an unused old archive is safer than rolling back good data.
                   for entry in previous["assets"]:
-                      if any(Path(entry["name"]).match(asset_pattern(target)) and entry["name"] != assets[target] for target in updated):
+                      if (entry["name"] == f"install-anland-{compositor}.sh" or
+                              any(Path(entry["name"]).match(asset_pattern(target)) and entry["name"] != assets[target] for target in updated)):
                           result = gh("api", "--method", "DELETE", f"repos/{repo}/releases/assets/{entry['id']}", check=False)
                           if result.returncode:
                               print(f"Warning: unable to remove stale asset {entry['name']}: {result.stderr.strip()}")
@@ -3678,8 +3694,10 @@ jobs:
             test -f "$release_dir/$asset"
           done
 
-          cp scripts/tui/install-anland-kde.sh "$release_dir/install-anland-kde.sh"
-          chmod +x "$release_dir/install-anland-kde.sh"
+          tui_bundle_dir="$(mktemp -d "$RUNNER_TEMP/anland-kde-tui.XXXXXXXX")"
+          bash scripts/package-tui.sh --output "$tui_bundle_dir" --revision "$GITHUB_SHA"
+          install -m 0644 "$tui_bundle_dir/Gold-bug-tui.tar.gz" "$release_dir/Gold-bug-tui.tar.gz"
+          rm -rf -- "$tui_bundle_dir"
           {
             printf 'format=1\n'
             printf 'release_tag=%s\n' "$rolling_release_tag"
@@ -3745,6 +3763,17 @@ jobs:
             '压缩包文件名中的 `kwin-版本` 来自该发行版实际生成的 KWin 包；不同发行版的版本可以不同。' \
             '' \
             '每个压缩包只包含对应系统中已修补的 KWin/Xwayland 软件包；`anland-kde-manifest` 精确映射目标系统到资产。' \
+            '' \
+            '## 安装与卸载' \
+            '' \
+            '下载 `Gold-bug-tui.tar.gz`，保持解压后的 `tui/` 目录完整：' \
+            '' \
+            '```bash' \
+            'tar -xzf Gold-bug-tui.tar.gz' \
+            'sudo bash tui/install-anland-kde.sh --1' \
+            '```' \
+            '' \
+            '卸载时将 `--1` 替换为 `--uninstall`。' \
             '' \
             '## 构建详情' \
             '' \
@@ -3885,7 +3914,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             gh release upload "$release_tag" \
-              "$release_dir/install-anland-kde.sh" \
+              "$release_dir/Gold-bug-tui.tar.gz" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             gh release upload "$release_tag" \
@@ -3893,6 +3922,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             delete_release_asset_named 'SHA256SUMS'
+            delete_release_asset_named 'install-anland-kde.sh'
             for target in "${updated_targets[@]}"; do
               delete_stale_target_assets "$target" "${asset_by_target[$target]}"
             done
@@ -4606,8 +4636,10 @@ jobs:
             test -f "$release_dir/$asset"
           done
 
-          cp scripts/tui/install-anland-gnome.sh "$release_dir/install-anland-gnome.sh"
-          chmod +x "$release_dir/install-anland-gnome.sh"
+          tui_bundle_dir="$(mktemp -d "$RUNNER_TEMP/anland-gnome-tui.XXXXXXXX")"
+          bash scripts/package-tui.sh --output "$tui_bundle_dir" --revision "$GITHUB_SHA"
+          install -m 0644 "$tui_bundle_dir/Gold-bug-tui.tar.gz" "$release_dir/Gold-bug-tui.tar.gz"
+          rm -rf -- "$tui_bundle_dir"
           {
             printf 'format=1\n'
             printf 'release_tag=%s\n' "$rolling_release_tag"
@@ -4673,6 +4705,17 @@ jobs:
             '压缩包文件名中的 `mutter-版本` 来自该发行版实际生成的 Mutter 包；不同发行版的版本可以不同。' \
             '' \
             '每个压缩包包含对应系统的已修补 Mutter 和 Xwayland 运行时包。anland-gnome-manifest 精确映射目标系统到资产。' \
+            '' \
+            '## 安装与卸载' \
+            '' \
+            '下载 `Gold-bug-tui.tar.gz`，保持解压后的 `tui/` 目录完整：' \
+            '' \
+            '```bash' \
+            'tar -xzf Gold-bug-tui.tar.gz' \
+            'sudo bash tui/install-anland-gnome.sh --1' \
+            '```' \
+            '' \
+            '卸载时将 `--1` 替换为 `--uninstall`。' \
             '' \
             '## 构建详情' \
             '' \
@@ -4811,7 +4854,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             gh release upload "$release_tag" \
-              "$release_dir/install-anland-gnome.sh" \
+              "$release_dir/Gold-bug-tui.tar.gz" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             gh release upload "$release_tag" \
@@ -4819,6 +4862,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             delete_release_asset_named 'SHA256SUMS'
+            delete_release_asset_named 'install-anland-gnome.sh'
             for target in "${updated_targets[@]}"; do
               delete_stale_target_assets "$target" "${asset_by_target[$target]}"
             done
@@ -5307,9 +5351,11 @@ jobs:
               printf '%s=%s\n' "$(archive_target_for_target "$target")" "${asset_by_target[$target]}"
             done
           } > "$manifest_path"
-          cp scripts/tui/install-anland-next.sh "$release_dir/install-anland-next.sh"
-          chmod +x "$release_dir/install-anland-next.sh"
-          release_package_names+=("anland-session-manifest" "install-anland-next.sh")
+          tui_bundle_dir="$(mktemp -d "$RUNNER_TEMP/anland-next-tui.XXXXXXXX")"
+          bash scripts/package-tui.sh --output "$tui_bundle_dir" --revision "$GITHUB_SHA"
+          install -m 0644 "$tui_bundle_dir/Gold-bug-tui.tar.gz" "$release_dir/Gold-bug-tui.tar.gz"
+          rm -rf -- "$tui_bundle_dir"
+          release_package_names+=("anland-session-manifest" "Gold-bug-tui.tar.gz")
           (
             cd "$release_dir"
             sha256sum "${release_package_names[@]}" > SHA256SUMS
@@ -5364,7 +5410,16 @@ jobs:
             '' \
             "$release_asset_table" \
             '' \
-            '使用 `install-anland-next.sh` 安装或卸载会话包；`anland-session-manifest` 将目标系统映射到软件包，`SHA256SUMS` 校验软件包、清单和安装脚本。' \
+            '`anland-session-manifest` 将目标系统映射到软件包，`SHA256SUMS` 校验软件包、清单和安装器压缩包。' \
+            '' \
+            '下载 `Gold-bug-tui.tar.gz`，保持解压后的 `tui/` 目录完整：' \
+            '' \
+            '```bash' \
+            'tar -xzf Gold-bug-tui.tar.gz' \
+            'sudo bash tui/install-anland-next.sh --1' \
+            '```' \
+            '' \
+            '卸载时将 `--1` 替换为 `--uninstall`。' \
             '' \
             '## 构建详情' \
             '' \
@@ -5410,6 +5465,19 @@ jobs:
             done <<< "$asset_rows"
           }
 
+          delete_release_asset_named() {
+            local asset_name="$1"
+            local asset_ids asset_id
+            asset_ids="$(gh api \
+              "repos/$GITHUB_REPOSITORY/releases/tags/$release_tag" \
+              --jq ".assets[] | select(.name == \"$asset_name\") | .id")" || return 1
+            while IFS= read -r asset_id; do
+              [ -n "$asset_id" ] || continue
+              gh api --method DELETE \
+                "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            done <<< "$asset_ids"
+          }
+
           if [ "$release_exists" = true ]; then
             updated_uploads=()
             for target in "${updated_targets[@]}"; do
@@ -5419,7 +5487,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             gh release upload "$release_tag" \
-              "$manifest_path" "$release_dir/install-anland-next.sh" "$release_dir/SHA256SUMS" \
+              "$manifest_path" "$release_dir/Gold-bug-tui.tar.gz" "$release_dir/SHA256SUMS" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             for target in "${updated_targets[@]}"; do
@@ -5431,12 +5499,13 @@ jobs:
               --notes "$release_notes" \
               --draft=false \
               --latest=false
+            delete_release_asset_named 'install-anland-next.sh'
           else
             release_uploads=()
             for target in "${present_targets[@]}"; do
               release_uploads+=("$release_dir/${asset_by_target[$target]}")
             done
-            release_uploads+=("$manifest_path" "$release_dir/install-anland-next.sh" "$release_dir/SHA256SUMS")
+            release_uploads+=("$manifest_path" "$release_dir/Gold-bug-tui.tar.gz" "$release_dir/SHA256SUMS")
             gh release create "$release_tag" "${release_uploads[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --draft \

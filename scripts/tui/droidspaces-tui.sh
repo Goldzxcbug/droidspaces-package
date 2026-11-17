@@ -1,7 +1,379 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-readonly TUI_VERSION="1.7"
+# BEGIN DROIDSPACES SHARED operations
+# shellcheck shell=bash
+# Shared installer transaction support. Embedded into standalone release scripts.
+# Keep this file independent of the installer's language and package manager.
+DS_OP_ACTIVE=false
+DS_OP_COMPONENT=''
+DS_OP_PHASE=''
+DS_OP_DIR=''
+DS_OP_TRANSACTION=''
+DS_OP_LOG=''
+DS_OP_ID=''
+DS_OP_PREVIOUS_EXIT=''
+DS_OP_PREVIOUS_INT=''
+DS_OP_PREVIOUS_TERM=''
+DS_OP_PREVIOUS_HUP=''
+DS_OP_CONFIG_RECOVERED=false
+DS_PREFLIGHT_ACTIVE=false
+
+ds_operation_preflight() {
+    local component="$1" directory path
+    if ((EUID == 0)); then ds_operation_begin "$component"; return; fi
+    [[ "${DS_PREFLIGHT_ACTIVE:-false}" == false ]] || return 0
+    [[ "$component" =~ ^[a-z][a-z0-9-]*$ ]] || return 1
+    directory="${DROIDSPACES_USER_LOG_DIR:-${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}/droidspaces-tui/logs}"
+    ds_operation_safe_path "$directory" || return 1
+    path="$directory"
+    while [[ "$path" != / ]]; do
+        [[ ! -L "$path" ]] || return 1
+        path="${path%/*}"; [[ -n "$path" ]] || path=/
+    done
+    mkdir -p -m 0700 -- "$directory" || return 1
+    [[ "$(stat -c %u "$directory")" == "$EUID" ]] || return 1
+    chmod 0700 "$directory" || return 1
+    DS_PREFLIGHT_LOG="$(mktemp "$directory/$component-preflight.XXXXXXXX.log")" || return 1
+    DS_PREFLIGHT_PREVIOUS_EXIT="$(trap -p EXIT)"
+    DS_PREFLIGHT_PREVIOUS_INT="$(trap -p INT)"
+    DS_PREFLIGHT_PREVIOUS_TERM="$(trap -p TERM)"
+    DS_PREFLIGHT_PREVIOUS_HUP="$(trap -p HUP)"
+    exec {DS_PREFLIGHT_STDOUT}>&1 {DS_PREFLIGHT_STDERR}>&2
+    exec > >(exec tee -a -- "$DS_PREFLIGHT_LOG") 2>&1
+    DS_PREFLIGHT_LOG_PID=$!
+    DS_PREFLIGHT_ACTIVE=true
+    trap 'ds_operation_preflight_exit "$?"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    printf 'Droidspaces pre-download log / 预下载日志: %s\n' "$DS_PREFLIGHT_LOG"
+}
+
+ds_operation_preflight_finish() {
+    local status="$1"
+    [[ "${DS_PREFLIGHT_ACTIVE:-false}" == true ]] || return "$status"
+    printf 'Pre-download/privilege handoff finished (exit=%s). Log: %s\n' "$status" "$DS_PREFLIGHT_LOG"
+    DS_PREFLIGHT_ACTIVE=false
+    exec 1>&"$DS_PREFLIGHT_STDOUT" 2>&"$DS_PREFLIGHT_STDERR"
+    exec {DS_PREFLIGHT_STDOUT}>&- {DS_PREFLIGHT_STDERR}>&-
+    ds_operation_drain_logger "$DS_PREFLIGHT_LOG_PID"
+    trap - EXIT INT TERM HUP
+    [[ -z "$DS_PREFLIGHT_PREVIOUS_EXIT" ]] || eval "$DS_PREFLIGHT_PREVIOUS_EXIT"
+    [[ -z "$DS_PREFLIGHT_PREVIOUS_INT" ]] || eval "$DS_PREFLIGHT_PREVIOUS_INT"
+    [[ -z "$DS_PREFLIGHT_PREVIOUS_TERM" ]] || eval "$DS_PREFLIGHT_PREVIOUS_TERM"
+    [[ -z "$DS_PREFLIGHT_PREVIOUS_HUP" ]] || eval "$DS_PREFLIGHT_PREVIOUS_HUP"
+    return "$status"
+}
+
+ds_operation_preflight_exit() {
+    local status="$1"
+    trap - EXIT INT TERM HUP
+    if declare -F cleanup >/dev/null 2>&1; then cleanup || status=1; fi
+    ds_operation_preflight_finish "$status" || status=$?
+    trap - EXIT
+    exit "$status"
+}
+
+ds_operation_safe_path() {
+    [[ "$1" == /* && "$1" != *$'\n'* && "$1" != *$'\t'* &&
+       "$1" != */../* && "$1" != */.. && "$1" != */./* ]]
+}
+
+ds_operation_drain_logger() {
+    local logger_pid="$1" attempt
+    # A service started by a package hook can inherit the logging pipe. Do not
+    # let that unrelated service hold up completion or keep the modification lock.
+    for ((attempt=0; attempt<40; attempt++)); do
+        if ! kill -0 "$logger_pid" 2>/dev/null; then
+            wait "$logger_pid" 2>/dev/null || true
+            return 0
+        fi
+        sleep 0.05
+    done
+    kill -TERM "$logger_pid" 2>/dev/null || true
+    sleep 0.05
+    kill -KILL "$logger_pid" 2>/dev/null || true
+    # Only wait after confirming termination: even a logger blocked by a sick
+    # filesystem must not turn installer cleanup into an unbounded wait.
+    if ! kill -0 "$logger_pid" 2>/dev/null; then wait "$logger_pid" 2>/dev/null || true; fi
+}
+
+ds_operation_write_state() {
+    local status="$1" code="${2:-0}" temporary
+    temporary="$DS_OP_DIR/.active.$BASHPID"
+    {
+        printf 'format=1\noperation=%s\ncomponent=%s\nphase=%s\nstatus=%s\nexit_code=%s\n' \
+            "$DS_OP_ID" "$DS_OP_COMPONENT" "$DS_OP_PHASE" "$status" "$code"
+        printf 'pid=%s\nlog=%s\ntransaction=%s\nupdated_at=%s\n' \
+            "$$" "$DS_OP_LOG" "$DS_OP_TRANSACTION" "$(date -u +%FT%TZ)"
+        printf 'config_recovered=%s\n' "$DS_OP_CONFIG_RECOVERED"
+    } > "$temporary" && chmod 0600 "$temporary" && mv -f -- "$temporary" "$DS_OP_DIR/active"
+}
+
+ds_operation_phase() {
+    if [[ "${DS_OP_ACTIVE:-false}" != true ]]; then
+        [[ "${DS_PREFLIGHT_ACTIVE:-false}" != true ]] || printf '[droidspaces preflight] phase=%s\n' "$1"
+        return 0
+    fi
+    [[ "$1" =~ ^[a-z][a-z0-9_-]*$ ]] || return 1
+    DS_OP_PHASE="$1"
+    ds_operation_write_state running
+    printf '[droidspaces operation] %s phase=%s\n' "$DS_OP_COMPONENT" "$DS_OP_PHASE"
+}
+
+ds_operation_backup() {
+    local target="$1" number snapshot present
+    [[ "${DS_OP_ACTIVE:-false}" == true ]] || return 0
+    ds_operation_safe_path "$target" || return 1
+    # Never dereference a user-supplied target when saving/restoring configuration.
+    [[ ! -d "$target" || -L "$target" ]] || return 1
+    if [[ -f "$DS_OP_TRANSACTION/configs" ]] &&
+        awk -F '\t' -v target="$target" '$3 == target { found=1 } END { exit !found }' \
+            "$DS_OP_TRANSACTION/configs"; then
+        return 0
+    fi
+    number="$(wc -l < "$DS_OP_TRANSACTION/configs")"
+    snapshot="$DS_OP_TRANSACTION/config.$number"
+    present=missing
+    if [[ -e "$target" || -L "$target" ]]; then
+        cp -a -- "$target" "$snapshot" || return 1
+        present=present
+    fi
+    printf '%s\t%s\t%s\n' "$present" "$snapshot" "$target" >> "$DS_OP_TRANSACTION/configs"
+}
+
+ds_operation_snapshot_installer_config() {
+    local path
+    for path in "${DESKTOP_CONFIG:-/etc/droidspaces-desktop.conf}" \
+        /etc/dnf/dnf.conf /etc/pacman.conf /etc/apt/preferences.d/hold-anland-package \
+        "${APT_HOLD_STATE:-}" "${PACMAN_PACKAGE_STATE:-}" \
+        "${COMPONENT_STATE_DIR:-/var/lib/droidspaces-tui/components}/$DS_OP_COMPONENT.version" \
+        "${COMPONENT_STATE_DIR:-/var/lib/droidspaces-tui/components}/$DS_OP_COMPONENT.packages.tsv" \
+        "${COMPONENT_STATE_DIR:-/var/lib/droidspaces-tui/components}/$DS_OP_COMPONENT.files.sha256"; do
+        [[ -n "$path" ]] || continue
+        ds_operation_backup "$path"
+    done
+}
+
+ds_operation_record_packages() {
+    local component="$1" state_dir="$2" directory file package output version temporary digest unexpected
+    local -a candidates=()
+    local -A names=()
+    ds_operation_safe_path "$state_dir" || return 1
+    mkdir -p -- "$state_dir" || return 1
+    if [[ "$component" == fonts ]]; then
+        [[ -n "${FONT_TARGET:-}" && -d "$FONT_TARGET" && ! -L "$FONT_TARGET" ]] || return 1
+        unexpected="$(find "$FONT_TARGET" -mindepth 1 ! -type f ! -type d -print -quit)" || return 1
+        [[ -z "$unexpected" ]] || return 1
+        digest="$(find "$FONT_TARGET" -type f -print0 | LC_ALL=C sort -z | \
+            xargs -0 -r sha256sum -b -z | sha256sum)" || return 1
+        digest="${digest%% *}"
+        [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+        temporary="$(mktemp "$state_dir/.fonts.files.XXXXXXXX")" || return 1
+        printf '%s\n' "$digest" > "$temporary" && chmod 0644 "$temporary" && \
+            mv -f -- "$temporary" "$state_dir/fonts.files.sha256"
+        return
+    fi
+    temporary="$(mktemp "$state_dir/.$component.packages.XXXXXXXX")" || return 1
+    directory="${PACKAGE_DIR:-${WORK_DIR:-}}"
+    if [[ -n "$directory" && -d "$directory" ]]; then
+        while IFS= read -r -d '' file; do
+            package=''
+            case "$file" in
+                *.deb) package="$(dpkg-deb -f "$file" Package 2>/dev/null)" || true ;;
+                *.rpm) package="$(rpm -qp --queryformat '%{NAME}' "$file" 2>/dev/null)" || true ;;
+                *.pkg.tar.*)
+                    output="$(pacman -Qp -- "$file" 2>/dev/null)" || true
+                    package="${output%% *}"
+                    ;;
+            esac
+            [[ "$package" =~ ^[A-Za-z0-9][A-Za-z0-9.+:_-]*$ ]] && names["$package"]=1
+        done < <(find "$directory" -maxdepth 4 -type f \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.pkg.tar.*' \) -print0)
+    fi
+    # Also cover a single-package session and old archives with no unpacked metadata.
+    case "$component" in
+        mesa) candidates=(mesa mesa-vulkan-drivers libglx-mesa0 libegl-mesa0 mesa-dri-drivers) ;;
+        kde) candidates=(kwin kwin-wayland kwin-x11 kwin-common xwayland xorg-x11-server-Xwayland) ;;
+        gnome) candidates=(mutter mutter-common xwayland xorg-x11-server-Xwayland) ;;
+        niri) candidates=(niri-anland xwayland-satellite xwayland xorg-x11-server-Xwayland) ;;
+        hyprland) candidates=(hyprland-anland hyprland xwayland xorg-x11-server-Xwayland) ;;
+        mango) candidates=(mango-anland xwayland xorg-x11-server-Xwayland) ;;
+        denial) candidates=(denial xwayland xorg-x11-server-Xwayland) ;;
+        anland-next) candidates=(anland-session) ;;
+        hangover) candidates=(hangover-wine) ;;
+    esac
+    for package in "${candidates[@]}"; do names["$package"]=1; done
+    for package in "${!names[@]}"; do
+        version=''
+        case "${PACKAGE_TYPE:-${PACKAGE_MANAGER:-${TARGET:-}}}" in
+            deb|apt|debian*|ubuntu*)
+                output="$(dpkg-query -W -f='${db:Status-Abbrev}\t${Version}\n' "$package" 2>/dev/null)" || continue
+                [[ "$output" == ?i$' '*$'\t'* ]] || continue
+                version="${output#*$'\t'}"
+                ;;
+            rpm|dnf|fedora*) version="$(rpm -q --queryformat '%{VERSION}-%{RELEASE}' "$package" 2>/dev/null)" || continue ;;
+            pkg.tar.*|pacman|arch*)
+                output="$(pacman -Q -- "$package" 2>/dev/null)" || continue
+                version="${output#* }"
+                ;;
+        esac
+        [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+:~_-]*$ ]] || continue
+        printf '%s\t%s\n' "$package" "$version" >> "$temporary"
+    done
+    if [[ -s "$temporary" ]]; then
+        LC_ALL=C sort -o "$temporary" "$temporary" && chmod 0644 "$temporary" && \
+            mv -f -- "$temporary" "$state_dir/$component.packages.tsv"
+    else
+        rm -f -- "$temporary" "$state_dir/$component.packages.tsv"
+    fi
+}
+
+ds_operation_restore_configs() {
+    local transaction="$1" present snapshot target temporary failed=0
+    [[ -f "$transaction/configs" && ! -L "$transaction/configs" ]] || return 0
+    while IFS=$'\t' read -r present snapshot target; do
+        [[ -n "$target" ]] || continue
+        if ! ds_operation_safe_path "$target" || [[ "$snapshot" != "$transaction"/config.* ]]; then
+            failed=1; continue
+        fi
+        if [[ "$present" == present && ( -f "$snapshot" || -L "$snapshot" ) ]]; then
+            temporary="${target}.droidspaces-restore-$BASHPID"
+            if ! cp -a -- "$snapshot" "$temporary" || ! mv -Tf -- "$temporary" "$target"; then
+                failed=1
+            fi
+        elif [[ "$present" == missing ]]; then
+            rm -f -- "$target" || failed=1
+        else
+            failed=1
+        fi
+    done < "$transaction/configs"
+    return "$failed"
+}
+
+ds_operation_recover_previous() {
+    local previous_status previous_transaction previous_phase already_recovered
+    [[ -f "$DS_OP_DIR/active" && ! -L "$DS_OP_DIR/active" ]] || return 0
+    previous_status="$(awk -F= '$1=="status" {print $2}' "$DS_OP_DIR/active")"
+    case "$previous_status" in running|incomplete|recovery_failed) ;; *) return 0 ;; esac
+    previous_transaction="$(awk -F= '$1=="transaction" {sub(/^[^=]*=/, ""); print}' "$DS_OP_DIR/active")"
+    previous_phase="$(awk -F= '$1=="phase" {print $2}' "$DS_OP_DIR/active")"
+    already_recovered="$(awk -F= '$1=="config_recovered" {print $2}' "$DS_OP_DIR/active")"
+    [[ "$previous_transaction" == "$DS_OP_DIR"/transactions/* && -d "$previous_transaction" &&
+       ! -L "$previous_transaction" ]] || {
+        printf 'Unfinished Droidspaces operation has an invalid recovery record: %s\n' "$DS_OP_DIR/active" >&2
+        return 1
+    }
+    if [[ "$already_recovered" != true ]]; then
+        printf 'Recovering configuration from unfinished operation (phase=%s): %s\n' \
+            "$previous_phase" "$previous_transaction" >&2
+        ds_operation_restore_configs "$previous_transaction" || return 1
+    else
+        printf 'Previous operation was interrupted at phase=%s; its configuration was already recovered.\n' "$previous_phase" >&2
+    fi
+    cp -a -- "$DS_OP_DIR/active" "$previous_transaction/interrupted-state" || return 1
+    printf 'Configuration recovered. Package changes may already have completed; re-run the installer to verify/repair them.\n' >&2
+}
+
+ds_operation_begin() {
+    local component="$1" path old_umask
+    [[ "${DS_OP_ACTIVE:-false}" == false ]] || return 0
+    [[ "$component" =~ ^[a-z][a-z0-9-]*$ ]] || return 1
+    command -v flock >/dev/null 2>&1 || {
+        printf 'Droidspaces: missing flock (install util-linux). / 缺少 flock，请安装 util-linux。\n' >&2
+        return 1
+    }
+    DS_OP_DIR="${DROIDSPACES_OPERATION_DIR:-/var/lib/droidspaces-tui/operations}"
+    ds_operation_safe_path "$DS_OP_DIR" || return 1
+    # Reject symlink components before creating privileged persistent files.
+    path="$DS_OP_DIR"
+    while [[ "$path" != / ]]; do
+        [[ ! -L "$path" ]] || { printf 'Unsafe operation directory: %s\n' "$path" >&2; return 1; }
+        path="${path%/*}"; [[ -n "$path" ]] || path=/
+    done
+    old_umask="$(umask)"; umask 077
+    mkdir -p -- "$DS_OP_DIR/transactions" || { umask "$old_umask"; return 1; }
+    umask "$old_umask"
+    [[ "$(stat -c %u "$DS_OP_DIR")" == "$EUID" && ! -L "$DS_OP_DIR/lock" &&
+       ! -L "$DS_OP_DIR/transactions" && ! -L "$DS_OP_DIR/active" ]] || return 1
+    chmod 0700 "$DS_OP_DIR" "$DS_OP_DIR/transactions" || return 1
+    exec {DS_OP_LOCK_FD}>"$DS_OP_DIR/lock" || return 1
+    if ! flock -n "$DS_OP_LOCK_FD"; then
+        printf 'Another Droidspaces modification is running. / 另一个 Droidspaces 修改操作正在运行。\n' >&2
+        exec {DS_OP_LOCK_FD}>&-
+        return 75
+    fi
+    ds_operation_recover_previous || { exec {DS_OP_LOCK_FD}>&-; return 1; }
+    DS_OP_COMPONENT="$component"
+    DS_OP_CONFIG_RECOVERED=false
+    DS_OP_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+    DS_OP_TRANSACTION="$DS_OP_DIR/transactions/$DS_OP_ID"
+    mkdir -m 0700 -- "$DS_OP_TRANSACTION" || return 1
+    : > "$DS_OP_TRANSACTION/configs"
+    DS_OP_LOG="$DS_OP_TRANSACTION/operation.log"
+    DS_OP_PREVIOUS_EXIT="$(trap -p EXIT)"
+    DS_OP_PREVIOUS_INT="$(trap -p INT)"
+    DS_OP_PREVIOUS_TERM="$(trap -p TERM)"
+    DS_OP_PREVIOUS_HUP="$(trap -p HUP)"
+    exec {DS_OP_STDOUT}>&1 {DS_OP_STDERR}>&2
+    exec > >(exec {DS_OP_LOCK_FD}>&-; exec tee -a -- "$DS_OP_LOG") 2>&1
+    DS_OP_LOG_PID=$!
+    DS_OP_ACTIVE=true
+    trap 'ds_operation_exit "$?"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    printf 'Droidspaces operation log / 操作日志: %s\n' "$DS_OP_LOG"
+    ds_operation_phase prepare
+}
+
+ds_operation_finish() {
+    local status="${1:-0}" result=complete
+    [[ "${DS_OP_ACTIVE:-false}" == true ]] || return "$status"
+    if ((status != 0)); then
+        result=incomplete
+        if ! ds_operation_restore_configs "$DS_OP_TRANSACTION"; then
+            result=recovery_failed
+        else
+            DS_OP_CONFIG_RECOVERED=true
+        fi
+        printf 'Operation failed at phase=%s (exit=%s). Log: %s\n' "$DS_OP_PHASE" "$status" "$DS_OP_LOG" >&2
+        printf 'Configuration backups: %s. Package changes may require re-running this installer.\n' "$DS_OP_TRANSACTION" >&2
+    else
+        DS_OP_PHASE=complete
+        printf 'Operation completed. Log: %s\n' "$DS_OP_LOG"
+    fi
+    ds_operation_write_state "$result" "$status" || status=1
+    DS_OP_ACTIVE=false
+    exec 1>&"$DS_OP_STDOUT" 2>&"$DS_OP_STDERR"
+    exec {DS_OP_STDOUT}>&- {DS_OP_STDERR}>&-
+    flock -u "$DS_OP_LOCK_FD" || true
+    exec {DS_OP_LOCK_FD}>&-
+    ds_operation_drain_logger "$DS_OP_LOG_PID"
+    trap - EXIT INT TERM HUP
+    [[ -z "$DS_OP_PREVIOUS_EXIT" ]] || eval "$DS_OP_PREVIOUS_EXIT"
+    [[ -z "$DS_OP_PREVIOUS_INT" ]] || eval "$DS_OP_PREVIOUS_INT"
+    [[ -z "$DS_OP_PREVIOUS_TERM" ]] || eval "$DS_OP_PREVIOUS_TERM"
+    [[ -z "$DS_OP_PREVIOUS_HUP" ]] || eval "$DS_OP_PREVIOUS_HUP"
+    return "$status"
+}
+
+ds_operation_exit() {
+    local status="$1"
+    trap - EXIT INT TERM HUP
+    if declare -F ds_installer_rollback >/dev/null 2>&1; then
+        if ! ds_installer_rollback "$status"; then status=1; fi
+    fi
+    # Existing per-installer cleanup includes preserved media/fonts recovery.
+    if declare -F cleanup >/dev/null 2>&1; then cleanup || status=1; fi
+    ds_operation_finish "$status" || status=$?
+    trap - EXIT
+    exit "$status"
+}
+# END DROIDSPACES SHARED operations
+
+readonly TUI_VERSION="1.8"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 readonly DESKTOP_CONFIG="${DROIDSPACES_DESKTOP_CONFIG:-/etc/droidspaces-desktop.conf}"
@@ -9,6 +381,7 @@ readonly GPU_HELPER_LOCAL="$SCRIPT_DIR/droidspaces-gpu.sh"
 readonly GPU_HELPER_INSTALLED="/usr/local/bin/droidspaces-gpu"
 readonly VIDEO_HELPER_LOCAL="$SCRIPT_DIR/droidspaces-video.sh"
 readonly VIDEO_HELPER_INSTALLED="/usr/local/bin/droidspaces-video.sh"
+readonly FONTS_DIR="${DROIDSPACES_FONTS_DIR:-/usr/local/share/fonts/winefonts}"
 readonly HANGOVER_CACHE_DIR="/var/cache/hangover-wine"
 readonly HANGOVER_MANIFEST_NAME="hangover-wine-manifest"
 readonly COMPONENT_STATE_DIR="${DROIDSPACES_COMPONENT_STATE_DIR:-/var/lib/droidspaces-tui/components}"
@@ -18,6 +391,9 @@ readonly COMPONENT_PROXY_DOWNLOAD_BASE="${DROIDSPACES_COMPONENT_PROXY_BASE:-http
 readonly COMPONENT_CNB_DOWNLOAD_BASE="${DROIDSPACES_COMPONENT_CNB_BASE:-https://cnb.cool/goldzxcbug/droidspaces-package/-/releases/download}"
 readonly COMPONENT_MANIFEST_MAX_BYTES=$((1024 * 1024))
 readonly COMPONENT_VERSION_TIMEOUT=10
+readonly TUI_USER_CACHE_DIR="${DROIDSPACES_TUI_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/droidspaces-tui}"
+readonly TUI_USER_CONFIG_DIR="${DROIDSPACES_TUI_CONFIG_DIR:-${XDG_CONFIG_HOME:-${HOME:-/tmp}/.config}/droidspaces-tui}"
+readonly COMPONENT_CACHE_TTL="${DROIDSPACES_TUI_CACHE_TTL:-900}"
 readonly INSTALLED_TUI_PATH="/usr/local/bin/droidspaces-tui"
 readonly TUI_RELEASE_REPOSITORY="${DROIDSPACES_TUI_REPOSITORY:-Goldzxcbug/droidspaces-package}"
 readonly TUI_RELEASE_TAG="Gold-bug-tui"
@@ -36,6 +412,11 @@ SYSTEM_VERSION=""
 SYSTEM_LABEL="Unknown Linux"
 ARCHITECTURE="unknown"
 CACHE_ACTION=""
+STATUS_OUTPUT=""
+INTERNAL_TOOL=""
+declare -a INTERNAL_ARGUMENTS=()
+FORCE_COMPONENT_REFRESH=false
+UI_RESIZED=false
 UPDATE_WORK_DIR=""
 UPDATE_UPDATER_PATH=""
 MIRROR_WORK_DIR=""
@@ -65,6 +446,12 @@ declare -A COMPONENT_CURRENT_VERSIONS=()
 declare -A COMPONENT_UPSTREAM_VERSIONS=()
 declare -A COMPONENT_VERSION_PIDS=()
 declare -A COMPONENT_INSTALLED=()
+declare -A COMPONENT_QUERY_STATUS=()
+declare -A COMPONENT_QUERY_REASON=()
+declare -A COMPONENT_CHECKED_AT=()
+declare -A COMPONENT_REFRESHING=()
+declare -A COMPONENT_DRIFT=()
+declare -A COMPONENT_RECORD_STATUS=()
 
 COLOR_RESET=""
 COLOR_BOLD=""
@@ -85,6 +472,11 @@ detect_language() {
 
 set_default_download_source() {
     [[ -z "$DOWNLOAD_SOURCE" ]] || return 0
+    local saved_source=""
+    if [[ -f "$TUI_USER_CONFIG_DIR/source" && ! -L "$TUI_USER_CONFIG_DIR/source" ]]; then
+        IFS= read -r saved_source < "$TUI_USER_CONFIG_DIR/source" || true
+        case "$saved_source" in auto|1|2|3) DOWNLOAD_SOURCE="$saved_source"; return ;; esac
+    fi
     if [[ "$UI_LANG" == "zh" ]]; then
         DOWNLOAD_SOURCE="3"
     else
@@ -113,6 +505,9 @@ $(msg '用法' 'Usage'): $0 [$(msg '选项' 'options')]
                        $(msg '设置初始下载源' 'Set the initial download source')
   --clean-cache manifest|all
                        $(msg '清理 Hangover 清单或全部下载缓存' 'Clean the Hangover manifest or all downloads')
+  --refresh            $(msg '忽略查询缓存并刷新' 'Refresh without using the cache TTL')
+  --status             $(msg '输出组件诊断状态（无需终端）' 'Print component status without a terminal')
+  --json               $(msg '以 JSON 输出诊断状态' 'Print diagnostic status as JSON')
   --no-color           $(msg '关闭彩色输出' 'Disable colored output')
   -h, --help           $(msg '显示此帮助' 'Show this help')
 EOF
@@ -151,6 +546,12 @@ parse_arguments() {
                 CACHE_ACTION="${1#*=}"
                 shift
                 ;;
+            --internal-tool)
+                (($# >= 2)) || die '内部工具缺少参数。' 'Internal tool requires an action.'
+                INTERNAL_TOOL="$2"; shift 2; INTERNAL_ARGUMENTS=("$@"); break ;;
+            --refresh) FORCE_COMPONENT_REFRESH=true; shift ;;
+            --status) STATUS_OUTPUT=text; shift ;;
+            --json) STATUS_OUTPUT=json; shift ;;
             --no-color)
                 export NO_COLOR=1
                 shift
@@ -349,18 +750,14 @@ read_dynamic_menu_choice() {
     fi
 
     disable_dynamic_menu_echo
-    if component_versions_pending; then
-        IFS= read -r -s -n 1 -t 0.12 key
-        read_status=$?
-        if ((read_status != 0)); then
-            if ((read_status > 128)); then
-                SPINNER_INDEX=$((SPINNER_INDEX + 1))
-                return 1
-            fi
-            restore_dynamic_menu_echo
-            return 2
+    IFS= read -r -s -n 1 -t 0.12 key
+    read_status=$?
+    if ((read_status != 0)); then
+        if ((read_status > 128)) || [[ "$UI_RESIZED" == true ]]; then
+            UI_RESIZED=false
+            if component_versions_pending; then SPINNER_INDEX=$((SPINNER_INDEX + 1)); fi
+            return 1
         fi
-    elif ! IFS= read -r -s -n 1 key; then
         restore_dynamic_menu_echo
         return 2
     fi
@@ -437,16 +834,73 @@ hangover_cache_size() {
     fi
 }
 
-clean_cache_as_root() {
-    local action="$1"
+run_locked_system_tool() (
+    # A child process owns the lock, log, signal handlers and recovery records;
+    # returning to the menu never leaves an installer lock held by the TUI.
+    set -e
+    local tool="$1" status=0 script_path expected_sha actual_sha root_info root_source root_fstype root_options path
+    shift
+    case "$tool" in
+        cache)
+            [[ $# == 1 && ( "$1" == manifest || "$1" == all ) ]] || exit 2
+            ds_operation_begin cache-cleanup || exit $?
+            ds_operation_phase cache || exit $?
+            clean_cache_files "$1" || exit $?
+            ;;
+        mirrors)
+            [[ $# == 2 && "$2" =~ ^[0-9a-f]{64}$ && -f "$1" && ! -L "$1" && -r "$1" ]] || exit 2
+            script_path="$1"; expected_sha="$2"
+            ds_operation_begin system-mirrors || exit $?
+            ds_operation_phase verify || exit $?
+            cp -- "$script_path" "$DS_OP_TRANSACTION/mirrors.sh" || exit $?
+            actual_sha="$(sha256sum "$DS_OP_TRANSACTION/mirrors.sh")" || exit $?
+            actual_sha="${actual_sha%% *}"
+            [[ "$actual_sha" == "$expected_sha" ]] || exit 1
+            bash -n "$DS_OP_TRANSACTION/mirrors.sh" || exit $?
+            # Save the known source configuration files before handing control
+            # to LinuxMirrors. Its own backups also remain available.
+            for path in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources \
+                /etc/apt/sources.list.d/ubuntu.sources /etc/pacman.conf /etc/pacman.d/mirrorlist; do
+                ds_operation_backup "$path" || exit $?
+            done
+            for path in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources /etc/yum.repos.d/*.repo; do
+                [[ -e "$path" || -L "$path" ]] || continue
+                ds_operation_backup "$path" || exit $?
+            done
+            ds_operation_phase configure || exit $?
+            bash "$DS_OP_TRANSACTION/mirrors.sh" || exit $?
+            ;;
+        trim)
+            [[ $# == 0 ]] || exit 2
+            ds_operation_begin storage-trim || exit $?
+            ds_operation_phase verify || exit $?
+            root_info="$(findmnt -rnT / -o SOURCE,FSTYPE,OPTIONS)" || exit $?
+            [[ -n "$root_info" && "$root_info" != *$'\n'* ]] || exit 1
+            read -r root_source root_fstype root_options <<< "$root_info"
+            [[ "$root_fstype" == ext4 && "$root_source" =~ ^/dev/(block/)?loop[0-9]+(\[[^]]+\])?$ && ",$root_options," == *,rw,* ]] || exit 1
+            ds_operation_phase trim || exit $?
+            fstrim -v / || exit $?
+            ;;
+        *) return 2 ;;
+    esac
+    ds_operation_finish "$status"
+)
 
-    if ((EUID != 0)); then
-        command -v sudo >/dev/null 2>&1 || die \
-            "清理缓存需要 root 权限，且系统未安装 sudo。" \
-            "Cache cleaning requires root access, and sudo is unavailable."
-        exec sudo --preserve-env=LANG,LC_ALL,LC_MESSAGES -- \
-            "$SCRIPT_PATH" --no-color --clean-cache "$action"
+run_system_tool_as_root() {
+    if ((EUID == 0)); then
+        run_locked_system_tool "$@"
+    else
+        command -v sudo >/dev/null 2>&1 || return 1
+        sudo --preserve-env=LANG,LC_ALL,LC_MESSAGES -- bash "$SCRIPT_PATH" --internal-tool "$@"
     fi
+}
+
+clean_cache_as_root() {
+    run_system_tool_as_root cache "$1"
+}
+
+clean_cache_files() {
+    local action="$1"
 
     if [[ ! -e "$HANGOVER_CACHE_DIR" && ! -L "$HANGOVER_CACHE_DIR" ]]; then
         return
@@ -836,7 +1290,7 @@ detected_component_package_version() {
             version="$(installed_package_version hangover-wine)" || true
             ;;
         fonts)
-            [[ -d /usr/local/share/fonts/winefonts ]] && version="$(msg '未知版本' 'unknown')"
+            [[ -d "$FONTS_DIR" && ! -L "$FONTS_DIR" ]] && version="$(msg '未知版本' 'unknown')"
             ;;
         kde)
             version="$(installed_package_version kwin-wayland kwin-x11 kwin-common kwin)" || true
@@ -867,12 +1321,107 @@ detected_component_package_version() {
     return 1
 }
 
+component_record_status() {
+    local component="$1" snapshot="$COMPONENT_STATE_DIR/$1.packages.tsv"
+    local package expected extra actual rows=0
+    if [[ "$component" == fonts ]]; then
+        local fingerprint="$COMPONENT_STATE_DIR/fonts.files.sha256" expected_digest actual_digest
+        if [[ ! -e "$fingerprint" && ! -L "$fingerprint" ]]; then
+            if [[ -d "$FONTS_DIR" && ! -L "$FONTS_DIR" && -f "$FONTS_DIR/FONT-LICENSES.tsv" && ! -L "$FONTS_DIR/FONT-LICENSES.tsv" ]] && stored_component_version fonts >/dev/null; then
+                printf legacy
+            else
+                printf missing
+            fi
+            return
+        fi
+        [[ -f "$fingerprint" && ! -L "$fingerprint" ]] && IFS= read -r expected_digest < "$fingerprint" || { printf invalid; return; }
+        [[ "$expected_digest" =~ ^[0-9a-f]{64}$ && -d "$FONTS_DIR" && ! -L "$FONTS_DIR" ]] || { printf invalid; return; }
+        [[ -z "$(find "$FONTS_DIR" -mindepth 1 ! -type d ! -type f -print -quit 2>/dev/null)" ]] || { printf drift; return; }
+        actual_digest="$(find "$FONTS_DIR" -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum -b -z | sha256sum)" || { printf invalid; return; }
+        actual_digest="${actual_digest%% *}"
+        if [[ "$actual_digest" == "$expected_digest" ]]; then printf match; else printf drift; fi
+        return
+    fi
+    [[ -e "$snapshot" || -L "$snapshot" ]] || { printf missing; return; }
+    [[ -f "$snapshot" && ! -L "$snapshot" && -r "$snapshot" ]] || { printf invalid; return; }
+    while IFS=$'\t' read -r package expected extra || [[ -n "$package$expected$extra" ]]; do
+        ((rows += 1))
+        if ((rows > 256)) || [[ ! "$package" =~ ^[A-Za-z0-9][A-Za-z0-9.+:_-]{0,127}$ || -n "$extra" ]] || ! valid_component_version "$expected"; then
+            printf invalid; return
+        fi
+        if ! actual="$(installed_package_version "$package")" || [[ "$actual" != "$expected" ]]; then
+            printf drift; return
+        fi
+    done < "$snapshot"
+    if ((rows > 0)); then printf match; else printf invalid; fi
+}
+
+json_string() {
+    local value
+    value="$(ui_plain "$1")"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    printf '"%s"' "$value"
+}
+
+source_record_path() {
+    local directory=/usr/local/share/droidspaces-tui
+    if [[ -f "$directory/Gold-bug-tui-manifest" ]]; then
+        printf '%s/Gold-bug-tui-manifest' "$directory"
+    elif [[ -f "$directory/source-lock.json" ]]; then
+        printf '%s/source-lock.json' "$directory"
+    else
+        printf '%s/Gold-bug-tui-manifest' "$directory"
+    fi
+}
+
+print_component_diagnostics() {
+    local component first=true source_record
+    source_record="$(source_record_path)"
+    if [[ "$STATUS_OUTPUT" == json ]]; then
+        printf '{"format":1,"tui_version":"%s","source":' "$TUI_VERSION"
+        json_string "$(component_download_base)"
+        printf ',"system":'; json_string "$SYSTEM_ID:$SYSTEM_VERSION"
+        printf ',"architecture":'; json_string "$ARCHITECTURE"
+        printf ',"source_record":'; json_string "$source_record"
+        printf ',"update_record":"/var/lib/droidspaces-tui/operations/installed-tui.tsv","components":['
+        for component in "${COMPONENT_NAMES[@]}"; do
+            component_visible "$component" || continue
+            if [[ "$first" == true ]]; then first=false; else printf ','; fi
+            printf '{"component":"%s","installed":%s,"current":' "$component" "${COMPONENT_INSTALLED[$component]:-false}"
+            json_string "${COMPONENT_CURRENT_VERSIONS[$component]:-}"
+            printf ',"available":'; json_string "${COMPONENT_UPSTREAM_VERSIONS[$component]:-}"
+            printf ',"query_status":'; json_string "${COMPONENT_QUERY_STATUS[$component]:-unknown}"
+            printf ',"reason":'; json_string "${COMPONENT_QUERY_REASON[$component]:-}"
+            printf ',"comparison":"%s","record_drift":%s,"checked_at":%s}' \
+                "$(component_version_comparison "$component")" "${COMPONENT_DRIFT[$component]:-false}" "${COMPONENT_CHECKED_AT[$component]:-0}"
+        done
+        printf ']}\n'
+    else
+        printf 'Droidspaces TUI %s · %s · %s\n' "$TUI_VERSION" "$SYSTEM_LABEL" "$(source_label)"
+        printf '%s\n' "$(msg "来源记录：$source_record" "Source record: $source_record")"
+        for component in "${COMPONENT_NAMES[@]}"; do
+            component_visible "$component" || continue
+            printf '%s: %s | %s → %s\n' "$component" "$(component_status_display "$component")" \
+                "${COMPONENT_CURRENT_VERSIONS[$component]:-}" "$(component_upstream_display "$component")"
+        done
+    fi
+}
+
 detect_current_component_version() {
+    # The package database is authoritative. A saved release version is useful
+    # only when it agrees with the package actually installed.
     local component="$1" version="" stored=""
-    if stored="$(stored_component_version "$component")"; then
-        printf '%s' "$stored"
-    elif version="$(detected_component_package_version "$component")"; then
-        printf '%s' "$version"
+    if version="$(detected_component_package_version "$component")"; then
+        local record_status="${2:-}"
+        [[ -n "$record_status" ]] || record_status="$(component_record_status "$component")"
+        if stored="$(stored_component_version "$component")" && \
+            { [[ "$record_status" == match || "$record_status" == legacy ]] || \
+              { [[ "$record_status" == missing ]] && component_version_equivalent "$component" "$version" "$stored"; }; }; then
+            printf '%s' "$stored"
+        else
+            printf '%s' "$version"
+        fi
     else
         printf '%s' "$(msg '未知版本' 'unknown')"
     fi
@@ -933,41 +1482,58 @@ managed_component_installed() {
     esac
 }
 
-component_versions_match() {
-    local component="$1"
-    local current="${COMPONENT_CURRENT_VERSIONS[$1]:-}"
-    local upstream="${COMPONENT_UPSTREAM_VERSIONS[$1]:-}"
-    [[ -n "$current" && -n "$upstream" ]] || return 1
-    [[ "$upstream" != pending && "$upstream" != "$(msg '超时' 'timeout')" ]] || return 1
+component_version_equivalent() {
+    local component="$1" current="$2" upstream="$3"
+    valid_component_version "$current" && valid_component_version "$upstream" || return 1
     [[ "$current" == "$upstream" ]] && return 0
-
+    current="${current#*:}"
     case "$component" in
-        hangover)
-            [[ "$current" == "$upstream"~* || "$current" == "$upstream"-[0-9]* ]]
-            ;;
-        mesa)
-            current="${current#*:}"
-            [[ "$current" == "$upstream"-* ]]
-            ;;
-        fonts)
-            current="${current#*:}"
-            [[ "$current" == "$upstream"-* || "$current" == "$upstream"+* ]]
-            ;;
-        kde|gnome)
-            current="${current#*:}"
-            [[ "$current" == "$upstream"-* ]]
-            ;;
-        niri|hyprland|mango|denial)
-            current="${current#*:}"
-            [[ "$current" == "$upstream" || "$current" == "$upstream"-* || "$current" == "$upstream"+* ]]
-            ;;
-        anland-next)
-            # Debian uses the bare package version; RPM and pacman append
-            # their package-release suffixes to the same upstream version.
-            [[ "$current" == "$upstream" || "$current" == "$upstream"-* ]]
-            ;;
+        hangover) [[ "$current" == "$upstream"~* || "$current" == "$upstream"-[0-9]* ]] ;;
+        fonts|niri|hyprland|mango|denial)
+            [[ "$current" == "$upstream" || "$current" == "$upstream"-* || "$current" == "$upstream"+* ]] ;;
+        mesa|kde|gnome|anland-next) [[ "$current" == "$upstream" || "$current" == "$upstream"-* ]] ;;
         *) return 1 ;;
     esac
+}
+
+component_versions_match() {
+    component_version_equivalent "$1" "${COMPONENT_CURRENT_VERSIONS[$1]:-}" "${COMPONENT_UPSTREAM_VERSIONS[$1]:-}"
+}
+
+component_version_comparison() {
+    local component="$1" current="${COMPONENT_CURRENT_VERSIONS[$1]:-}" upstream="${COMPONENT_UPSTREAM_VERSIONS[$1]:-}"
+    valid_component_version "$current" && valid_component_version "$upstream" || { printf unknown; return; }
+    [[ "$current" != unknown && "$current" != hidden && "$upstream" != pending ]] || { printf unknown; return; }
+    if component_versions_match "$component"; then printf equal; return; fi
+    # Release asset versions have no distribution epoch.
+    current="${current#*:}"; upstream="${upstream#*:}"
+    [[ "$current" =~ ^[0-9] && "$upstream" =~ ^[0-9] ]] || { printf unknown; return; }
+    # Use the distribution's own comparator. A missing comparator or opaque
+    # release identifier gives an unknown result, never an invented update.
+    case "$SYSTEM_ID" in
+        debian|ubuntu)
+            if command -v dpkg >/dev/null 2>&1; then
+                if dpkg --compare-versions "$current" lt "$upstream" 2>/dev/null; then printf older; return; fi
+                if dpkg --compare-versions "$current" gt "$upstream" 2>/dev/null; then printf newer; return; fi
+            fi ;;
+        arch|archarm|archlinux)
+            local ordering
+            if command -v vercmp >/dev/null 2>&1 && ordering="$(vercmp "$current" "$upstream" 2>/dev/null)"; then
+                case "$ordering" in -*) printf older; return ;; 0) printf equal; return ;; [1-9]*) printf newer; return ;; esac
+            fi ;;
+        fedora)
+            local ordering
+            ordering=""
+            if command -v python3 >/dev/null 2>&1; then
+                ordering="$(python3 -c 'import rpm,sys; print(rpm.labelCompare(("0",sys.argv[1],""),("0",sys.argv[2],"")))' "$current" "$upstream" 2>/dev/null)" || ordering=""
+            fi
+            if [[ -z "$ordering" ]] && command -v rpm >/dev/null 2>&1; then
+                ordering="$(rpm --eval "%{lua:print(rpm.vercmp(\"$current\",\"$upstream\"))}" 2>/dev/null)" || ordering=""
+            fi
+            case "$ordering" in -1) printf older; return ;; 0) printf equal; return ;; 1) printf newer; return ;; esac ;;
+
+    esac
+    printf unknown
 }
 
 component_release_parts() {
@@ -1151,52 +1717,137 @@ parse_component_manifest_version() {
     printf '%s' "$selected"
 }
 
-fetch_component_release_version() {
-    local component="$1" result_file="$2"
-    local parts tag base_url manifest_name manifest manifest_size version temporary_result
-    local curl_pid curl_status
+component_download_base() {
+    case "$DOWNLOAD_SOURCE" in
+        2) printf '%s' "$COMPONENT_PROXY_DOWNLOAD_BASE" ;;
+        3) printf '%s' "$COMPONENT_CNB_DOWNLOAD_BASE" ;;
+        *) printf '%s' "$COMPONENT_GITHUB_DOWNLOAD_BASE" ;;
+    esac
+}
 
-    command -v curl >/dev/null 2>&1 || return 1
+prepare_user_directory() {
+    local directory="$1"
+    [[ ! -L "$directory" ]] || return 1
+    (umask 077; mkdir -p -- "$directory") 2>/dev/null || return 1
+    [[ -d "$directory" && -O "$directory" ]] || return 1
+    chmod 0700 -- "$directory" 2>/dev/null
+}
+
+save_download_source() {
+    local temporary
+    prepare_user_directory "$TUI_USER_CONFIG_DIR" || return 1
+    temporary="$(mktemp "$TUI_USER_CONFIG_DIR/.source.XXXXXXXX")" || return 1
+    if ! printf '%s\n' "$DOWNLOAD_SOURCE" > "$temporary" || ! mv -f -- "$temporary" "$TUI_USER_CONFIG_DIR/source"; then
+        rm -f -- "$temporary"
+        return 1
+    fi
+}
+
+component_cache_path() {
+    local component="$1" digest
+    command -v sha256sum >/dev/null 2>&1 || return 1
+    digest="$(printf '%s\n' "$(component_download_base)" "$SYSTEM_ID" "$SYSTEM_VERSION" "$ARCHITECTURE" "$component" | sha256sum)" || return 1
+    digest="${digest%% *}"
+    [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+    printf '%s/%s.manifest' "$TUI_USER_CACHE_DIR" "$digest"
+}
+
+load_component_cache() {
+    local component="$1" cache parts tag version checked now size
+    cache="$(component_cache_path "$component")" || return 1
+    [[ -f "$cache" && ! -L "$cache" && -O "$cache" ]] || return 1
+    size="$(stat -c '%s' "$cache" 2>/dev/null)" || return 1
+    [[ "$size" =~ ^[0-9]+$ ]] && ((size > 0 && size <= COMPONENT_MANIFEST_MAX_BYTES)) || return 1
     parts="$(component_release_parts "$component")" || return 1
     tag="${parts%%$'\n'*}"
-    manifest_name="$(component_release_manifest_name "$component")" || return 1
-    manifest="$COMPONENT_VERSION_WORK_DIR/$component.manifest"
-    temporary_result="$result_file.tmp.$BASHPID"
-    case "$DOWNLOAD_SOURCE" in
-        2) base_url="$COMPONENT_PROXY_DOWNLOAD_BASE" ;;
-        3) base_url="$COMPONENT_CNB_DOWNLOAD_BASE" ;;
-        *) base_url="$COMPONENT_GITHUB_DOWNLOAD_BASE" ;;
-    esac
-
-    curl --fail --silent --show-error --location \
-        --connect-timeout 3 --max-time 9 \
-        --header 'User-Agent: droidspaces-tui-components' \
-        "${base_url%/}/$tag/$manifest_name" \
-        --output "$manifest" >/dev/null 2>&1 &
-    curl_pid=$!
-    trap 'kill "$curl_pid" 2>/dev/null || true; wait "$curl_pid" 2>/dev/null || true; exit 1' \
-        HUP INT TERM
-    if wait "$curl_pid"; then
-        curl_status=0
-    else
-        curl_status=$?
+    validate_component_manifest "$cache" "$tag" || return 1
+    version="$(parse_component_manifest_version "$component" "$cache")" || return 1
+    checked="$(stat -c '%Y' "$cache" 2>/dev/null)" || return 1
+    now="$(date +%s)" || return 1
+    [[ "$checked" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] && ((checked <= now)) || return 1
+    COMPONENT_UPSTREAM_VERSIONS[$component]="$version"
+    COMPONENT_CHECKED_AT[$component]="$checked"
+    COMPONENT_QUERY_STATUS[$component]=stale
+    if [[ "$COMPONENT_CACHE_TTL" =~ ^[0-9]{1,8}$ ]] && ((now - checked < COMPONENT_CACHE_TTL)); then
+        COMPONENT_QUERY_STATUS[$component]=cached
     fi
-    trap - HUP INT TERM
-    ((curl_status == 0)) || return 1
+}
 
-    manifest_size="$(stat -c '%s' "$manifest")" || return 1
-    [[ "$manifest_size" =~ ^[0-9]+$ && "$manifest_size" -gt 0 && \
-       "$manifest_size" -le "$COMPONENT_MANIFEST_MAX_BYTES" ]] || return 1
-    validate_component_manifest "$manifest" "$tag" || return 1
-    version="$(parse_component_manifest_version "$component" "$manifest")" || return 1
-    printf '%s\n' "$version" > "$temporary_result" || return 1
-    mv -f -- "$temporary_result" "$result_file"
+write_component_result() {
+    local result="$1" status="$2" version="${3:--}" reason="${4:--}" checked="${5:-0}"
+    local temporary="$result.tmp.$BASHPID"
+    printf '%s\t%s\t%s\t%s\n' "$status" "$version" "$reason" "$checked" > "$temporary" && mv -f -- "$temporary" "$result"
+}
+
+fetch_component_release_version() {
+    local component="$1" result_file="$2"
+    local parts tag base_url manifest_name manifest manifest_size version cache temporary_cache
+    local curl_pid curl_status http_status reason checked
+    if ! component_supported "$component"; then
+        write_component_result "$result_file" unsupported - unsupported_platform
+        return
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        write_component_result "$result_file" error - missing_curl
+        return
+    fi
+    if ! parts="$(component_release_parts "$component")" || ! manifest_name="$(component_release_manifest_name "$component")"; then
+        write_component_result "$result_file" unsupported - unsupported_platform
+        return
+    fi
+    tag="${parts%%$'\n'*}"
+    manifest="$COMPONENT_VERSION_WORK_DIR/$component.manifest"
+    base_url="$(component_download_base)"
+    curl --fail --silent --show-error --location \
+        --connect-timeout 3 --max-time 9 --max-filesize "$COMPONENT_MANIFEST_MAX_BYTES" \
+        --header 'User-Agent: droidspaces-tui-components' \
+        --write-out '%{http_code}' "${base_url%/}/$tag/$manifest_name" \
+        --output "$manifest" > "$manifest.http" 2> "$manifest.error" &
+    curl_pid=$!
+    trap 'kill "$curl_pid" 2>/dev/null || true; wait "$curl_pid" 2>/dev/null || true; exit 1' HUP INT TERM
+    if wait "$curl_pid"; then curl_status=0; else curl_status=$?; fi
+    trap - HUP INT TERM
+    http_status="$(cat "$manifest.http" 2>/dev/null)"
+    if ((curl_status != 0)); then
+        case "$curl_status" in
+            5|6) reason=dns ;;
+            7) reason=connection ;;
+            22) if [[ "$http_status" =~ ^[0-9]{3}$ ]]; then reason="http_$http_status"; else reason=http_error; fi ;;
+            28) reason=timeout ;;
+            35|51|58|60) reason=tls ;;
+            63) reason=manifest_too_large ;;
+            *) reason="network_$curl_status" ;;
+        esac
+        write_component_result "$result_file" error - "$reason"
+        return
+    fi
+    manifest_size="$(stat -c '%s' "$manifest" 2>/dev/null)" || manifest_size=0
+    if [[ ! "$manifest_size" =~ ^[0-9]+$ ]] || ((manifest_size == 0 || manifest_size > COMPONENT_MANIFEST_MAX_BYTES)); then
+        write_component_result "$result_file" error - invalid_manifest_size
+        return
+    fi
+    if ! validate_component_manifest "$manifest" "$tag"; then
+        write_component_result "$result_file" error - invalid_manifest
+        return
+    fi
+    if ! version="$(parse_component_manifest_version "$component" "$manifest")"; then
+        write_component_result "$result_file" error - no_unique_platform_asset
+        return
+    fi
+    checked="$(date +%s)" || checked=0
+    if prepare_user_directory "$TUI_USER_CACHE_DIR" && cache="$(component_cache_path "$component")"; then
+        temporary_cache="$(mktemp "$TUI_USER_CACHE_DIR/.manifest.XXXXXXXX")" || temporary_cache=""
+        if [[ -n "$temporary_cache" ]]; then
+            cp -- "$manifest" "$temporary_cache" && mv -f -- "$temporary_cache" "$cache" || rm -f -- "$temporary_cache"
+        fi
+    fi
+    write_component_result "$result_file" ready "$version" - "$checked"
 }
 
 component_versions_pending() {
     local component
     for component in "${COMPONENT_NAMES[@]}"; do
-        [[ "${COMPONENT_UPSTREAM_VERSIONS[$component]:-}" == pending ]] && return 0
+        [[ "${COMPONENT_REFRESHING[$component]:-false}" == true ]] && return 0
     done
     return 1
 }
@@ -1205,8 +1856,7 @@ component_visible() {
     case "$1" in
         mesa|hangover|fonts) return 0 ;;
         kde|gnome|niri|hyprland|mango|denial|anland-next)
-            [[ "$DESKTOP_COMPONENT_MODE" == choose || "$DESKTOP_COMPONENT" == "$1" ]]
-            ;;
+            [[ "$DESKTOP_COMPONENT_MODE" == choose || "$DESKTOP_COMPONENT" == "$1" ]] ;;
         *) return 1 ;;
     esac
 }
@@ -1215,12 +1865,12 @@ stop_component_version_workers() {
     local component pid
     for component in "${COMPONENT_NAMES[@]}"; do
         pid="${COMPONENT_VERSION_PIDS[$component]:-}"
-        [[ -n "$pid" ]] || continue
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null || true
+        if [[ -n "$pid" ]]; then
+            if kill -0 "$pid" 2>/dev/null; then kill "$pid" 2>/dev/null || true; fi
+            wait "$pid" 2>/dev/null || true
+            unset 'COMPONENT_VERSION_PIDS[$component]'
         fi
-        wait "$pid" 2>/dev/null || true
-        unset 'COMPONENT_VERSION_PIDS[$component]'
+        COMPONENT_REFRESHING[$component]=false
     done
     if [[ -n "$COMPONENT_VERSION_WORK_DIR" && -d "$COMPONENT_VERSION_WORK_DIR" ]]; then
         rm -rf -- "$COMPONENT_VERSION_WORK_DIR"
@@ -1228,143 +1878,213 @@ stop_component_version_workers() {
     COMPONENT_VERSION_WORK_DIR=""
 }
 
+refresh_component_local_state() {
+    local component="$1" actual stored record_status
+    COMPONENT_INSTALLED[$component]=false
+    COMPONENT_DRIFT[$component]=false
+    COMPONENT_RECORD_STATUS[$component]=missing
+    if managed_component_installed "$component"; then
+        COMPONENT_INSTALLED[$component]=true
+        record_status="$(component_record_status "$component")"
+        COMPONENT_RECORD_STATUS[$component]="$record_status"
+        COMPONENT_CURRENT_VERSIONS[$component]="$(detect_current_component_version "$component" "$record_status")"
+        if [[ "$record_status" == drift || "$record_status" == invalid ]]; then
+            COMPONENT_DRIFT[$component]=true
+        elif [[ "$record_status" == missing ]] && stored="$(stored_component_version "$component")" && actual="$(detected_component_package_version "$component")" && \
+            ! component_version_equivalent "$component" "$actual" "$stored"; then
+            COMPONENT_DRIFT[$component]=true
+        fi
+    else
+        COMPONENT_CURRENT_VERSIONS[$component]="$(msg '未安装' 'not installed')"
+    fi
+}
+
 start_component_version_checks() {
-    local component result_file current_version
+    local component result_file
     stop_component_version_workers
-    COMPONENT_VERSION_WORK_DIR="$(mktemp -d -t droidspaces-component-versions.XXXXXXXX)" || {
-        for component in "${COMPONENT_NAMES[@]}"; do
-            if ! component_visible "$component"; then
-                COMPONENT_INSTALLED[$component]=false
-                COMPONENT_CURRENT_VERSIONS[$component]=hidden
-                COMPONENT_UPSTREAM_VERSIONS[$component]=hidden
-                continue
-            fi
-            if managed_component_installed "$component"; then
-                COMPONENT_INSTALLED[$component]=true
-                COMPONENT_CURRENT_VERSIONS[$component]="$(detect_current_component_version "$component")"
-            else
-                COMPONENT_INSTALLED[$component]=false
-                COMPONENT_CURRENT_VERSIONS[$component]="$(msg '未安装' 'not installed')"
-            fi
-            COMPONENT_UPSTREAM_VERSIONS[$component]="$(msg '超时' 'timeout')"
-        done
-        return
-    }
-    chmod 0700 "$COMPONENT_VERSION_WORK_DIR" || true
-    COMPONENT_VERSION_DEADLINE=$((SECONDS + COMPONENT_VERSION_TIMEOUT))
+    COMPONENT_VERSION_WORK_DIR="$(mktemp -d -t droidspaces-component-versions.XXXXXXXX)" || COMPONENT_VERSION_WORK_DIR=""
+    [[ -z "$COMPONENT_VERSION_WORK_DIR" ]] || chmod 0700 "$COMPONENT_VERSION_WORK_DIR" || true
     SPINNER_INDEX=0
     for component in "${COMPONENT_NAMES[@]}"; do
+        COMPONENT_QUERY_REASON[$component]=""
+        COMPONENT_CHECKED_AT[$component]=0
+        COMPONENT_DRIFT[$component]=false
+        COMPONENT_RECORD_STATUS[$component]=missing
+        COMPONENT_INSTALLED[$component]=false
         if ! component_visible "$component"; then
-            COMPONENT_INSTALLED[$component]=false
             COMPONENT_CURRENT_VERSIONS[$component]=hidden
             COMPONENT_UPSTREAM_VERSIONS[$component]=hidden
+            COMPONENT_QUERY_STATUS[$component]=hidden
             continue
         fi
-        if managed_component_installed "$component"; then
-            COMPONENT_INSTALLED[$component]=true
-            current_version="$(detect_current_component_version "$component")"
-            COMPONENT_CURRENT_VERSIONS[$component]="$current_version"
-        else
-            COMPONENT_INSTALLED[$component]=false
-            COMPONENT_CURRENT_VERSIONS[$component]="$(msg '未安装' 'not installed')"
-        fi
+        refresh_component_local_state "$component"
         COMPONENT_UPSTREAM_VERSIONS[$component]=pending
+        COMPONENT_QUERY_STATUS[$component]=pending
+        if ! component_supported "$component"; then
+            COMPONENT_UPSTREAM_VERSIONS[$component]=""
+            COMPONENT_QUERY_STATUS[$component]=unsupported
+            COMPONENT_QUERY_REASON[$component]=unsupported_platform
+            continue
+        fi
+        load_component_cache "$component" || true
+        if [[ "${COMPONENT_QUERY_STATUS[$component]}" == cached && "$FORCE_COMPONENT_REFRESH" == false ]]; then continue; fi
+        if [[ -z "$COMPONENT_VERSION_WORK_DIR" ]]; then
+            COMPONENT_QUERY_REASON[$component]=temporary_directory
+            if [[ "${COMPONENT_UPSTREAM_VERSIONS[$component]}" == pending ]]; then
+                COMPONENT_QUERY_STATUS[$component]=error
+                COMPONENT_UPSTREAM_VERSIONS[$component]=""
+            else
+                COMPONENT_QUERY_STATUS[$component]=stale
+            fi
+            continue
+        fi
+        COMPONENT_REFRESHING[$component]=true
     done
+    COMPONENT_VERSION_DEADLINE=$((SECONDS + COMPONENT_VERSION_TIMEOUT))
     for component in "${COMPONENT_NAMES[@]}"; do
-        [[ "${COMPONENT_UPSTREAM_VERSIONS[$component]}" == hidden ]] && continue
+        [[ "${COMPONENT_REFRESHING[$component]}" == true ]] || continue
         result_file="$COMPONENT_VERSION_WORK_DIR/$component.result"
         fetch_component_release_version "$component" "$result_file" &
         COMPONENT_VERSION_PIDS[$component]=$!
     done
+    FORCE_COMPONENT_REFRESH=false
 }
 
 poll_component_version_checks() {
-    local component result_file version pid
+    local component result_file status version reason checked pid
     COMPONENT_STATUS_CHANGED=false
     [[ -n "$COMPONENT_VERSION_WORK_DIR" ]] || return
     for component in "${COMPONENT_NAMES[@]}"; do
-        [[ "${COMPONENT_UPSTREAM_VERSIONS[$component]:-}" == pending ]] || continue
+        [[ "${COMPONENT_REFRESHING[$component]:-false}" == true ]] || continue
         result_file="$COMPONENT_VERSION_WORK_DIR/$component.result"
-        if [[ -f "$result_file" ]] && IFS= read -r version < "$result_file" && \
-            valid_component_version "$version"; then
-            COMPONENT_UPSTREAM_VERSIONS[$component]="$version"
+        if [[ -f "$result_file" ]] && IFS=$'\t' read -r status version reason checked < "$result_file" && \
+            [[ "$status" =~ ^(ready|error|unsupported)$ && "$checked" =~ ^[0-9]+$ && "$reason" =~ ^[a-zA-Z0-9_-]+$ ]] && \
+            { [[ "$status" != ready ]] || valid_component_version "$version"; }; then
             COMPONENT_STATUS_CHANGED=true
+            COMPONENT_REFRESHING[$component]=false
+            COMPONENT_QUERY_REASON[$component]="${reason#-}"
+            if [[ "$status" == ready ]]; then
+                COMPONENT_UPSTREAM_VERSIONS[$component]="$version"
+                COMPONENT_CHECKED_AT[$component]="$checked"
+                COMPONENT_QUERY_STATUS[$component]=ready
+            elif [[ "${COMPONENT_CHECKED_AT[$component]:-0}" != 0 ]]; then
+                COMPONENT_QUERY_STATUS[$component]=stale
+            else
+                COMPONENT_QUERY_STATUS[$component]="$status"
+                COMPONENT_UPSTREAM_VERSIONS[$component]=""
+            fi
             pid="${COMPONENT_VERSION_PIDS[$component]:-}"
             [[ -z "$pid" ]] || wait "$pid" 2>/dev/null || true
             unset 'COMPONENT_VERSION_PIDS[$component]'
         fi
     done
-
     if component_versions_pending && ((SECONDS >= COMPONENT_VERSION_DEADLINE)); then
         for component in "${COMPONENT_NAMES[@]}"; do
-            if [[ "${COMPONENT_UPSTREAM_VERSIONS[$component]:-}" == pending ]]; then
-                COMPONENT_UPSTREAM_VERSIONS[$component]="$(msg '超时' 'timeout')"
-                COMPONENT_STATUS_CHANGED=true
-            fi
+            [[ "${COMPONENT_REFRESHING[$component]:-false}" == true ]] || continue
+            COMPONENT_QUERY_REASON[$component]=timeout
+            if [[ "${COMPONENT_CHECKED_AT[$component]:-0}" != 0 ]]; then COMPONENT_QUERY_STATUS[$component]=stale
+            else COMPONENT_QUERY_STATUS[$component]=error; COMPONENT_UPSTREAM_VERSIONS[$component]=""; fi
+            COMPONENT_STATUS_CHANGED=true
         done
+        stop_component_version_workers
     fi
     component_versions_pending || stop_component_version_workers
+}
+
+retry_component_version_check() {
+    local component="$1" pid="${COMPONENT_VERSION_PIDS[$1]:-}"
+    [[ -n "$pid" ]] && { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
+    if [[ -z "$COMPONENT_VERSION_WORK_DIR" ]]; then
+        COMPONENT_VERSION_WORK_DIR="$(mktemp -d -t droidspaces-component-versions.XXXXXXXX)" || return 1
+    fi
+    rm -f -- "$COMPONENT_VERSION_WORK_DIR/$component.result"
+    refresh_component_local_state "$component"
+    COMPONENT_QUERY_REASON[$component]=""
+    if [[ "${COMPONENT_CHECKED_AT[$component]:-0}" == 0 ]]; then
+        COMPONENT_UPSTREAM_VERSIONS[$component]=pending
+        COMPONENT_QUERY_STATUS[$component]=pending
+    fi
+    COMPONENT_REFRESHING[$component]=true
+    COMPONENT_VERSION_DEADLINE=$((SECONDS + COMPONENT_VERSION_TIMEOUT))
+    fetch_component_release_version "$component" "$COMPONENT_VERSION_WORK_DIR/$component.result" &
+    COMPONENT_VERSION_PIDS[$component]=$!
+    DYNAMIC_MENU_DRAWN=false
+}
+
+component_query_reason_display() {
+    local reason="${COMPONENT_QUERY_REASON[$1]:-}"
+    case "$reason" in
+        '') return ;;
+        timeout) msg '查询超时' 'Query timed out' ;;
+        dns) msg 'DNS 解析失败' 'DNS lookup failed' ;;
+        connection) msg '连接失败' 'Connection failed' ;;
+        tls) msg 'TLS 校验失败' 'TLS verification failed' ;;
+        missing_curl) msg '缺少 curl' 'curl is missing' ;;
+        unsupported_platform) msg '不支持此系统/架构' 'Unsupported system/architecture' ;;
+        http_*) printf 'HTTP %s' "${reason#http_}" ;;
+        invalid_manifest|invalid_manifest_size|manifest_too_large|no_unique_platform_asset) msg '发布清单无效或缺少对应包' 'Invalid manifest or missing platform package' ;;
+        *) msg "查询失败（$reason）" "Query failed ($reason)" ;;
+    esac
 }
 
 component_upstream_display() {
     local component="$1" value="${COMPONENT_UPSTREAM_VERSIONS[$1]:-}"
     if [[ "$value" == pending ]]; then
-        printf '%b%s%b' "$COLOR_CYAN" \
-            "${SPINNER_FRAMES[$((SPINNER_INDEX % ${#SPINNER_FRAMES[@]}))]}" "$COLOR_RESET"
+        printf '%b%s%b' "$COLOR_CYAN" "${SPINNER_FRAMES[$((SPINNER_INDEX % ${#SPINNER_FRAMES[@]}))]}" "$COLOR_RESET"
+    elif [[ -z "$value" ]]; then
+        component_query_reason_display "$component"
     else
         printf '%s' "$value"
+        case "${COMPONENT_QUERY_STATUS[$component]:-}" in
+            cached) printf ' (%s)' "$(msg '缓存' 'cached')" ;;
+            stale) printf ' (%s)' "$(msg '历史缓存' 'stale cache')" ;;
+        esac
+        if [[ "${COMPONENT_CHECKED_AT[$component]:-0}" != 0 ]]; then
+            printf ' · %s' "$(date -d "@${COMPONENT_CHECKED_AT[$component]}" '+%m-%d %H:%M' 2>/dev/null)"
+        fi
+        if [[ -n "${COMPONENT_QUERY_REASON[$component]:-}" ]]; then printf ' · %s' "$(component_query_reason_display "$component")"; fi
     fi
 }
 
 component_status_display() {
-    local component="$1" upstream="${COMPONENT_UPSTREAM_VERSIONS[$1]:-}"
-    if [[ "${COMPONENT_INSTALLED[$component]:-false}" == false ]]; then
-        printf '%b%s%b' "$COLOR_RED" "$(msg '未安装' 'not installed')" "$COLOR_RESET"
-    elif [[ "$upstream" == pending ]]; then
+    local component="$1" comparison
+    if [[ "${COMPONENT_QUERY_STATUS[$component]:-}" == unsupported ]]; then
+        printf '%b%s%b' "$COLOR_DIM" "$(msg '不支持' 'unsupported')" "$COLOR_RESET"
+    elif [[ "${COMPONENT_INSTALLED[$component]:-false}" == false ]]; then
+        printf '%b%s%b' "$COLOR_DIM" "$(msg '未安装' 'not installed')" "$COLOR_RESET"
+    elif [[ "${COMPONENT_DRIFT[$component]:-false}" == true ]]; then
+        printf '%b%s%b' "$COLOR_YELLOW" "$(msg '版本记录已变化' 'version record differs')" "$COLOR_RESET"
+    elif [[ "${COMPONENT_QUERY_STATUS[$component]:-}" == stale ]]; then
+        printf '%b%s%b' "$COLOR_YELLOW" "$(msg '离线/历史状态' 'offline / stale state')" "$COLOR_RESET"
+    elif [[ "${COMPONENT_QUERY_STATUS[$component]:-}" == error ]]; then
+        printf '%b%s%b' "$COLOR_YELLOW" "$(component_query_reason_display "$component")" "$COLOR_RESET"
+    elif [[ "${COMPONENT_UPSTREAM_VERSIONS[$component]:-}" == pending ]]; then
         component_upstream_display "$component"
-    elif [[ "$upstream" == "$(msg '超时' 'timeout')" ]]; then
-        printf '%b%s%b' "$COLOR_YELLOW" "$upstream" "$COLOR_RESET"
-    elif component_versions_match "$component"; then
-        printf '%b%s%b' "$COLOR_GREEN" \
-            "$(msg '当前已是最新版本' 'up to date')" "$COLOR_RESET"
     else
-        printf '%b%s%b' "$COLOR_YELLOW" "$(msg '检测到更新' 'update available')" "$COLOR_RESET"
+        comparison="$(component_version_comparison "$component")"
+        case "$comparison" in
+            equal) printf '%b%s%b' "$COLOR_GREEN" "$(msg '当前已是最新版本' 'up to date')" "$COLOR_RESET" ;;
+            older) printf '%b%s%b' "$COLOR_YELLOW" "$(msg '检测到更新' 'update available')" "$COLOR_RESET" ;;
+            newer) printf '%b%s%b' "$COLOR_CYAN" "$(msg '本地版本较新' 'local version is newer')" "$COLOR_RESET" ;;
+            *) printf '%b%s%b' "$COLOR_YELLOW" "$(msg '版本未知/无法比较' 'unknown / incomparable version')" "$COLOR_RESET" ;;
+        esac
     fi
 }
 
 desktop_selection_status_display() {
-    local component upstream installed_any=false
-
-    for component in kde gnome niri hyprland mango denial anland-next; do
-        if [[ "${COMPONENT_INSTALLED[$component]:-false}" == true ]]; then
-            installed_any=true
-        fi
-    done
-    if [[ "$installed_any" == false ]]; then
-        printf '%b%s%b' "$COLOR_RED" "$(msg '未安装' 'not installed')" "$COLOR_RESET"
-        return
-    fi
+    local component first="" status
     for component in kde gnome niri hyprland mango denial anland-next; do
         [[ "${COMPONENT_INSTALLED[$component]:-false}" == true ]] || continue
-        upstream="${COMPONENT_UPSTREAM_VERSIONS[$component]:-}"
-        if [[ "$upstream" == pending ]]; then
-            component_upstream_display "$component"
+        [[ -n "$first" ]] || first="$component"
+        status="$(component_version_comparison "$component")"
+        if [[ "${COMPONENT_QUERY_STATUS[$component]:-}" == error || "${COMPONENT_QUERY_STATUS[$component]:-}" == stale || \
+              "${COMPONENT_DRIFT[$component]:-false}" == true || "$status" != equal ]]; then
+            component_status_display "$component"
             return
         fi
     done
-    for component in kde gnome niri hyprland mango denial anland-next; do
-        [[ "${COMPONENT_INSTALLED[$component]:-false}" == true ]] || continue
-        upstream="${COMPONENT_UPSTREAM_VERSIONS[$component]:-}"
-        if [[ "$upstream" == "$(msg '超时' 'timeout')" ]]; then
-            printf '%b%s%b' "$COLOR_YELLOW" "$upstream" "$COLOR_RESET"
-            return
-        fi
-        if ! component_versions_match "$component"; then
-            printf '%b%s%b' "$COLOR_YELLOW" "$(msg '检测到更新' 'update available')" "$COLOR_RESET"
-            return
-        fi
-    done
-    printf '%b%s%b' "$COLOR_GREEN" "$(msg '当前已是最新版本' 'up to date')" "$COLOR_RESET"
+    if [[ -n "$first" ]]; then component_status_display "$first"
+    else printf '%b%s%b' "$COLOR_DIM" "$(msg '未安装' 'not installed')" "$COLOR_RESET"; fi
 }
 
 
@@ -1743,6 +2463,7 @@ draw_component_menu_content() {
         ui_action 1 "$(msg '更新/安装' 'Update/install')"
         ui_action 2 "$(msg '卸载' 'Uninstall')" '' "$COLOR_RED"
     fi
+    ui_action F "$(msg '刷新/重试此项' 'Refresh / retry this component')"
     ui_footer 0 "$(msg '返回' 'Back')"
 }
 
@@ -1764,7 +2485,7 @@ draw_main_menu_content() {
     ui_group "$(msg '工具' 'Tools')"
     ui_action_pair S "$(msg '软件源设置' 'Source settings')" C "$(msg '清理下载缓存' 'Clean download cache')"
     ui_action_pair R "$(msg '回收镜像空间' 'Reclaim image space')" U "$(msg '检查与安装更新' 'Check & install updates')"
-    ui_action A "$(msg '关于与支持范围' 'About & support')"
+    ui_action_pair F "$(msg '刷新组件状态' 'Refresh component status')" A "$(msg '关于与支持范围' 'About & support')"
     ui_footer Q "$(msg '退出' 'Quit')"
 }
 
@@ -1852,6 +2573,9 @@ component_menu() {
                     esac
                 fi
                 ;;
+            f)
+                retry_component_version_check "$component"
+                ;;
             0|q)
                 restore_dynamic_menu_echo
                 return
@@ -1884,6 +2608,7 @@ select_download_source() {
         esac
         if [[ "$DOWNLOAD_SOURCE" != "$selected_source" ]]; then
             DOWNLOAD_SOURCE="$selected_source"
+            save_download_source || printf '%s\n' "$(msg '无法保存下载源偏好，本次选择仍有效。' 'Cannot save source preference; it remains active for this session.')" >&2
             COMPONENT_REFRESH_REQUIRED=true
         fi
         return
@@ -2030,19 +2755,10 @@ switch_system_mirrors() {
 
     printf '\n%b%s%b\n\n' "$COLOR_BLUE" \
         "$(msg 'LinuxMirrors 脚本即将启动。' 'Starting the LinuxMirrors script.')" "$COLOR_RESET"
-    if ((EUID == 0)); then
-        if bash "$script_path"; then
-            status=0
-        else
-            status=$?
-        fi
-    else
-        if sudo -- bash "$script_path"; then
-            status=0
-        else
-            status=$?
-        fi
-    fi
+    local script_sha
+    script_sha="$(sha256sum "$script_path")"; script_sha="${script_sha%% *}"
+    if run_system_tool_as_root mirrors "$script_path" "$script_sha"; then status=0; else status=$?; fi
+
     cleanup_mirror_files
 
     if ((status == 0)); then
@@ -2118,26 +2834,7 @@ reclaim_sparse_storage() {
     printf '\n%b%s%b\n\n' "$COLOR_BLUE" \
         "$(msg '正在修剪根文件系统，请勿中断容器。' \
             'Trimming the root filesystem; do not stop the container.')" "$COLOR_RESET"
-    if ((EUID == 0)); then
-        if fstrim -v /; then
-            status=0
-        else
-            status=$?
-        fi
-    else
-        if ! command -v sudo >/dev/null 2>&1; then
-            printf '%b%s%b\n' "$COLOR_RED" \
-                "$(msg '该操作需要 root 权限，且系统未安装 sudo。' \
-                    'This operation requires root access, and sudo is unavailable.')" "$COLOR_RESET"
-            pause_menu
-            return
-        fi
-        if sudo -- fstrim -v /; then
-            status=0
-        else
-            status=$?
-        fi
-    fi
+    if run_system_tool_as_root trim; then status=0; else status=$?; fi
 
     printf '\n'
     if ((status == 0)); then
@@ -2521,6 +3218,8 @@ manage_updates() {
 }
 
 show_about() {
+    local source_record
+    source_record="$(source_record_path)"
     clear_screen
     draw_header
     printf '\n%b%s%b\n\n' "$COLOR_BOLD" "$(msg '关于' 'About')" "$COLOR_RESET"
@@ -2533,6 +3232,8 @@ show_about() {
     printf '\n%s\n' "$(msg \
         '桌面更新项根据 /etc/droidspaces-desktop.conf 中的 DESKTOP 字段选择。' \
         'The desktop update entry is selected by the DESKTOP field in /etc/droidspaces-desktop.conf.')"
+    printf '\n%s\n' "$(msg "构建来源记录：$source_record" "Build source record: $source_record")"
+    printf '%s\n' "$(msg '后续更新记录：/var/lib/droidspaces-tui/operations/installed-tui.tsv' 'Installed update record: /var/lib/droidspaces-tui/operations/installed-tui.tsv')"
     pause_menu
 }
 
@@ -2558,7 +3259,7 @@ main_menu() {
         choice="$MENU_CHOICE"
         [[ -n "$choice" ]] || continue
         case "${choice,,}" in
-            0|1|2|3|4|q|s|c|r|u|a) restore_dynamic_menu_echo ;;
+            0|1|2|3|4|q|s|c|r|u|a|f) restore_dynamic_menu_echo ;;
             *) continue ;;
         esac
         case "${choice,,}" in
@@ -2577,11 +3278,13 @@ main_menu() {
             r) reclaim_sparse_storage ;;
             u) manage_updates ;;
             a) show_about ;;
+            f) FORCE_COMPONENT_REFRESH=true; COMPONENT_REFRESH_REQUIRED=true ;;
             q|0) return ;;
         esac
         if [[ "$COMPONENT_REFRESH_REQUIRED" == true ]]; then
             COMPONENT_REFRESH_REQUIRED=false
             detect_desktop_component
+            FORCE_COMPONENT_REFRESH=true
             start_component_version_checks
         fi
         begin_dynamic_menu
@@ -2611,15 +3314,33 @@ main() {
     validate_cache_action
     init_colors
     detect_system
+    if [[ -n "$INTERNAL_TOOL" ]]; then
+        ((EUID == 0)) || die '内部修改操作需要 root 权限。' 'Internal modification requires root access.'
+        run_locked_system_tool "$INTERNAL_TOOL" "${INTERNAL_ARGUMENTS[@]}"
+        return $?
+    fi
     detect_desktop_component
     if [[ -n "$CACHE_ACTION" ]]; then
         clean_cache_as_root "$CACHE_ACTION"
-        exit 0
+        return $?
+    fi
+    if [[ -n "$STATUS_OUTPUT" ]]; then
+        trap cleanup_all EXIT
+        trap handle_signal HUP INT TERM
+        start_component_version_checks
+        while component_versions_pending; do
+            poll_component_version_checks
+            component_versions_pending || break
+            sleep 0.05
+        done
+        print_component_diagnostics
+        return
     fi
     [[ -t 0 && -t 1 ]] || die \
         "需要交互式终端，请通过 adb shell -t 或普通终端运行。" \
         "An interactive terminal is required; use adb shell -t or a regular terminal."
     trap handle_signal HUP INT TERM
+    trap 'DYNAMIC_MENU_DRAWN=false; UI_RESIZED=true' WINCH
     trap cleanup_all EXIT
     main_menu
     clear_screen

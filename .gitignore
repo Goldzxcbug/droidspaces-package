@@ -4,3 +4,7 @@
 *.pkg.tar.*
 *.deb
 *.rpm
+
+__pycache__/
+
+*.py[cod]

@@ -1,9 +1,394 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# BEGIN DROIDSPACES SHARED operations
+# shellcheck shell=bash
+# Shared installer transaction support. Embedded into standalone release scripts.
+# Keep this file independent of the installer's language and package manager.
+DS_OP_ACTIVE=false
+DS_OP_COMPONENT=''
+DS_OP_PHASE=''
+DS_OP_DIR=''
+DS_OP_TRANSACTION=''
+DS_OP_LOG=''
+DS_OP_ID=''
+DS_OP_PREVIOUS_EXIT=''
+DS_OP_PREVIOUS_INT=''
+DS_OP_PREVIOUS_TERM=''
+DS_OP_PREVIOUS_HUP=''
+DS_OP_CONFIG_RECOVERED=false
+DS_PREFLIGHT_ACTIVE=false
+
+ds_operation_preflight() {
+    local component="$1" directory path
+    if ((EUID == 0)); then ds_operation_begin "$component"; return; fi
+    [[ "${DS_PREFLIGHT_ACTIVE:-false}" == false ]] || return 0
+    [[ "$component" =~ ^[a-z][a-z0-9-]*$ ]] || return 1
+    directory="${DROIDSPACES_USER_LOG_DIR:-${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}/droidspaces-tui/logs}"
+    ds_operation_safe_path "$directory" || return 1
+    path="$directory"
+    while [[ "$path" != / ]]; do
+        [[ ! -L "$path" ]] || return 1
+        path="${path%/*}"; [[ -n "$path" ]] || path=/
+    done
+    mkdir -p -m 0700 -- "$directory" || return 1
+    [[ "$(stat -c %u "$directory")" == "$EUID" ]] || return 1
+    chmod 0700 "$directory" || return 1
+    DS_PREFLIGHT_LOG="$(mktemp "$directory/$component-preflight.XXXXXXXX.log")" || return 1
+    DS_PREFLIGHT_PREVIOUS_EXIT="$(trap -p EXIT)"
+    DS_PREFLIGHT_PREVIOUS_INT="$(trap -p INT)"
+    DS_PREFLIGHT_PREVIOUS_TERM="$(trap -p TERM)"
+    DS_PREFLIGHT_PREVIOUS_HUP="$(trap -p HUP)"
+    exec {DS_PREFLIGHT_STDOUT}>&1 {DS_PREFLIGHT_STDERR}>&2
+    exec > >(exec tee -a -- "$DS_PREFLIGHT_LOG") 2>&1
+    DS_PREFLIGHT_LOG_PID=$!
+    DS_PREFLIGHT_ACTIVE=true
+    trap 'ds_operation_preflight_exit "$?"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    printf 'Droidspaces pre-download log / 预下载日志: %s\n' "$DS_PREFLIGHT_LOG"
+}
+
+ds_operation_preflight_finish() {
+    local status="$1"
+    [[ "${DS_PREFLIGHT_ACTIVE:-false}" == true ]] || return "$status"
+    printf 'Pre-download/privilege handoff finished (exit=%s). Log: %s\n' "$status" "$DS_PREFLIGHT_LOG"
+    DS_PREFLIGHT_ACTIVE=false
+    exec 1>&"$DS_PREFLIGHT_STDOUT" 2>&"$DS_PREFLIGHT_STDERR"
+    exec {DS_PREFLIGHT_STDOUT}>&- {DS_PREFLIGHT_STDERR}>&-
+    ds_operation_drain_logger "$DS_PREFLIGHT_LOG_PID"
+    trap - EXIT INT TERM HUP
+    [[ -z "$DS_PREFLIGHT_PREVIOUS_EXIT" ]] || eval "$DS_PREFLIGHT_PREVIOUS_EXIT"
+    [[ -z "$DS_PREFLIGHT_PREVIOUS_INT" ]] || eval "$DS_PREFLIGHT_PREVIOUS_INT"
+    [[ -z "$DS_PREFLIGHT_PREVIOUS_TERM" ]] || eval "$DS_PREFLIGHT_PREVIOUS_TERM"
+    [[ -z "$DS_PREFLIGHT_PREVIOUS_HUP" ]] || eval "$DS_PREFLIGHT_PREVIOUS_HUP"
+    return "$status"
+}
+
+ds_operation_preflight_exit() {
+    local status="$1"
+    trap - EXIT INT TERM HUP
+    if declare -F cleanup >/dev/null 2>&1; then cleanup || status=1; fi
+    ds_operation_preflight_finish "$status" || status=$?
+    trap - EXIT
+    exit "$status"
+}
+
+ds_operation_safe_path() {
+    [[ "$1" == /* && "$1" != *$'\n'* && "$1" != *$'\t'* &&
+       "$1" != */../* && "$1" != */.. && "$1" != */./* ]]
+}
+
+ds_operation_drain_logger() {
+    local logger_pid="$1" attempt
+    # A service started by a package hook can inherit the logging pipe. Do not
+    # let that unrelated service hold up completion or keep the modification lock.
+    for ((attempt=0; attempt<40; attempt++)); do
+        if ! kill -0 "$logger_pid" 2>/dev/null; then
+            wait "$logger_pid" 2>/dev/null || true
+            return 0
+        fi
+        sleep 0.05
+    done
+    kill -TERM "$logger_pid" 2>/dev/null || true
+    sleep 0.05
+    kill -KILL "$logger_pid" 2>/dev/null || true
+    # Only wait after confirming termination: even a logger blocked by a sick
+    # filesystem must not turn installer cleanup into an unbounded wait.
+    if ! kill -0 "$logger_pid" 2>/dev/null; then wait "$logger_pid" 2>/dev/null || true; fi
+}
+
+ds_operation_write_state() {
+    local status="$1" code="${2:-0}" temporary
+    temporary="$DS_OP_DIR/.active.$BASHPID"
+    {
+        printf 'format=1\noperation=%s\ncomponent=%s\nphase=%s\nstatus=%s\nexit_code=%s\n' \
+            "$DS_OP_ID" "$DS_OP_COMPONENT" "$DS_OP_PHASE" "$status" "$code"
+        printf 'pid=%s\nlog=%s\ntransaction=%s\nupdated_at=%s\n' \
+            "$$" "$DS_OP_LOG" "$DS_OP_TRANSACTION" "$(date -u +%FT%TZ)"
+        printf 'config_recovered=%s\n' "$DS_OP_CONFIG_RECOVERED"
+    } > "$temporary" && chmod 0600 "$temporary" && mv -f -- "$temporary" "$DS_OP_DIR/active"
+}
+
+ds_operation_phase() {
+    if [[ "${DS_OP_ACTIVE:-false}" != true ]]; then
+        [[ "${DS_PREFLIGHT_ACTIVE:-false}" != true ]] || printf '[droidspaces preflight] phase=%s\n' "$1"
+        return 0
+    fi
+    [[ "$1" =~ ^[a-z][a-z0-9_-]*$ ]] || return 1
+    DS_OP_PHASE="$1"
+    ds_operation_write_state running
+    printf '[droidspaces operation] %s phase=%s\n' "$DS_OP_COMPONENT" "$DS_OP_PHASE"
+}
+
+ds_operation_backup() {
+    local target="$1" number snapshot present
+    [[ "${DS_OP_ACTIVE:-false}" == true ]] || return 0
+    ds_operation_safe_path "$target" || return 1
+    # Never dereference a user-supplied target when saving/restoring configuration.
+    [[ ! -d "$target" || -L "$target" ]] || return 1
+    if [[ -f "$DS_OP_TRANSACTION/configs" ]] &&
+        awk -F '\t' -v target="$target" '$3 == target { found=1 } END { exit !found }' \
+            "$DS_OP_TRANSACTION/configs"; then
+        return 0
+    fi
+    number="$(wc -l < "$DS_OP_TRANSACTION/configs")"
+    snapshot="$DS_OP_TRANSACTION/config.$number"
+    present=missing
+    if [[ -e "$target" || -L "$target" ]]; then
+        cp -a -- "$target" "$snapshot" || return 1
+        present=present
+    fi
+    printf '%s\t%s\t%s\n' "$present" "$snapshot" "$target" >> "$DS_OP_TRANSACTION/configs"
+}
+
+ds_operation_snapshot_installer_config() {
+    local path
+    for path in "${DESKTOP_CONFIG:-/etc/droidspaces-desktop.conf}" \
+        /etc/dnf/dnf.conf /etc/pacman.conf /etc/apt/preferences.d/hold-anland-package \
+        "${APT_HOLD_STATE:-}" "${PACMAN_PACKAGE_STATE:-}" \
+        "${COMPONENT_STATE_DIR:-/var/lib/droidspaces-tui/components}/$DS_OP_COMPONENT.version" \
+        "${COMPONENT_STATE_DIR:-/var/lib/droidspaces-tui/components}/$DS_OP_COMPONENT.packages.tsv" \
+        "${COMPONENT_STATE_DIR:-/var/lib/droidspaces-tui/components}/$DS_OP_COMPONENT.files.sha256"; do
+        [[ -n "$path" ]] || continue
+        ds_operation_backup "$path"
+    done
+}
+
+ds_operation_record_packages() {
+    local component="$1" state_dir="$2" directory file package output version temporary digest unexpected
+    local -a candidates=()
+    local -A names=()
+    ds_operation_safe_path "$state_dir" || return 1
+    mkdir -p -- "$state_dir" || return 1
+    if [[ "$component" == fonts ]]; then
+        [[ -n "${FONT_TARGET:-}" && -d "$FONT_TARGET" && ! -L "$FONT_TARGET" ]] || return 1
+        unexpected="$(find "$FONT_TARGET" -mindepth 1 ! -type f ! -type d -print -quit)" || return 1
+        [[ -z "$unexpected" ]] || return 1
+        digest="$(find "$FONT_TARGET" -type f -print0 | LC_ALL=C sort -z | \
+            xargs -0 -r sha256sum -b -z | sha256sum)" || return 1
+        digest="${digest%% *}"
+        [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+        temporary="$(mktemp "$state_dir/.fonts.files.XXXXXXXX")" || return 1
+        printf '%s\n' "$digest" > "$temporary" && chmod 0644 "$temporary" && \
+            mv -f -- "$temporary" "$state_dir/fonts.files.sha256"
+        return
+    fi
+    temporary="$(mktemp "$state_dir/.$component.packages.XXXXXXXX")" || return 1
+    directory="${PACKAGE_DIR:-${WORK_DIR:-}}"
+    if [[ -n "$directory" && -d "$directory" ]]; then
+        while IFS= read -r -d '' file; do
+            package=''
+            case "$file" in
+                *.deb) package="$(dpkg-deb -f "$file" Package 2>/dev/null)" || true ;;
+                *.rpm) package="$(rpm -qp --queryformat '%{NAME}' "$file" 2>/dev/null)" || true ;;
+                *.pkg.tar.*)
+                    output="$(pacman -Qp -- "$file" 2>/dev/null)" || true
+                    package="${output%% *}"
+                    ;;
+            esac
+            [[ "$package" =~ ^[A-Za-z0-9][A-Za-z0-9.+:_-]*$ ]] && names["$package"]=1
+        done < <(find "$directory" -maxdepth 4 -type f \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.pkg.tar.*' \) -print0)
+    fi
+    # Also cover a single-package session and old archives with no unpacked metadata.
+    case "$component" in
+        mesa) candidates=(mesa mesa-vulkan-drivers libglx-mesa0 libegl-mesa0 mesa-dri-drivers) ;;
+        kde) candidates=(kwin kwin-wayland kwin-x11 kwin-common xwayland xorg-x11-server-Xwayland) ;;
+        gnome) candidates=(mutter mutter-common xwayland xorg-x11-server-Xwayland) ;;
+        niri) candidates=(niri-anland xwayland-satellite xwayland xorg-x11-server-Xwayland) ;;
+        hyprland) candidates=(hyprland-anland hyprland xwayland xorg-x11-server-Xwayland) ;;
+        mango) candidates=(mango-anland xwayland xorg-x11-server-Xwayland) ;;
+        denial) candidates=(denial xwayland xorg-x11-server-Xwayland) ;;
+        anland-next) candidates=(anland-session) ;;
+        hangover) candidates=(hangover-wine) ;;
+    esac
+    for package in "${candidates[@]}"; do names["$package"]=1; done
+    for package in "${!names[@]}"; do
+        version=''
+        case "${PACKAGE_TYPE:-${PACKAGE_MANAGER:-${TARGET:-}}}" in
+            deb|apt|debian*|ubuntu*)
+                output="$(dpkg-query -W -f='${db:Status-Abbrev}\t${Version}\n' "$package" 2>/dev/null)" || continue
+                [[ "$output" == ?i$' '*$'\t'* ]] || continue
+                version="${output#*$'\t'}"
+                ;;
+            rpm|dnf|fedora*) version="$(rpm -q --queryformat '%{VERSION}-%{RELEASE}' "$package" 2>/dev/null)" || continue ;;
+            pkg.tar.*|pacman|arch*)
+                output="$(pacman -Q -- "$package" 2>/dev/null)" || continue
+                version="${output#* }"
+                ;;
+        esac
+        [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+:~_-]*$ ]] || continue
+        printf '%s\t%s\n' "$package" "$version" >> "$temporary"
+    done
+    if [[ -s "$temporary" ]]; then
+        LC_ALL=C sort -o "$temporary" "$temporary" && chmod 0644 "$temporary" && \
+            mv -f -- "$temporary" "$state_dir/$component.packages.tsv"
+    else
+        rm -f -- "$temporary" "$state_dir/$component.packages.tsv"
+    fi
+}
+
+ds_operation_restore_configs() {
+    local transaction="$1" present snapshot target temporary failed=0
+    [[ -f "$transaction/configs" && ! -L "$transaction/configs" ]] || return 0
+    while IFS=$'\t' read -r present snapshot target; do
+        [[ -n "$target" ]] || continue
+        if ! ds_operation_safe_path "$target" || [[ "$snapshot" != "$transaction"/config.* ]]; then
+            failed=1; continue
+        fi
+        if [[ "$present" == present && ( -f "$snapshot" || -L "$snapshot" ) ]]; then
+            temporary="${target}.droidspaces-restore-$BASHPID"
+            if ! cp -a -- "$snapshot" "$temporary" || ! mv -Tf -- "$temporary" "$target"; then
+                failed=1
+            fi
+        elif [[ "$present" == missing ]]; then
+            rm -f -- "$target" || failed=1
+        else
+            failed=1
+        fi
+    done < "$transaction/configs"
+    return "$failed"
+}
+
+ds_operation_recover_previous() {
+    local previous_status previous_transaction previous_phase already_recovered
+    [[ -f "$DS_OP_DIR/active" && ! -L "$DS_OP_DIR/active" ]] || return 0
+    previous_status="$(awk -F= '$1=="status" {print $2}' "$DS_OP_DIR/active")"
+    case "$previous_status" in running|incomplete|recovery_failed) ;; *) return 0 ;; esac
+    previous_transaction="$(awk -F= '$1=="transaction" {sub(/^[^=]*=/, ""); print}' "$DS_OP_DIR/active")"
+    previous_phase="$(awk -F= '$1=="phase" {print $2}' "$DS_OP_DIR/active")"
+    already_recovered="$(awk -F= '$1=="config_recovered" {print $2}' "$DS_OP_DIR/active")"
+    [[ "$previous_transaction" == "$DS_OP_DIR"/transactions/* && -d "$previous_transaction" &&
+       ! -L "$previous_transaction" ]] || {
+        printf 'Unfinished Droidspaces operation has an invalid recovery record: %s\n' "$DS_OP_DIR/active" >&2
+        return 1
+    }
+    if [[ "$already_recovered" != true ]]; then
+        printf 'Recovering configuration from unfinished operation (phase=%s): %s\n' \
+            "$previous_phase" "$previous_transaction" >&2
+        ds_operation_restore_configs "$previous_transaction" || return 1
+    else
+        printf 'Previous operation was interrupted at phase=%s; its configuration was already recovered.\n' "$previous_phase" >&2
+    fi
+    cp -a -- "$DS_OP_DIR/active" "$previous_transaction/interrupted-state" || return 1
+    printf 'Configuration recovered. Package changes may already have completed; re-run the installer to verify/repair them.\n' >&2
+}
+
+ds_operation_begin() {
+    local component="$1" path old_umask
+    [[ "${DS_OP_ACTIVE:-false}" == false ]] || return 0
+    [[ "$component" =~ ^[a-z][a-z0-9-]*$ ]] || return 1
+    command -v flock >/dev/null 2>&1 || {
+        printf 'Droidspaces: missing flock (install util-linux). / 缺少 flock，请安装 util-linux。\n' >&2
+        return 1
+    }
+    DS_OP_DIR="${DROIDSPACES_OPERATION_DIR:-/var/lib/droidspaces-tui/operations}"
+    ds_operation_safe_path "$DS_OP_DIR" || return 1
+    # Reject symlink components before creating privileged persistent files.
+    path="$DS_OP_DIR"
+    while [[ "$path" != / ]]; do
+        [[ ! -L "$path" ]] || { printf 'Unsafe operation directory: %s\n' "$path" >&2; return 1; }
+        path="${path%/*}"; [[ -n "$path" ]] || path=/
+    done
+    old_umask="$(umask)"; umask 077
+    mkdir -p -- "$DS_OP_DIR/transactions" || { umask "$old_umask"; return 1; }
+    umask "$old_umask"
+    [[ "$(stat -c %u "$DS_OP_DIR")" == "$EUID" && ! -L "$DS_OP_DIR/lock" &&
+       ! -L "$DS_OP_DIR/transactions" && ! -L "$DS_OP_DIR/active" ]] || return 1
+    chmod 0700 "$DS_OP_DIR" "$DS_OP_DIR/transactions" || return 1
+    exec {DS_OP_LOCK_FD}>"$DS_OP_DIR/lock" || return 1
+    if ! flock -n "$DS_OP_LOCK_FD"; then
+        printf 'Another Droidspaces modification is running. / 另一个 Droidspaces 修改操作正在运行。\n' >&2
+        exec {DS_OP_LOCK_FD}>&-
+        return 75
+    fi
+    ds_operation_recover_previous || { exec {DS_OP_LOCK_FD}>&-; return 1; }
+    DS_OP_COMPONENT="$component"
+    DS_OP_CONFIG_RECOVERED=false
+    DS_OP_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+    DS_OP_TRANSACTION="$DS_OP_DIR/transactions/$DS_OP_ID"
+    mkdir -m 0700 -- "$DS_OP_TRANSACTION" || return 1
+    : > "$DS_OP_TRANSACTION/configs"
+    DS_OP_LOG="$DS_OP_TRANSACTION/operation.log"
+    DS_OP_PREVIOUS_EXIT="$(trap -p EXIT)"
+    DS_OP_PREVIOUS_INT="$(trap -p INT)"
+    DS_OP_PREVIOUS_TERM="$(trap -p TERM)"
+    DS_OP_PREVIOUS_HUP="$(trap -p HUP)"
+    exec {DS_OP_STDOUT}>&1 {DS_OP_STDERR}>&2
+    exec > >(exec {DS_OP_LOCK_FD}>&-; exec tee -a -- "$DS_OP_LOG") 2>&1
+    DS_OP_LOG_PID=$!
+    DS_OP_ACTIVE=true
+    trap 'ds_operation_exit "$?"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    printf 'Droidspaces operation log / 操作日志: %s\n' "$DS_OP_LOG"
+    ds_operation_phase prepare
+}
+
+ds_operation_finish() {
+    local status="${1:-0}" result=complete
+    [[ "${DS_OP_ACTIVE:-false}" == true ]] || return "$status"
+    if ((status != 0)); then
+        result=incomplete
+        if ! ds_operation_restore_configs "$DS_OP_TRANSACTION"; then
+            result=recovery_failed
+        else
+            DS_OP_CONFIG_RECOVERED=true
+        fi
+        printf 'Operation failed at phase=%s (exit=%s). Log: %s\n' "$DS_OP_PHASE" "$status" "$DS_OP_LOG" >&2
+        printf 'Configuration backups: %s. Package changes may require re-running this installer.\n' "$DS_OP_TRANSACTION" >&2
+    else
+        DS_OP_PHASE=complete
+        printf 'Operation completed. Log: %s\n' "$DS_OP_LOG"
+    fi
+    ds_operation_write_state "$result" "$status" || status=1
+    DS_OP_ACTIVE=false
+    exec 1>&"$DS_OP_STDOUT" 2>&"$DS_OP_STDERR"
+    exec {DS_OP_STDOUT}>&- {DS_OP_STDERR}>&-
+    flock -u "$DS_OP_LOCK_FD" || true
+    exec {DS_OP_LOCK_FD}>&-
+    ds_operation_drain_logger "$DS_OP_LOG_PID"
+    trap - EXIT INT TERM HUP
+    [[ -z "$DS_OP_PREVIOUS_EXIT" ]] || eval "$DS_OP_PREVIOUS_EXIT"
+    [[ -z "$DS_OP_PREVIOUS_INT" ]] || eval "$DS_OP_PREVIOUS_INT"
+    [[ -z "$DS_OP_PREVIOUS_TERM" ]] || eval "$DS_OP_PREVIOUS_TERM"
+    [[ -z "$DS_OP_PREVIOUS_HUP" ]] || eval "$DS_OP_PREVIOUS_HUP"
+    return "$status"
+}
+
+ds_operation_exit() {
+    local status="$1"
+    trap - EXIT INT TERM HUP
+    if declare -F ds_installer_rollback >/dev/null 2>&1; then
+        if ! ds_installer_rollback "$status"; then status=1; fi
+    fi
+    # Existing per-installer cleanup includes preserved media/fonts recovery.
+    if declare -F cleanup >/dev/null 2>&1; then cleanup || status=1; fi
+    ds_operation_finish "$status" || status=$?
+    trap - EXIT
+    exit "$status"
+}
+# END DROIDSPACES SHARED operations
+
 readonly RELEASE_REPOSITORY="${DROIDSPACES_TUI_REPOSITORY:-Goldzxcbug/droidspaces-package}"
 readonly RELEASE_TAG="Gold-bug-tui"
 readonly MANIFEST_NAME="Gold-bug-tui-manifest"
+readonly BUNDLE_NAME="Gold-bug-tui.tar.gz"
+readonly FILES_NAME="Gold-bug-tui-files"
+readonly MANIFEST_LIMIT=1048576
+readonly SCRIPT_LIMIT=8388608
+readonly BUNDLE_LIMIT=33554432
+readonly EXPANDED_LIMIT=67108864
+readonly MEMBER_LIMIT=128
+BUNDLE_SHA=''
+BUNDLE_SIZE=''
+BOOTSTRAP_SHA=''
+BOOTSTRAP_SIZE=''
+PARSED_REVISION=''
+declare -a MANIFEST_ROWS=()
 readonly GITHUB_API_URL="${DROIDSPACES_TUI_API_URL:-https://api.github.com}"
 readonly GITHUB_DOWNLOAD_BASE="${DROIDSPACES_TUI_GITHUB_BASE:-https://github.com/$RELEASE_REPOSITORY/releases/download}"
 readonly GITHUB_PROXY_BASE="${DROIDSPACES_TUI_PROXY_BASE:-https://gh-proxy.com/https://github.com/$RELEASE_REPOSITORY/releases/download}"
@@ -20,6 +405,7 @@ API_BEFORE=""
 API_AFTER=""
 MANIFEST_PATH=""
 METADATA_SOURCE=""
+MANIFEST_REVISION=""
 CHANGED_COUNT=0
 
 declare -a ORIGINAL_ARGUMENTS=("$@")
@@ -120,7 +506,7 @@ parse_arguments() {
 
 require_commands() {
     local command_name
-    for command_name in awk bash chmod cp curl date dirname install ln mkdir mktemp mv readlink rm rmdir sha256sum stat; do
+    for command_name in awk bash chmod cp curl date dirname find gzip head install ln mkdir mktemp mv readlink rm rmdir sha256sum stat tar tr wc; do
         command -v "$command_name" >/dev/null 2>&1 || die "缺少命令：$command_name"
     done
 }
@@ -201,7 +587,7 @@ download_cnb_manifest_to() {
     local output="$1" manifest_size
 
     log "从 CNB 下载 $MANIFEST_NAME"
-    download_from_url "$CNB_DOWNLOAD_BASE/$RELEASE_TAG/$MANIFEST_NAME" "$output" || return 1
+    download_from_url "$CNB_DOWNLOAD_BASE/$RELEASE_TAG/$MANIFEST_NAME" "$output" "$MANIFEST_LIMIT" || return 1
     manifest_size="$(stat -c '%s' "$output")" || return 1
     [[ "$manifest_size" =~ ^[0-9]+$ && "$manifest_size" -gt 0 && \
        "$manifest_size" -le $((1024 * 1024)) ]]
@@ -211,32 +597,26 @@ download_cnb_manifest() {
     download_cnb_manifest_to "$MANIFEST_PATH"
 }
 
-safe_asset_name() {
-    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && "$1" != *..* ]]
-}
-
 safe_target_path() {
     local target="$1" base
-    case "$target" in
-        /usr/local/bin/*|/usr/local/sbin/*) ;;
+    case "${target%/*}" in
+        /usr/local/bin|/usr/local/sbin|/usr/local/lib/droidspaces/tui) ;;
         *) return 1 ;;
     esac
     base="${target##*/}"
-    [[ -n "$base" && "$base" != . && "$base" != .. && "$target" != *//* ]] || return 1
-    case "/${target#/}/" in
-        */./*|*/../*) return 1 ;;
-    esac
-    return 0
+    [[ -n "$base" && "$base" != . && "$base" != .. && "$target" != *//* ]]
 }
 
 download_from_url() {
-    local url="$1" output="$2"
+    local url="$1" output="$2" limit="${3:-$BUNDLE_LIMIT}"
     curl --fail --silent --show-error --location \
         --retry 2 --retry-all-errors --connect-timeout 15 --max-time 120 \
+        --max-filesize "$limit" --proto '=http,https' --proto-redir '=http,https' \
         --output "$output" "$url"
 }
 
 download_asset() {
+    ds_operation_phase download
     local asset_name="$1" expected_sha="$2" expected_size="$3" output="$4"
     local source_name base url actual_sha actual_size
     local -a sources=()
@@ -257,7 +637,7 @@ download_asset() {
         url="$base/$RELEASE_TAG/$asset_name"
         rm -f -- "$output"
         log "从 $source_name 下载 $asset_name"
-        if ! download_from_url "$url" "$output"; then
+        if ! download_from_url "$url" "$output" "$expected_size"; then
             continue
         fi
         actual_size="$(stat -c '%s' "$output")"
@@ -270,104 +650,238 @@ download_asset() {
     return 1
 }
 
-parse_manifest() {
-    local line sha size role target asset extra
-    local seen_header=false format='' tag=''
-    declare -A seen_assets=() seen_targets=()
-
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        line="${line%$'\r'}"
-        if [[ "$seen_header" == false ]]; then
-            case "$line" in
-                format=*) format="${line#*=}" ;;
-                release_tag=*) tag="${line#*=}" ;;
-                $'sha256\tsize\trole\ttarget\tasset') seen_header=true ;;
-            esac
-            continue
-        fi
-        [[ -n "$line" ]] || continue
-        IFS=$'\t' read -r sha size role target asset extra <<< "$line"
-        [[ -z "${extra:-}" && "$sha" =~ ^[0-9a-f]{64}$ && "$size" =~ ^[0-9]+$ ]] || \
-            die 'TUI 清单包含无效记录。'
-        case "$role" in tui|bootstrap|installer) ;; *) die "TUI 清单包含无效类型：$role" ;; esac
-        safe_asset_name "$asset" || die "TUI 清单包含不安全的附件名：$asset"
-        case "$asset:$role:$target" in
-            "droidspaces-tui.sh:tui:$TUI_TARGET"|"droidspaces-gpu.sh:tui:/usr/local/bin/droidspaces-gpu"|"droidspaces-video.sh:tui:/usr/local/bin/droidspaces-video.sh"|"install-tui.sh:bootstrap:-") ;;
-            install-*.sh:installer:/usr/local/sbin/install-*)
-                [[ "$target" == "/usr/local/sbin/${asset%.sh}" ]] || \
-                    die "安装脚本与目标路径不匹配：$asset"
+# Inspect the uncompressed tar stream before extracting any member. GNU tar's
+# escaped listing makes whitespace/control characters unambiguous; the allowed
+# path grammar below excludes every escape and all links or special files.
+validate_bundle_archive() {
+    local archive="$1" listing="$2" mode owner size date time name extra relative
+    local count=0 total=0 limit
+    local -A seen=()
+    limit=$((EXPANDED_LIMIT + MANIFEST_LIMIT))
+    if ! (set -o pipefail; GZIP= gzip -cd -- "$archive" | head -c "$limit" | \
+        LC_ALL=C TZ=UTC TAR_OPTIONS= tar --list --verbose --numeric-owner --full-time \
+            --quoting-style=escape --absolute-names --file - | head -n "$((MEMBER_LIMIT + 1))") > "$listing"; then
+        die 'invalid or oversized TUI archive'
+    fi
+    while read -r mode owner size date time name extra; do
+        [[ -n "$mode" && -z "${extra:-}" && "$size" =~ ^[0-9]{1,10}$ ]] || die 'invalid TUI archive header'
+        count=$((count + 1))
+        ((count <= MEMBER_LIMIT)) || die 'TUI archive has too many members'
+        [[ -z "${seen[$name]+present}" ]] || die "duplicate TUI archive member: $name"
+        seen["$name"]=1
+        case "$name" in
+            tui/|tui/lib/)
+                [[ "$mode" == d* && "$size" == 0 ]] || die "invalid TUI archive directory: $name"
                 ;;
-            *) die "TUI 清单包含不允许的安装映射：$asset" ;;
+            tui/*)
+                [[ "$mode" == -* ]] || die "TUI archive member is not a regular file: $name"
+                relative="${name#tui/}"
+                if [[ "$relative" != "$FILES_NAME" ]]; then
+                    asset_metadata "$relative" >/dev/null || die "unexpected TUI archive member: $name"
+                fi
+                ((10#$size > 0 && 10#$size <= SCRIPT_LIMIT)) || die "invalid TUI archive member size: $name"
+                if [[ "$relative" == "$FILES_NAME" ]]; then
+                    ((10#$size <= MANIFEST_LIMIT)) || die 'TUI file manifest is too large'
+                fi
+                total=$((total + 10#$size))
+                ((total <= EXPANDED_LIMIT)) || die 'TUI archive exceeds the expanded size limit'
+                ;;
+            *) die "unexpected TUI archive member: $name" ;;
         esac
-        if [[ "$role" != bootstrap ]]; then
-            safe_target_path "$target" || die "TUI 清单包含不安全的目标路径：$target"
-        fi
-        [[ -z "${seen_assets[$asset]:-}" ]] || die "TUI 清单重复附件：$asset"
-        [[ -z "${seen_targets[$target]:-}" ]] || die "TUI 清单重复目标：$target"
-        seen_assets["$asset"]=1
-        seen_targets["$target"]=1
-        ASSET_SHA256+=("$sha")
-        ASSET_SIZES+=("$size")
-        ASSET_ROLES+=("$role")
-        ASSET_TARGETS+=("$target")
-        ASSET_NAMES+=("$asset")
-    done < "$MANIFEST_PATH"
+    done < "$listing"
+    [[ -n "${seen[tui/$FILES_NAME]+present}" ]] || die 'TUI archive has no file manifest'
+}
 
-    [[ "$format" == 1 && "$tag" == "$RELEASE_TAG" && "$seen_header" == true ]] || \
-        die 'TUI 清单格式或 Release tag 无效。'
-    ((${#ASSET_NAMES[@]} >= 2)) || die 'TUI 清单没有包含必要脚本。'
-    [[ "${seen_assets[droidspaces-tui.sh]:-}" == 1 && \
-       "${seen_assets[install-tui.sh]:-}" == 1 ]] || die 'TUI 清单缺少核心脚本。'
-    # GPU/视频脚本属于可选项：旧版清单没有它们也能正常工作。清单一旦包含它们，
-    # 上面的资产名/角色/目标映射与重复检查已经保证记录唯一且合法。
+extract_bundle_archive() {
+    local archive="$1" destination="$2"
+    mkdir -m 0700 -- "$destination"
+    TAR_OPTIONS= GZIP= tar --extract --gzip --file "$archive" --directory "$destination" \
+        --no-same-owner --no-same-permissions --delay-directory-restore || die 'unable to extract TUI archive'
+    [[ -d "$destination/tui" && ! -L "$destination/tui" ]] || die 'TUI archive root is missing'
+}
+
+asset_metadata() {
+    local name="$1" base
+    case "$name" in
+        droidspaces-tui.sh) printf 'tui\t/usr/local/bin/droidspaces-tui' ;;
+        droidspaces-gpu.sh) printf 'tui\t/usr/local/bin/droidspaces-gpu' ;;
+        droidspaces-video.sh) printf 'tui\t/usr/local/bin/droidspaces-video.sh' ;;
+        install-tui.sh) printf 'bootstrap\t-' ;;
+        install-anland-kde.sh|install-anland-gnome.sh|install-anland-next.sh|install-anland-niri.sh|install-anland-hyprland.sh|install-anland-mango.sh|install-anland-denial.sh|install-mesa.sh|install-hangover-wine.sh|install-winefonts.sh)
+            printf 'installer\t/usr/local/sbin/%s' "${name%.sh}"
+            ;;
+        lib/*.sh)
+            base="${name#lib/}"
+            [[ "$base" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*\.sh$ ]] || return 1
+            printf 'library\t/usr/local/lib/droidspaces/tui/%s' "$base"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+read_manifest_records() {
+    local path="$1" line key value bytes
+    local header=false
+    local -A fields=()
+    MANIFEST_ROWS=()
+    PARSED_REVISION=''
+    [[ -f "$path" && ! -L "$path" ]] || die 'TUI 清单缺失或不是普通文件。'
+    bytes="$(stat -c '%s' "$path")"
+    ((bytes > 0 && bytes <= MANIFEST_LIMIT)) || die 'TUI 清单为空或超出大小限制。'
+    [[ "$(LC_ALL=C tr -d '\11\12\40-\176' < "$path" | wc -c)" -eq 0 ]] || die 'TUI 清单包含无效字符。'
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$header" == false ]]; then
+            if [[ "$line" == $'sha256\tsize\trole\ttarget\tasset' ]]; then
+                header=true
+                continue
+            fi
+            [[ "$line" == *=* ]] || die 'TUI 清单元数据无效。'
+            key="${line%%=*}"; value="${line#*=}"
+            case "$key" in format|release_tag|revision|generated_at) ;; *) die "未知的 TUI 清单元数据：$key" ;; esac
+            [[ -z "${fields[$key]+present}" ]] || die "重复的 TUI 清单元数据：$key"
+            fields["$key"]="$value"
+        else
+            MANIFEST_ROWS+=("$line")
+        fi
+    done < "$path"
+    [[ "$header" == true && "${fields[format]-}" == 1 && "${fields[release_tag]-}" == "$RELEASE_TAG" &&
+       "${fields[revision]-}" =~ ^[0-9a-f]{40}$ && -n "${fields[generated_at]-}" ]] || die 'TUI 清单格式、标签或源码 revision 无效。'
+    PARSED_REVISION="${fields[revision]}"
+}
+
+read_manifest_row() {
+    local line="$1"
+    [[ "$line" =~ ^([^$'\t']+)$'\t'([^$'\t']+)$'\t'([^$'\t']+)$'\t'([^$'\t']+)$'\t'([^$'\t']+)$ ]] || die 'TUI 清单记录必须包含五个非空字段。'
+    ROW_SHA="${BASH_REMATCH[1]}"; ROW_SIZE="${BASH_REMATCH[2]}"; ROW_ROLE="${BASH_REMATCH[3]}"
+    ROW_TARGET="${BASH_REMATCH[4]}"; ROW_ASSET="${BASH_REMATCH[5]}"
+    [[ "$ROW_SHA" =~ ^[0-9a-f]{64}$ && "$ROW_SIZE" =~ ^[1-9][0-9]{0,8}$ ]] || die 'TUI 清单摘要或大小无效。'
+}
+
+parse_manifest() {
+    local line
+    local -A seen=()
+    read_manifest_records "$MANIFEST_PATH"
+    MANIFEST_REVISION="$PARSED_REVISION"
+    for line in "${MANIFEST_ROWS[@]}"; do
+        read_manifest_row "$line"
+        [[ -z "${seen[$ROW_ASSET]+present}" && "$ROW_TARGET" == - ]] || die 'TUI 发布清单包含重复或无效的附件。'
+        seen["$ROW_ASSET"]=1
+        case "$ROW_ASSET:$ROW_ROLE" in
+            install-tui.sh:bootstrap)
+                ((ROW_SIZE <= SCRIPT_LIMIT)) || die 'TUI 引导安装器超出大小限制。'
+                BOOTSTRAP_SHA="$ROW_SHA"; BOOTSTRAP_SIZE="$ROW_SIZE"
+                ;;
+            "$BUNDLE_NAME:bundle")
+                ((ROW_SIZE <= BUNDLE_LIMIT)) || die 'TUI 压缩包超出大小限制。'
+                BUNDLE_SHA="$ROW_SHA"; BUNDLE_SIZE="$ROW_SIZE"
+                ;;
+            *) die "TUI 发布清单包含未知附件：$ROW_ASSET" ;;
+        esac
+    done
+    [[ "${seen[install-tui.sh]-}" == 1 && "${seen[$BUNDLE_NAME]-}" == 1 && ${#seen[@]} == 2 ]] || die 'TUI 发布清单缺少引导器或压缩包。'
+}
+
+parse_files_manifest() {
+    local directory="$1" line metadata role target asset file actual_sha required
+    local -A seen_assets=() seen_targets=()
+    read_manifest_records "$directory/$FILES_NAME"
+    [[ "$PARSED_REVISION" == "$MANIFEST_REVISION" ]] || die '压缩包与发布清单的源码 revision 不一致。'
+    ((${#MANIFEST_ROWS[@]} <= MEMBER_LIMIT)) || die 'TUI 压缩包包含过多文件。'
+    for line in "${MANIFEST_ROWS[@]}"; do
+        read_manifest_row "$line"
+        asset="$ROW_ASSET"
+        ((ROW_SIZE <= SCRIPT_LIMIT)) || die "TUI 文件超出大小限制：$asset"
+        metadata="$(asset_metadata "$asset")" || die "TUI 压缩包包含未知文件：$asset"
+        IFS=$'\t' read -r role target <<< "$metadata"
+        [[ "$ROW_ROLE" == "$role" && "$ROW_TARGET" == "$target" ]] || die "TUI 文件安装映射无效：$asset"
+        [[ -z "${seen_assets[$asset]+present}" && -z "${seen_targets[$target]+present}" ]] || die "TUI 文件或安装目标重复：$asset"
+        seen_assets["$asset"]=1; seen_targets["$target"]=1
+        file="$directory/$asset"
+        [[ -f "$file" && ! -L "$file" && "$(stat -c '%s' "$file")" == "$ROW_SIZE" ]] || die "TUI 文件缺失或大小不符：$asset"
+        actual_sha="$(sha256sum < "$file")"
+        [[ "${actual_sha%% *}" == "$ROW_SHA" ]] || die "TUI 文件摘要不符：$asset"
+        bash -n "$file" || die "TUI 文件语法检查失败：$asset"
+        if [[ "$asset" == install-tui.sh ]]; then
+            [[ "$ROW_SHA" == "$BOOTSTRAP_SHA" && "$ROW_SIZE" == "$BOOTSTRAP_SIZE" ]] || die '压缩包中的引导器与发布附件不一致。'
+        else
+            safe_target_path "$target" || die "TUI 文件安装路径无效：$asset"
+        fi
+        ASSET_NAMES+=("$asset"); ASSET_SHA256+=("$ROW_SHA"); ASSET_SIZES+=("$ROW_SIZE")
+        ASSET_ROLES+=("$ROW_ROLE"); ASSET_TARGETS+=("$ROW_TARGET")
+    done
+    for required in droidspaces-tui.sh droidspaces-gpu.sh droidspaces-video.sh install-tui.sh \
+        install-anland-{kde,gnome,next,niri,hyprland,mango,denial}.sh \
+        install-{mesa,hangover-wine,winefonts}.sh lib/anland-{common,archive-common,compositor-common}.sh; do
+        [[ "${seen_assets[$required]-}" == 1 ]] || die "TUI 压缩包缺少必要文件：$required"
+    done
+    while IFS= read -r -d '' file; do
+        asset="${file#"$directory/"}"
+        if [[ "$asset" == lib && -d "$file" && ! -L "$file" ]]; then continue; fi
+        [[ -f "$file" && ! -L "$file" && ( "$asset" == "$FILES_NAME" || -n "${seen_assets[$asset]+present}" ) ]] || die "TUI 压缩包包含清单以外的文件：$asset"
+    done < <(find "$directory" -mindepth 1 -print0)
+}
+
+load_bundle() {
+    local extracted="$WORK_DIR/unpacked" archive="$WORK_DIR/$BUNDLE_NAME"
+    download_asset "$BUNDLE_NAME" "$BUNDLE_SHA" "$BUNDLE_SIZE" "$archive" || die '无法下载并校验 TUI 压缩包。'
+    validate_bundle_archive "$archive" "$WORK_DIR/archive-members"
+    extract_bundle_archive "$archive" "$extracted"
+    mv -- "$extracted/tui" "$WORK_DIR/assets"
+    parse_files_manifest "$WORK_DIR/assets"
+    select_updates
 }
 
 reset_manifest_state() {
-    ASSET_NAMES=()
-    ASSET_SHA256=()
-    ASSET_SIZES=()
-    ASSET_ROLES=()
-    ASSET_TARGETS=()
-    SELECTED_INDEXES=()
-    CHANGED_COUNT=0
+    MANIFEST_REVISION=''
+    BUNDLE_SHA=''; BUNDLE_SIZE=''
+    BOOTSTRAP_SHA=''; BOOTSTRAP_SIZE=''
+    ASSET_NAMES=(); ASSET_SHA256=(); ASSET_SIZES=(); ASSET_ROLES=(); ASSET_TARGETS=()
+    SELECTED_INDEXES=(); CHANGED_COUNT=0
 }
 
 load_github_manifest() {
-    local manifest_row manifest_id manifest_sha manifest_size manifest_updated
-    local index row asset_id asset_sha asset_size asset_updated
-
+    local row asset_id asset_sha asset_size asset_updated name expected_sha expected_size
     reset_manifest_state
     json_parser_available || return 1
     log "读取 GitHub Release：$RELEASE_TAG"
     fetch_release_metadata "$API_BEFORE" || return 1
-    manifest_row="$(release_asset_row "$API_BEFORE" "$MANIFEST_NAME")" || return 1
-    IFS=$'\t' read -r manifest_id manifest_sha manifest_size manifest_updated <<< "$manifest_row"
-    download_asset "$MANIFEST_NAME" "$manifest_sha" "$manifest_size" "$MANIFEST_PATH" || return 1
+    row="$(release_asset_row "$API_BEFORE" "$MANIFEST_NAME")" || return 1
+    IFS=$'\t' read -r asset_id asset_sha asset_size asset_updated <<< "$row"
+    [[ "$asset_size" =~ ^[1-9][0-9]{0,8}$ ]] && ((asset_size <= MANIFEST_LIMIT)) || die 'TUI 发布清单超出大小限制。'
+    download_asset "$MANIFEST_NAME" "$asset_sha" "$asset_size" "$MANIFEST_PATH" || return 1
     parse_manifest
-    select_updates
-
-    for index in "${SELECTED_INDEXES[@]}"; do
-        row="$(release_asset_row "$API_BEFORE" "${ASSET_NAMES[$index]}")" || return 1
+    for name in install-tui.sh "$BUNDLE_NAME"; do
+        if [[ "$name" == install-tui.sh ]]; then expected_sha="$BOOTSTRAP_SHA"; expected_size="$BOOTSTRAP_SIZE"
+        else expected_sha="$BUNDLE_SHA"; expected_size="$BUNDLE_SIZE"; fi
+        row="$(release_asset_row "$API_BEFORE" "$name")" || return 1
         IFS=$'\t' read -r asset_id asset_sha asset_size asset_updated <<< "$row"
-        [[ "$asset_sha" == "${ASSET_SHA256[$index]}" && \
-           "$asset_size" == "${ASSET_SIZES[$index]}" ]] || \
-            die "Release API 与 TUI 清单不一致：${ASSET_NAMES[$index]}"
+        [[ "$asset_sha" == "$expected_sha" && "$asset_size" == "$expected_size" ]] || die "Release API 与发布清单不一致：$name"
     done
     METADATA_SOURCE=github
+    load_bundle
 }
 
 load_cnb_manifest() {
     reset_manifest_state
     download_cnb_manifest || return 1
     parse_manifest
-    select_updates
     METADATA_SOURCE=cnb
+    load_bundle
+}
+
+verify_release_unchanged() {
+    local name before after
+    for name in "$MANIFEST_NAME" "$BUNDLE_NAME" install-tui.sh; do
+        before="$(release_asset_row "$API_BEFORE" "$name")" || die '无法读取下载前的 Release 信息。'
+        after="$(release_asset_row "$API_AFTER" "$name")" || die '无法读取下载后的 Release 信息。'
+        [[ "$before" == "$after" ]] || die "下载期间 Release 附件发生变化：$name"
+    done
 }
 
 asset_selected() {
     local role="$1"
     case "$UPDATE_SCOPE:$role" in
-        all:tui|all:installer|tui:tui|scripts:installer) return 0 ;;
+        all:tui|all:installer|all:library|tui:tui|scripts:installer|scripts:library) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -380,7 +894,8 @@ aliases_need_update() {
 }
 
 select_updates() {
-    local index target actual_sha
+    local index target actual_sha anland_changed=false
+    local -A selected=()
     for index in "${!ASSET_NAMES[@]}"; do
         asset_selected "${ASSET_ROLES[$index]}" || continue
         target="${ASSET_TARGETS[$index]}"
@@ -389,23 +904,26 @@ select_updates() {
             [[ "$actual_sha" == "${ASSET_SHA256[$index]}" ]] && continue
         fi
         SELECTED_INDEXES+=("$index")
+        selected["$index"]=1
+        case "${ASSET_NAMES[$index]}" in
+            install-anland-*.sh|lib/*) anland_changed=true ;;
+        esac
     done
+    # Entry scripts and their sourced libraries form one update/rollback group.
+    if [[ "$anland_changed" == true ]]; then
+        for index in "${!ASSET_NAMES[@]}"; do
+            case "${ASSET_NAMES[$index]}" in
+                install-anland-*.sh|lib/*)
+                    [[ -z "${selected[$index]+present}" ]] || continue
+                    SELECTED_INDEXES+=("$index")
+                    ;;
+            esac
+        done
+    fi
     CHANGED_COUNT="${#SELECTED_INDEXES[@]}"
     if aliases_need_update; then
         CHANGED_COUNT=$((CHANGED_COUNT + 1))
     fi
-}
-
-verify_release_unchanged() {
-    local index before after
-    for index in "$@"; do
-        before="$(release_asset_row "$API_BEFORE" "${ASSET_NAMES[$index]}")"
-        after="$(release_asset_row "$API_AFTER" "${ASSET_NAMES[$index]}")"
-        [[ "$before" == "$after" ]] || die "下载期间 Release 附件发生变化：${ASSET_NAMES[$index]}"
-    done
-    before="$(release_asset_row "$API_BEFORE" "$MANIFEST_NAME")"
-    after="$(release_asset_row "$API_AFTER" "$MANIFEST_NAME")"
-    [[ "$before" == "$after" ]] || die '下载期间 TUI 清单发生变化，请重试。'
 }
 
 confirm_install() {
@@ -417,99 +935,141 @@ confirm_install() {
     case "${answer,,}" in y|yes|1|是) ;; *) exit 0 ;; esac
 }
 
+ds_tui_rollback_directory() {
+    local directory="$1" present snapshot target staged extra temporary failed=0
+    [[ -f "$directory/targets.tsv" && ! -L "$directory/targets.tsv" ]] || return 1
+    while IFS=$'\t' read -r present snapshot target staged extra; do
+        [[ -z "${extra:-}" ]] && ds_operation_safe_path "$target" &&
+            [[ "$snapshot" == "$directory/files/${target#/}" &&
+               "$staged" == "$target.droidspaces-new-"* &&
+               "${staged#"$target.droidspaces-new-"}" =~ ^[0-9]+$ ]] || { failed=1; continue; }
+        rm -f -- "$staged" || failed=1
+        if [[ "$present" == present && ( -f "$snapshot" || -L "$snapshot" ) ]]; then
+            temporary="$target.droidspaces-restore-$BASHPID"
+            if ! cp -a -- "$snapshot" "$temporary" || ! mv -Tf -- "$temporary" "$target"; then
+                failed=1
+            fi
+        elif [[ "$present" == missing ]]; then
+            rm -f -- "$target" || failed=1
+        else
+            failed=1
+        fi
+    done < "$directory/targets.tsv"
+    return "$failed"
+}
+
+ds_tui_recover_pending() {
+    local directory root="${DROIDSPACES_TUI_BACKUP_DIR:-/var/backups/droidspaces-tui}"
+    [[ -e "$DS_OP_DIR/tui-pending" || -L "$DS_OP_DIR/tui-pending" ]] || return 0
+    [[ -f "$DS_OP_DIR/tui-pending" && ! -L "$DS_OP_DIR/tui-pending" ]] || return 1
+    IFS= read -r directory < "$DS_OP_DIR/tui-pending" || return 1
+    ds_operation_safe_path "$root" && [[ "$directory" == "$root"/* && -d "$directory" &&
+        ! -L "$directory" && "$(stat -c %u "$directory")" == "$EUID" ]] || return 1
+    log "恢复未完成的 TUI 更新：$directory"
+    ds_tui_rollback_directory "$directory" || {
+        log "自动恢复失败；请保留备份并检查：$directory"
+        return 1
+    }
+    rm -f -- "$DS_OP_DIR/tui-pending"
+    log '已恢复更新前的脚本、命令别名和来源记录。'
+}
+
+ds_installer_rollback() {
+    (( ${1:-0} == 0 )) || ds_tui_recover_pending
+}
+
 install_updates() {
-    local index asset target staged target_dir backup_dir backup_path transaction_id
-    local aliases_changed=false
-    local transaction_started=false
-    declare -a prepared_targets=() backup_targets=() backup_paths=()
-
+    local index asset target staged mode backup_dir transaction_id
+    local present snapshot extra metadata_target metadata_staged aliases_changed=false
+    local backup_root="${DROIDSPACES_TUI_BACKUP_DIR:-/var/backups/droidspaces-tui}" path
+    ds_operation_phase stage
+    ds_operation_safe_path "$backup_root" || die '备份目录必须是安全的绝对路径。'
+    path="$backup_root"
+    while [[ "$path" != / ]]; do
+        [[ ! -L "$path" ]] || die "备份目录包含符号链接：$path"
+        path="${path%/*}"; [[ -n "$path" ]] || path=/
+    done
+    mkdir -p -- "$backup_root"
+    [[ "$(stat -c %u "$backup_root")" == "$EUID" ]] || die '备份目录所有者不正确。'
+    chmod 0700 "$backup_root"
     transaction_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-    backup_dir="/var/backups/droidspaces-tui/$transaction_id"
-    mkdir -p -- "$backup_dir"
+    backup_dir="$(mktemp -d "$backup_root/$transaction_id.XXXXXXXX")"
+    : > "$backup_dir/targets.tsv"
 
+    ds_tui_prepare_target() {
+        local prepared_target="$1" old=missing old_path="$backup_dir/files/${1#/}"
+        ds_operation_safe_path "$prepared_target" || return 1
+        [[ ! -d "$prepared_target" || -L "$prepared_target" ]] || return 1
+        mkdir -p -- "${prepared_target%/*}" "${old_path%/*}"
+        if [[ -e "$prepared_target" || -L "$prepared_target" ]]; then
+            cp -a -- "$prepared_target" "$old_path"
+            old=present
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$old" "$old_path" "$prepared_target" \
+            "$prepared_target.droidspaces-new-$$" >> "$backup_dir/targets.tsv"
+    }
+    for index in "${SELECTED_INDEXES[@]}"; do
+        ds_tui_prepare_target "${ASSET_TARGETS[$index]}"
+    done
+    if aliases_need_update; then
+        aliases_changed=true
+        ds_tui_prepare_target /usr/local/bin/dstui
+        ds_tui_prepare_target /usr/local/bin/ds-tui
+    fi
+    metadata_target="$DS_OP_DIR/installed-tui.tsv"
+    metadata_staged="$metadata_target.droidspaces-new-$$"
+    ds_tui_prepare_target "$metadata_target"
+    # A complete durable target list exists before any installed path changes.
+    printf '%s\n' "$backup_dir" > "$DS_OP_DIR/.tui-pending.$BASHPID"
+    mv -f -- "$DS_OP_DIR/.tui-pending.$BASHPID" "$DS_OP_DIR/tui-pending"
     for index in "${SELECTED_INDEXES[@]}"; do
         asset="${ASSET_NAMES[$index]}"
         target="${ASSET_TARGETS[$index]}"
         staged="$WORK_DIR/assets/$asset"
-        target_dir="${target%/*}"
-        mkdir -p -- "$target_dir"
-        install -o root -g root -m 0755 -- "$staged" "$target.droidspaces-new-$$"
-        prepared_targets+=("$target")
-        if [[ -e "$target" || -L "$target" ]]; then
-            backup_path="$backup_dir/${target#/}"
-            backup_targets+=("$target")
-            backup_paths+=("$backup_path")
-            mkdir -p -- "${backup_path%/*}"
-            cp -a -- "$target" "$backup_path"
-        fi
-    done
-
-    if aliases_need_update; then
-        aliases_changed=true
-        for target in /usr/local/bin/dstui /usr/local/bin/ds-tui; do
-            if [[ -e "$target" || -L "$target" ]]; then
-                backup_path="$backup_dir/${target#/}"
-                backup_targets+=("$target")
-                backup_paths+=("$backup_path")
-                mkdir -p -- "${backup_path%/*}"
-                cp -a -- "$target" "$backup_path"
-            fi
-        done
-    fi
-
-    rollback_transaction() {
-        local rollback_target backup_index
-        for rollback_target in "${prepared_targets[@]}"; do
-            rm -f -- "$rollback_target.droidspaces-new-$$"
-            if [[ "$transaction_started" == true ]]; then
-                rm -f -- "$rollback_target"
-            fi
-        done
-        if [[ "$transaction_started" == true ]]; then
-            rm -f -- /usr/local/bin/dstui.new-$$ /usr/local/bin/ds-tui.new-$$
-            [[ "$aliases_changed" == false ]] || rm -f -- /usr/local/bin/dstui /usr/local/bin/ds-tui
-        fi
-        for backup_index in "${!backup_targets[@]}"; do
-            rollback_target="${backup_targets[$backup_index]}"
-            if [[ "$transaction_started" == true ]]; then
-                cp -a -- "${backup_paths[$backup_index]}" "$rollback_target"
-            fi
-        done
-    }
-    trap 'rollback_transaction; cleanup' ERR
-
-    transaction_started=true
-    for target in "${prepared_targets[@]}"; do
-        mv -f -- "$target.droidspaces-new-$$" "$target"
+        mode=0755
+        [[ "${ASSET_ROLES[$index]}" != library ]] || mode=0644
+        install -o "$(id -u)" -g "$(id -g)" -m "$mode" -- "$staged" "$target.droidspaces-new-$$"
     done
     if [[ "$aliases_changed" == true ]]; then
-        ln -sfn -- droidspaces-tui /usr/local/bin/dstui.new-$$
-        mv -f -- /usr/local/bin/dstui.new-$$ /usr/local/bin/dstui
-        ln -sfn -- droidspaces-tui /usr/local/bin/ds-tui.new-$$
-        mv -f -- /usr/local/bin/ds-tui.new-$$ /usr/local/bin/ds-tui
+        ln -s -- droidspaces-tui /usr/local/bin/dstui.droidspaces-new-$$
+        ln -s -- droidspaces-tui /usr/local/bin/ds-tui.droidspaces-new-$$
     fi
-    trap - ERR
-    trap cleanup EXIT
-
-    if ((${#backup_targets[@]} == 0)); then
-        rmdir --ignore-fail-on-non-empty "$backup_dir" 2>/dev/null || true
-    else
-        log "旧文件已备份到 $backup_dir"
-    fi
+    {
+        printf 'format=1\nrelease_tag=%s\nrevision=%s\nsource=%s\nscope=%s\ninstalled_at=%s\n' \
+            "$RELEASE_TAG" "${MANIFEST_REVISION:-unknown}" "$DOWNLOAD_SOURCE" "$UPDATE_SCOPE" "$(date -u +%FT%TZ)"
+        printf 'sha256\tasset\ttarget\n'
+        for index in "${SELECTED_INDEXES[@]}"; do
+            printf '%s\t%s\t%s\n' "${ASSET_SHA256[$index]}" "${ASSET_NAMES[$index]}" "${ASSET_TARGETS[$index]}"
+        done
+    } > "$metadata_staged"
+    chmod 0600 "$metadata_staged"
+    ds_operation_phase commit
+    while IFS=$'\t' read -r present snapshot target staged extra; do
+        mv -Tf -- "$staged" "$target"
+    done < "$backup_dir/targets.tsv"
+    ds_operation_phase verify
+    for index in "${SELECTED_INDEXES[@]}"; do
+        [[ "$(sha256sum "${ASSET_TARGETS[$index]}" | awk '{print $1}')" == "${ASSET_SHA256[$index]}" ]] || \
+            die "安装后的脚本摘要不符：${ASSET_NAMES[$index]}"
+    done
+    # Clearing this pointer is the transaction commit; backups remain available.
+    rm -f -- "$DS_OP_DIR/tui-pending"
+    log "旧文件已备份到 $backup_dir"
 }
 
 main() {
-    local index asset_sha asset_size manifest_after before_sha after_sha
+    local index manifest_after before_sha after_sha
 
     parse_arguments "$@"
     require_script_file
     require_commands
     if [[ "$CHECK_ONLY" == false ]]; then
         ensure_root
+        ds_operation_begin tui
+        ds_tui_recover_pending
     fi
 
     WORK_DIR="$(mktemp -d -t droidspaces-tui.XXXXXXXX)"
-    mkdir -p "$WORK_DIR/assets"
     API_BEFORE="$WORK_DIR/release-before.json"
     API_AFTER="$WORK_DIR/release-after.json"
     MANIFEST_PATH="$WORK_DIR/$MANIFEST_NAME"
@@ -546,19 +1106,9 @@ main() {
     fi
     confirm_install
 
-    for index in "${SELECTED_INDEXES[@]}"; do
-        asset_sha="${ASSET_SHA256[$index]}"
-        asset_size="${ASSET_SIZES[$index]}"
-        download_asset "${ASSET_NAMES[$index]}" "$asset_sha" "$asset_size" \
-            "$WORK_DIR/assets/${ASSET_NAMES[$index]}" || \
-            die "无法下载并校验附件：${ASSET_NAMES[$index]}"
-        bash -n "$WORK_DIR/assets/${ASSET_NAMES[$index]}" || \
-            die "脚本语法检查失败：${ASSET_NAMES[$index]}"
-    done
-
     if [[ "$METADATA_SOURCE" == github ]]; then
         fetch_release_metadata "$API_AFTER"
-        verify_release_unchanged "${SELECTED_INDEXES[@]}"
+        verify_release_unchanged
     else
         manifest_after="$WORK_DIR/${MANIFEST_NAME}.after"
         download_cnb_manifest_to "$manifest_after" || \
@@ -572,4 +1122,6 @@ main() {
     log "安装完成。运行 dstui 或 ds-tui 即可打开工具箱。"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
