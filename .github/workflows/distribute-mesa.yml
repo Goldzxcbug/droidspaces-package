@@ -146,6 +146,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MESA_TAG: ${{ steps.upstream.outputs.mesa_tag }}
+          REQUESTED_TAG: ${{ inputs.upstream_tag }}
           MEDIA_TAG: ${{ steps.upstream.outputs.media_tag }}
           MEDIA_DRIVER_ASSET: ${{ steps.upstream.outputs.media_driver_asset }}
           MEDIA_CHECKSUMS_ASSET: ${{ steps.upstream.outputs.media_checksums_asset }}
@@ -164,6 +165,7 @@ jobs:
             '*_debian_trixie_arm64.tar.gz'
             '*_fedora_43_arm64.tar.gz'
             '*_fedora_44_arm64.tar.gz'
+            '*_fedora_45_arm64.tar.gz'
             '*_ubuntu_noble_arm64.tar.gz'
             '*_ubuntu_questing_arm64.tar.gz'
             '*_ubuntu_resolute_arm64.tar.gz'
@@ -193,14 +195,20 @@ jobs:
             "repos/$MEDIA_REPOSITORY/contents/LICENSE?ref=$MEDIA_TAG" \
             > "$asset_dir/droidspaces-media-decode-LICENSE"
 
-          mapfile -t latest_mesa_assets < <(
-            find "$RUNNER_TEMP/mesa-version-0" -maxdepth 1 -type f \
-              -name 'mesa-for-android-container_*' -print | sort
-          )
-          [[ "${#latest_mesa_assets[@]}" -eq 7 ]] || {
-            echo "最新版应有 7 个 Mesa 资产，实际为 ${#latest_mesa_assets[@]} 个。" >&2
-            exit 1
-          }
+          shopt -s nullglob
+          for pattern in "${patterns[@]}"; do
+            latest_mesa_assets=("$RUNNER_TEMP/mesa-version-0/mesa-for-android-container_"$pattern)
+            # 手动指定的历史版本可能早于 Fedora 45 资产首次发布。
+            if [[ "$pattern" == '*_fedora_45_arm64.tar.gz' && -n "$REQUESTED_TAG" &&
+                  ${#latest_mesa_assets[@]} -eq 0 ]]; then
+              continue
+            fi
+            [[ "${#latest_mesa_assets[@]}" -eq 1 ]] || {
+              echo "所选版本的 Mesa 资产 $pattern 应匹配一个文件，实际为 ${#latest_mesa_assets[@]} 个。" >&2
+              exit 1
+            }
+          done
+          shopt -u nullglob
           media_driver_asset_file="$asset_dir/$MEDIA_DRIVER_ASSET"
           media_checksums_asset_file="$asset_dir/$MEDIA_CHECKSUMS_ASSET"
           [[ -f "$media_driver_asset_file" && \
@@ -231,7 +239,7 @@ jobs:
           while IFS= read -r version_tag; do
             version_dir="$RUNNER_TEMP/mesa-version-$version_index"
             mapfile -t version_assets < <(find "$version_dir" -maxdepth 1 -type f -name 'mesa-for-android-container_*' -print | sort)
-            ((${#version_assets[@]} > 0 && ${#version_assets[@]} <= 7)) || {
+            ((${#version_assets[@]} > 0 && ${#version_assets[@]} <= ${#patterns[@]})) || {
               echo "版本 $version_tag 的资产数量无效。" >&2; exit 1;
             }
             for asset in "${version_assets[@]}"; do

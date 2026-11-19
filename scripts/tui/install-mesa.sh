@@ -528,6 +528,7 @@ mesa_archive_version() {
         *_ubuntu_resolute_arm64.tar.gz) version="${version%_ubuntu_resolute_arm64.tar.gz}" ;;
         *_fedora_43_arm64.tar.gz) version="${version%_fedora_43_arm64.tar.gz}" ;;
         *_fedora_44_arm64.tar.gz) version="${version%_fedora_44_arm64.tar.gz}" ;;
+        *_fedora_45_arm64.tar.gz) version="${version%_fedora_45_arm64.tar.gz}" ;;
         *) return 1 ;;
     esac
     printf '%s' "$version"
@@ -884,9 +885,15 @@ detect_target() {
                     ARCHIVE_KIND="tar.gz"
                     ASSET_PATTERN='^mesa-for-android-container_[^/]+_fedora_44_arm64\.tar\.gz$'
                     ;;
+                45*)
+                    TARGET="Fedora 45"
+                    PACKAGE_MANAGER="dnf"
+                    ARCHIVE_KIND="tar.gz"
+                    ASSET_PATTERN='^mesa-for-android-container_[^/]+_fedora_45_arm64\.tar\.gz$'
+                    ;;
                 *)
-                    die "不支持当前系统 ${system_name}。仅支持 Fedora 43/44。" \
-                        "Unsupported system: ${system_name}. Only Fedora 43/44 are supported."
+                    die "不支持当前系统 ${system_name}。仅支持 Fedora 43/44/45。" \
+                        "Unsupported system: ${system_name}. Only Fedora 43/44/45 are supported."
                     ;;
             esac
             ;;

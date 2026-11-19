@@ -20,6 +20,7 @@ on:
           - debian13
           - fedora43
           - fedora44
+          - fedora45
           - arch
       hangover_ref:
         description: 要构建的 Hangover 分支、标签或提交
@@ -59,9 +60,9 @@ jobs:
 
           case "$BUILD_TARGET_INPUT" in
             all)
-              targets='["ubuntu2404","ubuntu2510","ubuntu2604","debian13","fedora43","fedora44","arch"]'
+              targets='["ubuntu2404","ubuntu2510","ubuntu2604","debian13","fedora43","fedora44","fedora45","arch"]'
               ;;
-            ubuntu2404|ubuntu2510|ubuntu2604|debian13|fedora43|fedora44|arch)
+            ubuntu2404|ubuntu2510|ubuntu2604|debian13|fedora43|fedora44|fedora45|arch)
               targets="[\"$BUILD_TARGET_INPUT\"]"
               ;;
             *)
@@ -403,8 +404,8 @@ jobs:
               packaging=debian13; codename=trixie; package_type=deb; asset_arch=arm64 ;;
             fedora43)
               packaging=fedora43; codename=fc43; package_type=rpm; asset_arch=aarch64 ;;
-            fedora44)
-              packaging=fedora43; codename=fc44; package_type=rpm; asset_arch=aarch64 ;;
+            fedora44|fedora45)
+              packaging=fedora43; codename="fc${BUILD_TARGET#fedora}"; package_type=rpm; asset_arch=aarch64 ;;
             arch)
               packaging=arch; codename=arch; package_type=arch; asset_arch=aarch64 ;;
             *)
@@ -506,8 +507,8 @@ jobs:
 
           foundation_dockerfile="$RUNNER_TEMP/foundation-${BUILD_TARGET}.Dockerfile"
           cp "source/.packaging/$PACKAGING/Dockerfile" "$foundation_dockerfile"
-          if [ "$BUILD_TARGET" = fedora44 ]; then
-            sed -i 's/FROM fedora:43/FROM fedora:44/' "$foundation_dockerfile"
+          if [[ "$BUILD_TARGET" == fedora44 || "$BUILD_TARGET" == fedora45 ]]; then
+            sed -i "s/FROM fedora:43/FROM fedora:${BUILD_TARGET#fedora}/" "$foundation_dockerfile"
           fi
           empty_context="$RUNNER_TEMP/foundation-context"
           mkdir -p "$empty_context"
@@ -515,10 +516,10 @@ jobs:
 
           cp -r "source/.packaging/$PACKAGING/wine/." source/wine/
           sed -i "s/HOVERSION/${HOVERSION}/g" source/wine/Dockerfile
-          if [ "$BUILD_TARGET" = fedora44 ]; then
+          if [[ "$BUILD_TARGET" == fedora44 || "$BUILD_TARGET" == fedora45 ]]; then
             sed -i \
-              -e 's/foundationfedora43/foundationfedora44/' \
-              -e 's/_fedora43_/_fedora44_/' \
+              -e "s/foundationfedora43/foundation${BUILD_TARGET}/" \
+              -e "s/_fedora43_/_${BUILD_TARGET}_/" \
               source/wine/Dockerfile
           fi
 
@@ -870,7 +871,7 @@ jobs:
           release_dir="$GITHUB_WORKSPACE/release-assets"
           manifest="$release_dir/hangover-wine-manifest"
           installer="$release_dir/install-hangover-wine.sh"
-          targets=(ubuntu2404 ubuntu2510 ubuntu2604 debian13 fedora43 fedora44 arch)
+          targets=(ubuntu2404 ubuntu2510 ubuntu2604 debian13 fedora43 fedora44 fedora45 arch)
           declare -A assets=()
           declare -A sources=()
           declare -A build_times=()
@@ -882,7 +883,7 @@ jobs:
           asset_suffix() {
             case "$1" in
               ubuntu2404|ubuntu2510|ubuntu2604|debian13) printf '%s\n' '-arm64.tar.gz' ;;
-              fedora43|fedora44|arch) printf '%s\n' '-aarch64.tar.gz' ;;
+              fedora43|fedora44|fedora45|arch) printf '%s\n' '-aarch64.tar.gz' ;;
               *) return 1 ;;
             esac
           }
@@ -895,6 +896,7 @@ jobs:
               debian13) printf '%s\n' 'Debian 13' ;;
               fedora43) printf '%s\n' 'Fedora 43' ;;
               fedora44) printf '%s\n' 'Fedora 44' ;;
+              fedora45) printf '%s\n' 'Fedora 45' ;;
               arch) printf '%s\n' 'Arch Linux' ;;
               *) return 1 ;;
             esac

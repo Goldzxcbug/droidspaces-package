@@ -22,12 +22,12 @@ on:
         description: KDE、GNOME、Niri、Hyprland、Mango、Denial 共用的 Anland 仓库地址
         required: true
         type: string
-        default: https://github.com/SuperTurtleDev/anland.git
+        default: https://github.com/Goldzxcbug/anland.git
       anland_ref:
         description: 六种 Anland 桌面组件共用的分支、标签或提交
         required: true
         type: string
-        default: legacy
+        default: Gold
       # —— 通用 ——
       publish_cnb:
         description: 同步发布到 CNB 国内镜像
@@ -51,6 +51,7 @@ on:
           - Debian13
           - Fedora43
           - Fedora44
+          - Fedora45
           - Arch
       # —— GNOME Wayland ——
       build_gnome:
@@ -69,6 +70,7 @@ on:
           - Debian13
           - Fedora43
           - Fedora44
+          - Fedora45
           - Arch
       # —— Anland Niri ——
       build_niri:
@@ -87,6 +89,7 @@ on:
           - debian13
           - fedora43
           - fedora44
+          - fedora45
           - arch
       # —— Anland Hyprland ——
       build_hyprland:
@@ -105,6 +108,7 @@ on:
           - debian13
           - fedora43
           - fedora44
+          - fedora45
           - arch
       # —— Anland Mango ——
       build_mango:
@@ -123,6 +127,7 @@ on:
           - debian13
           - fedora43
           - fedora44
+          - fedora45
           - arch
       # —— Anland Denial ——
       build_denial:
@@ -141,6 +146,7 @@ on:
           - debian13
           - fedora43
           - fedora44
+          - fedora45
           - arch
       # —— Anland Next session ——
       build_session:
@@ -159,6 +165,7 @@ on:
           - debian13
           - fedora43
           - fedora44
+          - fedora45
           - arch
       session_repo:
         description: session 使用的 Anland Next 源码仓库地址
@@ -264,8 +271,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$BUILD_TARGET_INPUT" in
-            all) targets='["ubuntu2604","debian13","fedora43","fedora44","arch"]' ;;
-            ubuntu2604|debian13|fedora43|fedora44|arch) targets="[\"$BUILD_TARGET_INPUT\"]" ;;
+            all) targets='["ubuntu2604","debian13","fedora43","fedora44","fedora45","arch"]' ;;
+            ubuntu2604|debian13|fedora43|fedora44|fedora45|arch) targets="[\"$BUILD_TARGET_INPUT\"]" ;;
             *) echo "不支持的 Niri 构建目标：$BUILD_TARGET_INPUT" >&2; exit 1 ;;
           esac
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
@@ -301,7 +308,8 @@ jobs:
           root = pathlib.Path(sys.argv[1])
           recipe_dirs = {
               'ubuntu2604': 'Ubuntu2604_v5', 'debian13': 'Debian13_v5',
-              'fedora43': 'Fedora43_v5', 'fedora44': 'Fedora44_v5', 'arch': 'Arch_v5',
+              'fedora43': 'Fedora43_v5', 'fedora44': 'Fedora44_v5',
+              'fedora45': 'Fedora45_v5', 'arch': 'Arch_v5',
           }
           required = ['CMakeLists.txt', 'producers/niri/anland_backend/CMakeLists.txt',
                       'libdisplay_producer/display_producer.h']
@@ -360,6 +368,7 @@ jobs:
             debian13) image=debian:trixie; recipe=Debian13_v5; asset_arch=arm64 ;;
             fedora43) image=fedora:43; recipe=Fedora43_v5; asset_arch=aarch64 ;;
             fedora44) image=fedora:44; recipe=Fedora44_v5; asset_arch=aarch64 ;;
+            fedora45) image=fedora:45; recipe=Fedora45_v5; asset_arch=aarch64 ;;
             arch) image=ogarcia/archlinux:latest; recipe=Arch_v5; asset_arch=aarch64 ;;
             *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
           esac
@@ -416,7 +425,7 @@ jobs:
                   fi
                   apt-get update
                   ;;
-              fedora43|fedora44)
+              fedora43|fedora44|fedora45)
                   dnf install -y --setopt=install_weak_deps=False \
                       git ca-certificates sudo python3 rpm-build rpmdevtools findutils \
                       util-linux tar xz which shadow-utils
@@ -477,7 +486,7 @@ jobs:
           mkdir -p "$output_root/payload"
           case "$BUILD_TARGET" in
               ubuntu2604|debian13) pattern='*.deb'; native_arch=arm64; xwayland_name=xwayland ;;
-              fedora43|fedora44) pattern='*.rpm'; native_arch=aarch64; xwayland_name=xorg-x11-server-Xwayland ;;
+              fedora43|fedora44|fedora45) pattern='*.rpm'; native_arch=aarch64; xwayland_name=xorg-x11-server-Xwayland ;;
               arch) pattern='*.pkg.tar.*'; native_arch=aarch64; xwayland_name=xorg-xwayland ;;
               *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
           esac
@@ -490,7 +499,7 @@ jobs:
               hyprland:ubuntu2604|hyprland:debian13)
                   required_packages=(hyprland libhyprutils12 libhyprlang2 libhyprgraphics4 libaquamarine14 "$xwayland_name") ;;
               hyprland:arch) required_packages=(hyprland-anland hyprpm-anland "$xwayland_name") ;;
-              hyprland:fedora43|hyprland:fedora44) required_packages=(hyprland-anland "$xwayland_name") ;;
+              hyprland:fedora43|hyprland:fedora44|hyprland:fedora45) required_packages=(hyprland-anland "$xwayland_name") ;;
               mango:*) required_packages=(mango-anland "$xwayland_name") ;;
               # Ubuntu2604 packages Denial through upstream's stage-denial-runtime,
               # which names the engine and the plugin manager differently; the
@@ -514,7 +523,7 @@ jobs:
                       architecture=$(dpkg-deb -f "$package" Architecture)
                       dpkg-deb --contents "$package" >/dev/null
                       ;;
-                  fedora43|fedora44)
+                  fedora43|fedora44|fedora45)
                       IFS=$'\t' read -r name version architecture < <(rpm -qp --queryformat '%{NAME}\t%{VERSION}\t%{ARCH}\n' "$package")
                       rpm -qpl "$package" >/dev/null
                       ;;
@@ -712,7 +721,7 @@ jobs:
               compositor = os.environ["COMPOSITOR"]
               if compositor not in {"niri", "hyprland", "mango", "denial"}:
                   fail(f"Unsupported compositor: {compositor}")
-              targets = ["ubuntu2604", "debian13", "fedora43", "fedora44", "arch"]
+              targets = ["ubuntu2604", "debian13", "fedora43", "fedora44", "fedora45", "arch"]
               selected = os.environ.get("BUILD_TARGET_INPUT", "all")
               if selected != "all" and selected not in targets:
                   fail(f"Unsupported target: {selected}")
@@ -959,8 +968,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$BUILD_TARGET_INPUT" in
-            all) targets='["ubuntu2604","debian13","fedora43","fedora44","arch"]' ;;
-            ubuntu2604|debian13|fedora43|fedora44|arch) targets="[\"$BUILD_TARGET_INPUT\"]" ;;
+            all) targets='["ubuntu2604","debian13","fedora43","fedora44","fedora45","arch"]' ;;
+            ubuntu2604|debian13|fedora43|fedora44|fedora45|arch) targets="[\"$BUILD_TARGET_INPUT\"]" ;;
             *) echo "不支持的 Hyprland 构建目标：$BUILD_TARGET_INPUT" >&2; exit 1 ;;
           esac
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
@@ -996,6 +1005,7 @@ jobs:
               debian13) recipe=Debian13_v5 ;;
               fedora43) recipe=Fedora43_v5 ;;
               fedora44) recipe=Fedora44_v5 ;;
+              fedora45) recipe=Fedora45_v5 ;;
               arch) recipe=Arch_v5 ;;
               *) echo "不支持的构建目标：$target" >&2; exit 1 ;;
             esac
@@ -1047,6 +1057,7 @@ jobs:
             debian13) image=debian:trixie; recipe=Debian13_v5; asset_arch=arm64 ;;
             fedora43) image=fedora:43; recipe=Fedora43_v5; asset_arch=aarch64 ;;
             fedora44) image=fedora:44; recipe=Fedora44_v5; asset_arch=aarch64 ;;
+            fedora45) image=fedora:45; recipe=Fedora45_v5; asset_arch=aarch64 ;;
             arch) image=ogarcia/archlinux:latest; recipe=Arch_v5; asset_arch=aarch64 ;;
             *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
           esac
@@ -1103,7 +1114,7 @@ jobs:
                   fi
                   apt-get update
                   ;;
-              fedora43|fedora44)
+              fedora43|fedora44|fedora45)
                   dnf install -y --setopt=install_weak_deps=False \
                       git ca-certificates sudo python3 rpm-build rpmdevtools findutils \
                       util-linux tar xz which shadow-utils
@@ -1164,7 +1175,7 @@ jobs:
           mkdir -p "$output_root/payload"
           case "$BUILD_TARGET" in
               ubuntu2604|debian13) pattern='*.deb'; native_arch=arm64; xwayland_name=xwayland ;;
-              fedora43|fedora44) pattern='*.rpm'; native_arch=aarch64; xwayland_name=xorg-x11-server-Xwayland ;;
+              fedora43|fedora44|fedora45) pattern='*.rpm'; native_arch=aarch64; xwayland_name=xorg-x11-server-Xwayland ;;
               arch) pattern='*.pkg.tar.*'; native_arch=aarch64; xwayland_name=xorg-xwayland ;;
               *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
           esac
@@ -1177,7 +1188,7 @@ jobs:
               hyprland:ubuntu2604|hyprland:debian13)
                   required_packages=(hyprland libhyprutils12 libhyprlang2 libhyprgraphics4 libaquamarine14 "$xwayland_name") ;;
               hyprland:arch) required_packages=(hyprland-anland hyprpm-anland "$xwayland_name") ;;
-              hyprland:fedora43|hyprland:fedora44) required_packages=(hyprland-anland "$xwayland_name") ;;
+              hyprland:fedora43|hyprland:fedora44|hyprland:fedora45) required_packages=(hyprland-anland "$xwayland_name") ;;
               mango:*) required_packages=(mango-anland "$xwayland_name") ;;
               # Ubuntu2604 packages Denial through upstream's stage-denial-runtime,
               # which names the engine and the plugin manager differently; the
@@ -1201,7 +1212,7 @@ jobs:
                       architecture=$(dpkg-deb -f "$package" Architecture)
                       dpkg-deb --contents "$package" >/dev/null
                       ;;
-                  fedora43|fedora44)
+                  fedora43|fedora44|fedora45)
                       IFS=$'\t' read -r name version architecture < <(rpm -qp --queryformat '%{NAME}\t%{VERSION}\t%{ARCH}\n' "$package")
                       rpm -qpl "$package" >/dev/null
                       ;;
@@ -1391,7 +1402,7 @@ jobs:
               compositor = os.environ["COMPOSITOR"]
               if compositor not in {"niri", "hyprland", "mango", "denial"}:
                   fail(f"Unsupported compositor: {compositor}")
-              targets = ["ubuntu2604", "debian13", "fedora43", "fedora44", "arch"]
+              targets = ["ubuntu2604", "debian13", "fedora43", "fedora44", "fedora45", "arch"]
               selected = os.environ.get("BUILD_TARGET_INPUT", "all")
               if selected != "all" and selected not in targets:
                   fail(f"Unsupported target: {selected}")
@@ -1636,8 +1647,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$BUILD_TARGET_INPUT" in
-            all) targets='["ubuntu2604","debian13","fedora43","fedora44","arch"]' ;;
-            ubuntu2604|debian13|fedora43|fedora44|arch) targets="[\"$BUILD_TARGET_INPUT\"]" ;;
+            all) targets='["ubuntu2604","debian13","fedora43","fedora44","fedora45","arch"]' ;;
+            ubuntu2604|debian13|fedora43|fedora44|fedora45|arch) targets="[\"$BUILD_TARGET_INPUT\"]" ;;
             *) echo "不支持的 Mango 构建目标：$BUILD_TARGET_INPUT" >&2; exit 1 ;;
           esac
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
@@ -1673,6 +1684,7 @@ jobs:
               debian13) recipe=Debian13_v5 ;;
               fedora43) recipe=Fedora43_v5 ;;
               fedora44) recipe=Fedora44_v5 ;;
+              fedora45) recipe=Fedora45_v5 ;;
               arch) recipe=Arch_v5 ;;
               *) echo "不支持的构建目标：$target" >&2; exit 1 ;;
             esac
@@ -1724,6 +1736,7 @@ jobs:
             debian13) image=debian:trixie; recipe=Debian13_v5; asset_arch=arm64 ;;
             fedora43) image=fedora:43; recipe=Fedora43_v5; asset_arch=aarch64 ;;
             fedora44) image=fedora:44; recipe=Fedora44_v5; asset_arch=aarch64 ;;
+            fedora45) image=fedora:45; recipe=Fedora45_v5; asset_arch=aarch64 ;;
             arch) image=ogarcia/archlinux:latest; recipe=Arch_v5; asset_arch=aarch64 ;;
             *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
           esac
@@ -1780,7 +1793,7 @@ jobs:
                   fi
                   apt-get update
                   ;;
-              fedora43|fedora44)
+              fedora43|fedora44|fedora45)
                   dnf install -y --setopt=install_weak_deps=False \
                       git ca-certificates sudo python3 rpm-build rpmdevtools findutils \
                       util-linux tar xz which shadow-utils
@@ -1841,7 +1854,7 @@ jobs:
           mkdir -p "$output_root/payload"
           case "$BUILD_TARGET" in
               ubuntu2604|debian13) pattern='*.deb'; native_arch=arm64; xwayland_name=xwayland ;;
-              fedora43|fedora44) pattern='*.rpm'; native_arch=aarch64; xwayland_name=xorg-x11-server-Xwayland ;;
+              fedora43|fedora44|fedora45) pattern='*.rpm'; native_arch=aarch64; xwayland_name=xorg-x11-server-Xwayland ;;
               arch) pattern='*.pkg.tar.*'; native_arch=aarch64; xwayland_name=xorg-xwayland ;;
               *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
           esac
@@ -1854,7 +1867,7 @@ jobs:
               hyprland:ubuntu2604|hyprland:debian13)
                   required_packages=(hyprland libhyprutils12 libhyprlang2 libhyprgraphics4 libaquamarine14 "$xwayland_name") ;;
               hyprland:arch) required_packages=(hyprland-anland hyprpm-anland "$xwayland_name") ;;
-              hyprland:fedora43|hyprland:fedora44) required_packages=(hyprland-anland "$xwayland_name") ;;
+              hyprland:fedora43|hyprland:fedora44|hyprland:fedora45) required_packages=(hyprland-anland "$xwayland_name") ;;
               mango:*) required_packages=(mango-anland "$xwayland_name") ;;
               # Ubuntu2604 packages Denial through upstream's stage-denial-runtime,
               # which names the engine and the plugin manager differently; the
@@ -1878,7 +1891,7 @@ jobs:
                       architecture=$(dpkg-deb -f "$package" Architecture)
                       dpkg-deb --contents "$package" >/dev/null
                       ;;
-                  fedora43|fedora44)
+                  fedora43|fedora44|fedora45)
                       IFS=$'\t' read -r name version architecture < <(rpm -qp --queryformat '%{NAME}\t%{VERSION}\t%{ARCH}\n' "$package")
                       rpm -qpl "$package" >/dev/null
                       ;;
@@ -2068,7 +2081,7 @@ jobs:
               compositor = os.environ["COMPOSITOR"]
               if compositor not in {"niri", "hyprland", "mango", "denial"}:
                   fail(f"Unsupported compositor: {compositor}")
-              targets = ["ubuntu2604", "debian13", "fedora43", "fedora44", "arch"]
+              targets = ["ubuntu2604", "debian13", "fedora43", "fedora44", "fedora45", "arch"]
               selected = os.environ.get("BUILD_TARGET_INPUT", "all")
               if selected != "all" and selected not in targets:
                   fail(f"Unsupported target: {selected}")
@@ -2313,8 +2326,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$BUILD_TARGET_INPUT" in
-            all) targets='["ubuntu2604","debian13","fedora43","fedora44","arch"]' ;;
-            ubuntu2604|debian13|fedora43|fedora44|arch) targets="[\"$BUILD_TARGET_INPUT\"]" ;;
+            all) targets='["ubuntu2604","debian13","fedora43","fedora44","fedora45","arch"]' ;;
+            ubuntu2604|debian13|fedora43|fedora44|fedora45|arch) targets="[\"$BUILD_TARGET_INPUT\"]" ;;
             *) echo "不支持的 Denial 构建目标：$BUILD_TARGET_INPUT" >&2; exit 1 ;;
           esac
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
@@ -2350,6 +2363,7 @@ jobs:
               debian13) recipe=Debian13_v5 ;;
               fedora43) recipe=Fedora43_v5 ;;
               fedora44) recipe=Fedora44_v5 ;;
+              fedora45) recipe=Fedora45_v5 ;;
               arch) recipe=Arch_v5 ;;
               *) echo "不支持的构建目标：$target" >&2; exit 1 ;;
             esac
@@ -2401,6 +2415,7 @@ jobs:
             debian13) image=debian:trixie; recipe=Debian13_v5; asset_arch=arm64 ;;
             fedora43) image=fedora:43; recipe=Fedora43_v5; asset_arch=aarch64 ;;
             fedora44) image=fedora:44; recipe=Fedora44_v5; asset_arch=aarch64 ;;
+            fedora45) image=fedora:45; recipe=Fedora45_v5; asset_arch=aarch64 ;;
             arch) image=ogarcia/archlinux:latest; recipe=Arch_v5; asset_arch=aarch64 ;;
             *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
           esac
@@ -2457,7 +2472,7 @@ jobs:
                   fi
                   apt-get update
                   ;;
-              fedora43|fedora44)
+              fedora43|fedora44|fedora45)
                   dnf install -y --setopt=install_weak_deps=False \
                       git ca-certificates sudo python3 rpm-build rpmdevtools findutils \
                       util-linux tar xz which shadow-utils
@@ -2518,7 +2533,7 @@ jobs:
           mkdir -p "$output_root/payload"
           case "$BUILD_TARGET" in
               ubuntu2604|debian13) pattern='*.deb'; native_arch=arm64; xwayland_name=xwayland ;;
-              fedora43|fedora44) pattern='*.rpm'; native_arch=aarch64; xwayland_name=xorg-x11-server-Xwayland ;;
+              fedora43|fedora44|fedora45) pattern='*.rpm'; native_arch=aarch64; xwayland_name=xorg-x11-server-Xwayland ;;
               arch) pattern='*.pkg.tar.*'; native_arch=aarch64; xwayland_name=xorg-xwayland ;;
               *) echo "Unsupported target: $BUILD_TARGET" >&2; exit 1 ;;
           esac
@@ -2531,7 +2546,7 @@ jobs:
               hyprland:ubuntu2604|hyprland:debian13)
                   required_packages=(hyprland libhyprutils12 libhyprlang2 libhyprgraphics4 libaquamarine14 "$xwayland_name") ;;
               hyprland:arch) required_packages=(hyprland-anland hyprpm-anland "$xwayland_name") ;;
-              hyprland:fedora43|hyprland:fedora44) required_packages=(hyprland-anland "$xwayland_name") ;;
+              hyprland:fedora43|hyprland:fedora44|hyprland:fedora45) required_packages=(hyprland-anland "$xwayland_name") ;;
               mango:*) required_packages=(mango-anland "$xwayland_name") ;;
               # Ubuntu2604 packages Denial through upstream's stage-denial-runtime,
               # which names the engine and the plugin manager differently; the
@@ -2555,7 +2570,7 @@ jobs:
                       architecture=$(dpkg-deb -f "$package" Architecture)
                       dpkg-deb --contents "$package" >/dev/null
                       ;;
-                  fedora43|fedora44)
+                  fedora43|fedora44|fedora45)
                       IFS=$'\t' read -r name version architecture < <(rpm -qp --queryformat '%{NAME}\t%{VERSION}\t%{ARCH}\n' "$package")
                       rpm -qpl "$package" >/dev/null
                       ;;
@@ -2745,7 +2760,7 @@ jobs:
               compositor = os.environ["COMPOSITOR"]
               if compositor not in {"niri", "hyprland", "mango", "denial"}:
                   fail(f"Unsupported compositor: {compositor}")
-              targets = ["ubuntu2604", "debian13", "fedora43", "fedora44", "arch"]
+              targets = ["ubuntu2604", "debian13", "fedora43", "fedora44", "fedora45", "arch"]
               selected = os.environ.get("BUILD_TARGET_INPUT", "all")
               if selected != "all" and selected not in targets:
                   fail(f"Unsupported target: {selected}")
@@ -2992,9 +3007,9 @@ jobs:
 
           case "$BUILD_TARGET_INPUT" in
             all)
-              targets='["ubuntu2604","Debian13","Fedora43","Fedora44","Arch"]'
+              targets='["ubuntu2604","Debian13","Fedora43","Fedora44","Fedora45","Arch"]'
               ;;
-            ubuntu2604|Debian13|Fedora43|Fedora44|Arch)
+            ubuntu2604|Debian13|Fedora43|Fedora44|Fedora45|Arch)
               targets="[\"$BUILD_TARGET_INPUT\"]"
               ;;
             *)
@@ -3096,15 +3111,15 @@ jobs:
               asset_arch=aarch64
               archive_target=fedora43
               ;;
-            Fedora44)
-              image=fedora:44
-              script=producers/kde/Fedora44_v5/build.sh
+            Fedora44|Fedora45)
+              image="fedora:${BUILD_TARGET#Fedora}"
+              script="producers/kde/${BUILD_TARGET}_v5/build.sh"
               build_xwayland=1
               kwin_source=kwin
               package_pattern='*.rpm'
-              asset_prefix=anland-kde-fedora44-kwin-
+              archive_target="${BUILD_TARGET,,}"
+              asset_prefix="anland-kde-${archive_target}-kwin-"
               asset_arch=aarch64
-              archive_target=fedora44
               ;;
             Arch)
               image=ogarcia/archlinux:latest
@@ -3170,7 +3185,7 @@ jobs:
                     git ca-certificates sudo \
                     build-essential devscripts dpkg-dev fakeroot patch
                   ;;
-                Fedora43|Fedora44)
+                Fedora43|Fedora44|Fedora45)
                   dnf install -y --setopt=install_weak_deps=False \
                     git ca-certificates sudo python3 shadow-utils \
                     rpmdevtools rpm-build patch tar xz
@@ -3211,7 +3226,7 @@ jobs:
                 # anland_backend_* source trees instead.
                 ubuntu2604) backend_dir=/tmp/anland/producers/kde/ubuntu2604_v5/kwin/src/backends/anland ;;
                 Debian13) backend_dir=/tmp/anland/producers/kde/Debian13_v5/kwin/src/backends/anland ;;
-                Fedora43|Fedora44) backend_dir=/tmp/anland/producers/kde/${BUILD_TARGET}_v5/kwin/src/backends/anland ;;
+                Fedora43|Fedora44|Fedora45) backend_dir=/tmp/anland/producers/kde/${BUILD_TARGET}_v5/kwin/src/backends/anland ;;
                 Arch) backend_dir=/tmp/anland/producers/kde/Arch_v5/kwin/src/backends/anland ;;
                 *) echo "不支持的构建目标：$BUILD_TARGET" >&2; exit 1 ;;
               esac
@@ -3290,7 +3305,7 @@ jobs:
                   [ -n "$kwin_package" ] || { echo "未找到 kwin deb 包" >&2; exit 1; }
                   kwin_version="$(dpkg-deb -f "$kwin_package" Version)"
                   ;;
-                Fedora43|Fedora44)
+                Fedora43|Fedora44|Fedora45)
                   kwin_package="$(find /tmp/kde-packages -type f -name 'kwin-[0-9]*.rpm' -print | sort | head -n1)"
                   [ -n "$kwin_package" ] || { echo "未找到 kwin rpm 包" >&2; exit 1; }
                   kwin_version="$(rpm -qp --queryformat '%{VERSION}' "$kwin_package")"
@@ -3310,7 +3325,7 @@ jobs:
               # A build is publishable only if both the compositor and patched Xwayland exist.
               case "$BUILD_TARGET" in
                 ubuntu2604|Debian13) xwayland_pattern='xwayland_*.deb' ;;
-                Fedora43|Fedora44) xwayland_pattern='xorg-x11-server-Xwayland-[0-9]*.rpm' ;;
+                Fedora43|Fedora44|Fedora45) xwayland_pattern='xorg-x11-server-Xwayland-[0-9]*.rpm' ;;
                 Arch) xwayland_pattern='xorg-xwayland-[0-9]*.pkg.tar.*' ;;
               esac
               xwayland_package="$(find /tmp/kde-packages -type f -name "$xwayland_pattern" -print -quit)"
@@ -3433,7 +3448,7 @@ jobs:
           release_dir="$GITHUB_WORKSPACE/release-assets"
           mkdir -p "$release_dir"
           rolling_release_tag="anland-kde-packages"
-          release_targets=(Arch Debian13 ubuntu2604 Fedora43 Fedora44)
+          release_targets=(Arch Debian13 ubuntu2604 Fedora43 Fedora44 Fedora45)
           declare -A asset_by_target=()
           declare -A asset_time_by_target=()
           declare -A asset_source_by_target=()
@@ -3448,6 +3463,7 @@ jobs:
               ubuntu2604) printf '%s\n' 'anland-kde-ubuntu2604-kwin-' ;;
               Fedora43) printf '%s\n' 'anland-kde-fedora43-kwin-' ;;
               Fedora44) printf '%s\n' 'anland-kde-fedora44-kwin-' ;;
+              Fedora45) printf '%s\n' 'anland-kde-fedora45-kwin-' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
           }
@@ -3459,13 +3475,14 @@ jobs:
               ubuntu2604) printf '%s\n' 'Ubuntu 26.04' ;;
               Fedora43) printf '%s\n' 'Fedora 43' ;;
               Fedora44) printf '%s\n' 'Fedora 44' ;;
+              Fedora45) printf '%s\n' 'Fedora 45' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
           }
 
           asset_arch_for_target() {
             case "$1" in
-              Arch|Fedora43|Fedora44) printf '%s\n' 'aarch64' ;;
+              Arch|Fedora43|Fedora44|Fedora45) printf '%s\n' 'aarch64' ;;
               Debian13|ubuntu2604) printf '%s\n' 'arm64' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
@@ -3478,6 +3495,7 @@ jobs:
               ubuntu2604) printf '%s\n' 'ubuntu2604' ;;
               Fedora43) printf '%s\n' 'fedora43' ;;
               Fedora44) printf '%s\n' 'fedora44' ;;
+              Fedora45) printf '%s\n' 'fedora45' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
           }
@@ -3582,8 +3600,8 @@ jobs:
             Fedora43)
               selected_prefix="$(asset_prefix_for_target Fedora43)"
               ;;
-            Fedora44)
-              selected_prefix="$(asset_prefix_for_target Fedora44)"
+            Fedora44|Fedora45)
+              selected_prefix="$(asset_prefix_for_target "$BUILD_TARGET_INPUT")"
               ;;
             Arch)
               selected_prefix="$(asset_prefix_for_target Arch)"
@@ -3629,7 +3647,7 @@ jobs:
           fi
 
           # 固定发布里有的平台就沿用，没有的（例如第一次只构建单个平台）本次先缺着，
-          # 等后续构建补上，不再因为凑不齐五个平台就整体失败。
+          # 等后续构建补上，不再因为平台不齐就整体失败。
           unavailable_targets=()
           if [ "${#missing_targets[@]}" -gt 0 ]; then
             previous_dir="$RUNNER_TEMP/anland-kde-previous-assets"
@@ -3723,7 +3741,7 @@ jobs:
           reused_target_list="$(format_target_list "${reused_targets[@]}")"
           unavailable_target_list="$(format_target_list "${unavailable_targets[@]}")"
           if [ "${#reused_targets[@]}" -eq 0 ] && [ "${#unavailable_targets[@]}" -eq 0 ]; then
-            replacement_note="本次构建重新生成全部五个平台的软件包。"
+            replacement_note="本次构建重新生成全部平台的软件包。"
           else
             replacement_note="本次替换：${updated_target_list}"
             if [ "${#reused_targets[@]}" -gt 0 ]; then
@@ -3814,6 +3832,7 @@ jobs:
               ubuntu2604) legacy='anland-kde-ubuntu2604-arm64.tar.gz' ;;
               Fedora43) legacy='anland-kde-fedora43-aarch64.tar.gz' ;;
               Fedora44) legacy='anland-kde-fedora44-aarch64.tar.gz' ;;
+              Fedora45) legacy='__no_legacy_asset__' ;;
               *) return 1 ;;
             esac
             case "$name" in
@@ -3977,9 +3996,9 @@ jobs:
 
           case "$BUILD_TARGET_INPUT" in
             all)
-              targets='["ubuntu2604","Debian13","Fedora43","Fedora44","Arch"]'
+              targets='["ubuntu2604","Debian13","Fedora43","Fedora44","Fedora45","Arch"]'
               ;;
-            ubuntu2604|Debian13|Fedora43|Fedora44|Arch)
+            ubuntu2604|Debian13|Fedora43|Fedora44|Fedora45|Arch)
               targets="[\"$BUILD_TARGET_INPUT\"]"
               ;;
             *)
@@ -4072,7 +4091,7 @@ jobs:
               asset_arch=arm64
               archive_target=debian13
               ;;
-            Fedora43|Fedora44)
+            Fedora43|Fedora44|Fedora45)
               image="fedora:${BUILD_TARGET#Fedora}"
               script="producers/gnome/${BUILD_TARGET}_v5/build.sh"
               xwayland_patch=''
@@ -4147,7 +4166,7 @@ jobs:
                   fi
                   chown -R anland:anland /packages
                   ;;
-                Fedora43|Fedora44)
+                Fedora43|Fedora44|Fedora45)
                   dnf install -y --setopt=install_weak_deps=False git ca-certificates sudo python3 findutils util-linux
                   useradd -m -s /bin/bash anland
                   printf 'anland ALL=(root) NOPASSWD: /usr/bin/dnf\n' > /etc/sudoers.d/anland-dnf
@@ -4195,7 +4214,7 @@ jobs:
                   [ -n "$mutter_version" ] || { echo "无法解析 Mutter 版本" >&2; exit 1; }
                   printf '%s\n' "$mutter_version" > /packages/.mutter-version
                   ;;
-                Fedora43|Fedora44)
+                Fedora43|Fedora44|Fedora45)
                   runuser -u anland -- env ANLAND_INSTALL=0 ANLAND_STAGE=build ANLAND_WITH_DEPS=1 \
                     JOBS=4 WORKDIR=/packages/work ARTIFACTS_DIR=/packages/artifacts \
                     bash "/tmp/anland/$BUILD_SCRIPT"
@@ -4243,7 +4262,7 @@ jobs:
               esac
               case "$BUILD_TARGET" in
                 ubuntu2604|Debian13) xwayland_pattern='xwayland_*.deb' ;;
-                Fedora43|Fedora44) xwayland_pattern='xorg-x11-server-Xwayland-[0-9]*.rpm' ;;
+                Fedora43|Fedora44|Fedora45) xwayland_pattern='xorg-x11-server-Xwayland-[0-9]*.rpm' ;;
                 Arch) xwayland_pattern='xorg-xwayland-[0-9]*.pkg.tar.*' ;;
               esac
               xwayland_package="$(find /packages -type f -name "$xwayland_pattern" -print -quit)"
@@ -4381,7 +4400,7 @@ jobs:
           release_dir="$GITHUB_WORKSPACE/release-assets"
           mkdir -p "$release_dir"
           rolling_release_tag="anland-gnome-packages"
-          release_targets=(Debian13 ubuntu2604 Fedora43 Fedora44 Arch)
+          release_targets=(Debian13 ubuntu2604 Fedora43 Fedora44 Fedora45 Arch)
           declare -A asset_by_target=()
           declare -A asset_time_by_target=()
           declare -A asset_source_by_target=()
@@ -4396,6 +4415,7 @@ jobs:
               Arch) printf '%s\n' 'anland-gnome-arch-mutter-' ;;
               Fedora43) printf '%s\n' 'anland-gnome-fedora43-mutter-' ;;
               Fedora44) printf '%s\n' 'anland-gnome-fedora44-mutter-' ;;
+              Fedora45) printf '%s\n' 'anland-gnome-fedora45-mutter-' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
           }
@@ -4407,6 +4427,7 @@ jobs:
               Arch) printf '%s\n' 'Arch Linux ARM' ;;
               Fedora43) printf '%s\n' 'Fedora 43' ;;
               Fedora44) printf '%s\n' 'Fedora 44' ;;
+              Fedora45) printf '%s\n' 'Fedora 45' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
           }
@@ -4414,7 +4435,7 @@ jobs:
           asset_arch_for_target() {
             case "$1" in
               Debian13|ubuntu2604) printf '%s\n' 'arm64' ;;
-              Arch|Fedora43|Fedora44) printf '%s\n' 'aarch64' ;;
+              Arch|Fedora43|Fedora44|Fedora45) printf '%s\n' 'aarch64' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
           }
@@ -4426,6 +4447,7 @@ jobs:
               Arch) printf '%s\n' 'arch' ;;
               Fedora43) printf '%s\n' 'fedora43' ;;
               Fedora44) printf '%s\n' 'fedora44' ;;
+              Fedora45) printf '%s\n' 'fedora45' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
           }
@@ -4527,7 +4549,7 @@ jobs:
             Debian13)
               selected_prefix="$(asset_prefix_for_target Debian13)"
               ;;
-            Fedora43|Fedora44|Arch)
+            Fedora43|Fedora44|Fedora45|Arch)
               selected_prefix="$(asset_prefix_for_target "$BUILD_TARGET_INPUT")"
               ;;
             *)
@@ -4665,7 +4687,7 @@ jobs:
           reused_target_list="$(format_target_list "${reused_targets[@]}")"
           unavailable_target_list="$(format_target_list "${unavailable_targets[@]}")"
           if [ "${#reused_targets[@]}" -eq 0 ] && [ "${#unavailable_targets[@]}" -eq 0 ]; then
-            replacement_note="本次构建重新生成全部五个平台的软件包。"
+            replacement_note="本次构建重新生成全部平台的软件包。"
           else
             replacement_note="本次替换：${updated_target_list}"
             if [ "${#reused_targets[@]}" -gt 0 ]; then
@@ -4753,7 +4775,7 @@ jobs:
             case "$target" in
               Debian13) legacy='anland-gnome-debian13-arm64.tar.gz' ;;
               ubuntu2604) legacy='anland-gnome-ubuntu2604-arm64.tar.gz' ;;
-              Arch|Fedora43|Fedora44) legacy='__no_legacy_asset__' ;;
+              Arch|Fedora43|Fedora44|Fedora45) legacy='__no_legacy_asset__' ;;
               *) return 1 ;;
             esac
             case "$name" in
@@ -4917,9 +4939,9 @@ jobs:
 
           case "$BUILD_TARGET_INPUT" in
             all)
-              targets='["ubuntu2604","debian13","fedora43","fedora44","arch"]'
+              targets='["ubuntu2604","debian13","fedora43","fedora44","fedora45","arch"]'
               ;;
-            ubuntu2604|debian13|fedora43|fedora44|arch)
+            ubuntu2604|debian13|fedora43|fedora44|fedora45|arch)
               targets="[\"$BUILD_TARGET_INPUT\"]"
               ;;
             *)
@@ -5004,7 +5026,7 @@ jobs:
       matrix:
         target: ${{ fromJson(needs.prepare-session.outputs.targets) }}
     container:
-      image: ${{ matrix.target == 'ubuntu2604' && 'ubuntu:26.04' || matrix.target == 'debian13' && 'debian:13' || matrix.target == 'fedora43' && 'fedora:43' || matrix.target == 'fedora44' && 'fedora:44' || 'ogarcia/archlinux:latest' }}
+      image: ${{ matrix.target == 'ubuntu2604' && 'ubuntu:26.04' || matrix.target == 'debian13' && 'debian:13' || matrix.target == 'fedora43' && 'fedora:43' || matrix.target == 'fedora44' && 'fedora:44' || matrix.target == 'fedora45' && 'fedora:45' || 'ogarcia/archlinux:latest' }}
     env:
       TARGET: ${{ matrix.target }}
       ANLAND_REPO: ${{ inputs.session_repo || 'https://github.com/SuperTurtleDev/anland.git' }}
@@ -5131,7 +5153,7 @@ jobs:
           release_dir="$GITHUB_WORKSPACE/release-assets"
           mkdir -p "$release_dir"
           rolling_release_tag="anland-session-packages"
-          release_targets=(ubuntu2604 debian13 fedora43 fedora44 arch)
+          release_targets=(ubuntu2604 debian13 fedora43 fedora44 fedora45 arch)
           declare -A asset_by_target=()
           declare -A asset_time_by_target=()
           declare -A asset_source_by_target=()
@@ -5149,6 +5171,7 @@ jobs:
               debian13) printf '%s\n' 'Debian 13' ;;
               fedora43) printf '%s\n' 'Fedora 43' ;;
               fedora44) printf '%s\n' 'Fedora 44' ;;
+              fedora45) printf '%s\n' 'Fedora 45' ;;
               arch) printf '%s\n' 'Arch Linux' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
@@ -5230,11 +5253,11 @@ jobs:
 
           case "$BUILD_TARGET_INPUT" in
             all) selected_target="" ;;
-            ubuntu2604|debian13|fedora43|fedora44|arch) selected_target="$BUILD_TARGET_INPUT" ;;
+            ubuntu2604|debian13|fedora43|fedora44|fedora45|arch) selected_target="$BUILD_TARGET_INPUT" ;;
             *) echo "不支持的构建目标：$BUILD_TARGET_INPUT" >&2; exit 1 ;;
           esac
 
-          # 将每个平台的原生包改成带目标前缀的 Release 资产名，避免五个平台同名。
+          # 将每个平台的原生包改成带目标前缀的 Release 资产名，避免不同平台的包同名。
           missing_targets=()
           for target in "${release_targets[@]}"; do
             artifact_dir="$release_dir/anland-session-${target}-arm64"
@@ -5255,7 +5278,7 @@ jobs:
                 exit 1
               fi
               case "$target:$package_name" in
-                ubuntu2604:*.deb|debian13:*.deb|fedora43:*.rpm|fedora44:*.rpm|arch:*.pkg.tar.zst) ;;
+                ubuntu2604:*.deb|debian13:*.deb|fedora43:*.rpm|fedora44:*.rpm|fedora45:*.rpm|arch:*.pkg.tar.zst) ;;
                 *) echo "$target 生成了不匹配的软件包：$package_name" >&2; exit 1 ;;
               esac
               asset="$(asset_prefix_for_target "$target")$package_name"
@@ -5373,7 +5396,7 @@ jobs:
           reused_target_list="$(format_target_list "${reused_targets[@]}")"
           unavailable_target_list="$(format_target_list "${unavailable_targets[@]}")"
           if [ "${#reused_targets[@]}" -eq 0 ] && [ "${#unavailable_targets[@]}" -eq 0 ]; then
-            replacement_note='本次构建重新生成全部五个平台的软件包。'
+            replacement_note='本次构建重新生成全部平台的软件包。'
           else
             replacement_note="本次替换：${updated_target_list}"
             if [ "${#reused_targets[@]}" -gt 0 ]; then

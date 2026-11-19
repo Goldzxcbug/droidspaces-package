@@ -2,7 +2,7 @@
 
 本仓库为 Anland 构建 ARM64 发行版软件包，发布包含安装器及共享函数的压缩包、平台清单和 CNB 镜像。
 
-| 组件 | Ubuntu 26.04 | Debian 13 | Fedora 43/44 | Arch Linux ARM | 安装器 |
+| 组件 | Ubuntu 26.04 | Debian 13 | Fedora 43/44/45 | Arch Linux ARM | 安装器 |
 | --- | --- | --- | --- | --- | --- |
 | KDE / KWin | ✓ | ✓ | ✓ | ✓ | `install-anland-kde.sh` |
 | GNOME / Mutter | ✓ | ✓ | ✓ | ✓ | `install-anland-gnome.sh` |

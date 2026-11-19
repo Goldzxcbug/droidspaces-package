@@ -1130,8 +1130,9 @@ detect_target() {
                 ubuntu:26.04*) TARGET='Ubuntu 26.04'; PACKAGE_TYPE=deb; platform=ubuntu2604; archive_suffix='-arm64.tar.gz' ;;
                 fedora:43*) TARGET='Fedora 43'; PACKAGE_TYPE=rpm; platform=fedora43; archive_suffix='-aarch64.tar.gz' ;;
                 fedora:44*) TARGET='Fedora 44'; PACKAGE_TYPE=rpm; platform=fedora44; archive_suffix='-aarch64.tar.gz' ;;
-                *) die "不支持当前系统 ${system_name}。仅支持 Debian 13、Ubuntu 26.04、Fedora 43/44、Arch Linux。" \
-                    "Unsupported system: ${system_name}. Supported systems are Debian 13, Ubuntu 26.04, Fedora 43/44, and Arch Linux." ;;
+                fedora:45*) TARGET='Fedora 45'; PACKAGE_TYPE=rpm; platform=fedora45; archive_suffix='-aarch64.tar.gz' ;;
+                *) die "不支持当前系统 ${system_name}。仅支持 Debian 13、Ubuntu 26.04、Fedora 43/44/45、Arch Linux。" \
+                    "Unsupported system: ${system_name}. Supported systems are Debian 13, Ubuntu 26.04, Fedora 43/44/45, and Arch Linux." ;;
             esac
             ;;
     esac

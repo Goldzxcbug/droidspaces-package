@@ -595,6 +595,7 @@ detect_target() {
             case "$version_id" in
                 43*) TARGET=fedora43; TARGET_LABEL='Fedora 43' ;;
                 44*) TARGET=fedora44; TARGET_LABEL='Fedora 44' ;;
+                45*) TARGET=fedora45; TARGET_LABEL='Fedora 45' ;;
                 *)
                     die "不支持当前系统 $system_name。" "Unsupported system: $system_name."
                     ;;
@@ -603,8 +604,8 @@ detect_target() {
             ARCHIVE_SUFFIX='-aarch64.tar.gz'
             ;;
         *)
-            die "不支持当前系统 $system_name。仅支持 Ubuntu 24.04/25.10/26.04、Debian 13、Fedora 43/44 和 Arch Linux。" \
-                "Unsupported system: $system_name. Supported systems: Ubuntu 24.04/25.10/26.04, Debian 13, Fedora 43/44, and Arch Linux."
+            die "不支持当前系统 $system_name。仅支持 Ubuntu 24.04/25.10/26.04、Debian 13、Fedora 43/44/45 和 Arch Linux。" \
+                "Unsupported system: $system_name. Supported systems: Ubuntu 24.04/25.10/26.04, Debian 13, Fedora 43/44/45, and Arch Linux."
             ;;
     esac
 

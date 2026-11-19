@@ -33,6 +33,10 @@ jobs:
             image: fedora:44
             script: scripts/build-rpm.sh
             fedora_version: '44'
+          - target: fedora45
+            image: fedora:45
+            script: scripts/build-rpm.sh
+            fedora_version: '45'
           - target: arch
             image: ogarcia/archlinux:latest
             script: scripts/build-arch.sh
@@ -111,7 +115,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-archives
-          for target in ubuntu2604 fedora43 fedora44 arch; do
+          for target in ubuntu2604 fedora43 fedora44 fedora45 arch; do
             artifact="systemd257-${target}-arm64"
             test -d "release/${artifact}"
             tar -C "release/${artifact}" -czf "release-archives/${artifact}.tar.gz" .
@@ -148,7 +152,7 @@ jobs:
           tag_name: systemd257-packages
           name: systemd 257 ARM64 预编译包
           body: |
-            这是面向 Ubuntu 26.04、Fedora 43、Fedora 44 和 Arch Linux ARM
+            这是面向 Ubuntu 26.04、Fedora 43、Fedora 44、Fedora 45 和 Arch Linux ARM
             的滚动 ARM64 测试软件包。所有软件包都使用对应发行版的原生格式构建，
             并包含 Droidspaces Android 旧内核兼容补丁。每个平台归档均包含
             对应的原生软件包、构建清单和校验和。

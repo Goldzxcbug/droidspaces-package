@@ -1175,7 +1175,7 @@ is_arm64() {
 
 supports_common_packages() {
     case "$SYSTEM_ID:$SYSTEM_VERSION" in
-        arch:*|archarm:*|archlinux:*|debian:13*|ubuntu:24.04*|ubuntu:25.10*|ubuntu:26.04*|fedora:43*|fedora:44*)
+        arch:*|archarm:*|archlinux:*|debian:13*|ubuntu:24.04*|ubuntu:25.10*|ubuntu:26.04*|fedora:43*|fedora:44*|fedora:45*)
             return 0
             ;;
         *) return 1 ;;
@@ -1193,26 +1193,26 @@ component_supported() {
                 supports_common_packages
             else
                 case "$SYSTEM_ID:$SYSTEM_VERSION" in
-                    arch:*|archarm:*|archlinux:*|debian:13*|ubuntu:24.04*|ubuntu:25.10*|ubuntu:26.04*|fedora:43*|fedora:44*) return 0 ;;
+                    arch:*|archarm:*|archlinux:*|debian:13*|ubuntu:24.04*|ubuntu:25.10*|ubuntu:26.04*|fedora:43*|fedora:44*|fedora:45*) return 0 ;;
                     *) return 1 ;;
                 esac
             fi
             ;;
         kde)
             case "$SYSTEM_ID:$SYSTEM_VERSION" in
-                arch:*|archarm:*|archlinux:*|debian:13*|ubuntu:26.04*|fedora:43*|fedora:44*) return 0 ;;
+                arch:*|archarm:*|archlinux:*|debian:13*|ubuntu:26.04*|fedora:43*|fedora:44*|fedora:45*) return 0 ;;
                 *) return 1 ;;
             esac
             ;;
         niri|gnome|hyprland|mango|denial)
             case "$SYSTEM_ID:$SYSTEM_VERSION" in
-                debian:13*|ubuntu:26.04*|fedora:43*|fedora:44*|arch:*|archarm:*|archlinux:*) return 0 ;;
+                debian:13*|ubuntu:26.04*|fedora:43*|fedora:44*|fedora:45*|arch:*|archarm:*|archlinux:*) return 0 ;;
                 *) return 1 ;;
             esac
             ;;
         anland-next)
             case "$SYSTEM_ID:$SYSTEM_VERSION" in
-                arch:*|archarm:*|archlinux:*|debian:13*|ubuntu:26.04*|fedora:43*|fedora:44*) return 0 ;;
+                arch:*|archarm:*|archlinux:*|debian:13*|ubuntu:26.04*|fedora:43*|fedora:44*|fedora:45*) return 0 ;;
                 *) return 1 ;;
             esac
             ;;
@@ -1550,6 +1550,7 @@ component_release_parts() {
                 ubuntu:26.04*) suffix="_ubuntu_resolute_arm64.tar.gz" ;;
                 fedora:43*) suffix="_fedora_43_arm64.tar.gz" ;;
                 fedora:44*) suffix="_fedora_44_arm64.tar.gz" ;;
+                fedora:45*) suffix="_fedora_45_arm64.tar.gz" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -1563,6 +1564,7 @@ component_release_parts() {
                 ubuntu:26.04*) prefix="hangover-wine-ubuntu2604-"; suffix="-arm64.tar.gz" ;;
                 fedora:43*) prefix="hangover-wine-fedora43-"; suffix="-aarch64.tar.gz" ;;
                 fedora:44*) prefix="hangover-wine-fedora44-"; suffix="-aarch64.tar.gz" ;;
+                fedora:45*) prefix="hangover-wine-fedora45-"; suffix="-aarch64.tar.gz" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -1579,6 +1581,7 @@ component_release_parts() {
                 ubuntu:26.04*) prefix="anland-kde-ubuntu2604-kwin-"; suffix="-arm64.tar.gz" ;;
                 fedora:43*) prefix="anland-kde-fedora43-kwin-"; suffix="-aarch64.tar.gz" ;;
                 fedora:44*) prefix="anland-kde-fedora44-kwin-"; suffix="-aarch64.tar.gz" ;;
+                fedora:45*) prefix="anland-kde-fedora45-kwin-"; suffix="-aarch64.tar.gz" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -1591,6 +1594,7 @@ component_release_parts() {
                 ubuntu:26.04*) prefix="anland-$component-ubuntu2604-"; suffix="-arm64.tar.gz" ;;
                 fedora:43*) prefix="anland-$component-fedora43-"; suffix="-aarch64.tar.gz" ;;
                 fedora:44*) prefix="anland-$component-fedora44-"; suffix="-aarch64.tar.gz" ;;
+                fedora:45*) prefix="anland-$component-fedora45-"; suffix="-aarch64.tar.gz" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -1602,6 +1606,7 @@ component_release_parts() {
                 ubuntu:26.04*) prefix="anland-gnome-ubuntu2604-mutter-"; suffix="-arm64.tar.gz" ;;
                 fedora:43*) prefix="anland-gnome-fedora43-mutter-"; suffix="-aarch64.tar.gz" ;;
                 fedora:44*) prefix="anland-gnome-fedora44-mutter-"; suffix="-aarch64.tar.gz" ;;
+                fedora:45*) prefix="anland-gnome-fedora45-mutter-"; suffix="-aarch64.tar.gz" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -1626,6 +1631,10 @@ component_release_parts() {
                     ;;
                 fedora:44*)
                     prefix="anland-session-fedora44-anland-session-"
+                    suffix=".aarch64.rpm"
+                    ;;
+                fedora:45*)
+                    prefix="anland-session-fedora45-anland-session-"
                     suffix=".aarch64.rpm"
                     ;;
                 *) return 1 ;;
@@ -3227,8 +3236,8 @@ show_about() {
         '此工具统一调用仓库内的独立安装器；下载、校验、安装和软件包管理仍由各安装器负责。' \
         'This tool dispatches the standalone installers. Each installer owns download, verification, installation, and package management.')"
     printf '\n%s\n' "$(msg \
-        'Anland KDE、GNOME、Niri、Hyprland、Mango、Denial 和 Next session 支持 Debian 13、Ubuntu 26.04、Fedora 43/44 与 Arch Linux ARM，均要求 ARM64 架构。' \
-        'Anland KDE, GNOME, Niri, Hyprland, Mango, Denial, and Next session support Debian 13, Ubuntu 26.04, Fedora 43/44, and Arch Linux ARM on ARM64.')"
+        'Anland KDE、GNOME、Niri、Hyprland、Mango、Denial 和 Next session 支持 Debian 13、Ubuntu 26.04、Fedora 43/44/45 与 Arch Linux ARM，均要求 ARM64 架构。' \
+        'Anland KDE, GNOME, Niri, Hyprland, Mango, Denial, and Next session support Debian 13, Ubuntu 26.04, Fedora 43/44/45, and Arch Linux ARM on ARM64.')"
     printf '\n%s\n' "$(msg \
         '桌面更新项根据 /etc/droidspaces-desktop.conf 中的 DESKTOP 字段选择。' \
         'The desktop update entry is selected by the DESKTOP field in /etc/droidspaces-desktop.conf.')"
