@@ -90,7 +90,7 @@ case "$TARGET" in
     PACKAGE_MANAGER=apt
     XWAYLAND_PACKAGE=xwayland
     ;;
-  fedora43|fedora44|fedora45)
+  fedora43|fedora44)
     PACKAGE_FORMAT=rpm
     PACKAGE_MANAGER=dnf
     XWAYLAND_PACKAGE=xorg-x11-server-Xwayland
@@ -166,7 +166,7 @@ install_build_dependencies() {
       log 'installing the Xwayland build dependencies'
       apt-get build-dep -y xwayland || die 'apt-get build-dep xwayland failed'
       ;;
-    fedora43|fedora44|fedora45)
+    fedora43|fedora44)
       dnf install -y --setopt=install_weak_deps=False \
         bash gcc binutils rpm-build rpmdevtools \
         dbus-x11 xorg-x11-server-Xwayland libX11 libXcomposite \
@@ -635,7 +635,7 @@ install_and_validate() {
       dpkg-query -W -f='${Status}\n' "$XWAYLAND_PACKAGE" | \
         grep -Fqx 'install ok installed' || die 'apt did not install Xwayland'
       ;;
-    fedora43|fedora44|fedora45)
+    fedora43|fedora44)
       dnf install -y --setopt=install_weak_deps=False "$package_path"
       rpm -q anland-session "$XWAYLAND_PACKAGE" >/dev/null
       ;;

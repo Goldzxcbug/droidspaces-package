@@ -1137,6 +1137,8 @@ detect_target() {
             ;;
     esac
     if [[ "$ANLAND_ASSET_KIND" == session ]]; then
+        [[ "$platform" != fedora45 ]] || die "Anland Next 暂不支持 Fedora 45。" \
+            "Anland Next does not yet support Fedora 45."
         MANIFEST_TARGET="$platform"
         case "$PACKAGE_TYPE" in
             deb) ASSET_PREFIX="$ANLAND_ASSET_FAMILY-$platform-anland-session_"; ASSET_SUFFIX='_arm64.deb' ;;

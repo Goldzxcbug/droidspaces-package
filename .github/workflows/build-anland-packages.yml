@@ -165,7 +165,6 @@ on:
           - debian13
           - fedora43
           - fedora44
-          - fedora45
           - arch
       session_repo:
         description: session 使用的 Anland Next 源码仓库地址
@@ -4939,9 +4938,9 @@ jobs:
 
           case "$BUILD_TARGET_INPUT" in
             all)
-              targets='["ubuntu2604","debian13","fedora43","fedora44","fedora45","arch"]'
+              targets='["ubuntu2604","debian13","fedora43","fedora44","arch"]'
               ;;
-            ubuntu2604|debian13|fedora43|fedora44|fedora45|arch)
+            ubuntu2604|debian13|fedora43|fedora44|arch)
               targets="[\"$BUILD_TARGET_INPUT\"]"
               ;;
             *)
@@ -5026,7 +5025,7 @@ jobs:
       matrix:
         target: ${{ fromJson(needs.prepare-session.outputs.targets) }}
     container:
-      image: ${{ matrix.target == 'ubuntu2604' && 'ubuntu:26.04' || matrix.target == 'debian13' && 'debian:13' || matrix.target == 'fedora43' && 'fedora:43' || matrix.target == 'fedora44' && 'fedora:44' || matrix.target == 'fedora45' && 'fedora:45' || 'ogarcia/archlinux:latest' }}
+      image: ${{ matrix.target == 'ubuntu2604' && 'ubuntu:26.04' || matrix.target == 'debian13' && 'debian:13' || matrix.target == 'fedora43' && 'fedora:43' || matrix.target == 'fedora44' && 'fedora:44' || 'ogarcia/archlinux:latest' }}
     env:
       TARGET: ${{ matrix.target }}
       ANLAND_REPO: ${{ inputs.session_repo || 'https://github.com/SuperTurtleDev/anland.git' }}
@@ -5153,7 +5152,7 @@ jobs:
           release_dir="$GITHUB_WORKSPACE/release-assets"
           mkdir -p "$release_dir"
           rolling_release_tag="anland-session-packages"
-          release_targets=(ubuntu2604 debian13 fedora43 fedora44 fedora45 arch)
+          release_targets=(ubuntu2604 debian13 fedora43 fedora44 arch)
           declare -A asset_by_target=()
           declare -A asset_time_by_target=()
           declare -A asset_source_by_target=()
@@ -5171,7 +5170,6 @@ jobs:
               debian13) printf '%s\n' 'Debian 13' ;;
               fedora43) printf '%s\n' 'Fedora 43' ;;
               fedora44) printf '%s\n' 'Fedora 44' ;;
-              fedora45) printf '%s\n' 'Fedora 45' ;;
               arch) printf '%s\n' 'Arch Linux' ;;
               *) echo "不支持的构建目标：$1" >&2; return 1 ;;
             esac
@@ -5253,7 +5251,7 @@ jobs:
 
           case "$BUILD_TARGET_INPUT" in
             all) selected_target="" ;;
-            ubuntu2604|debian13|fedora43|fedora44|fedora45|arch) selected_target="$BUILD_TARGET_INPUT" ;;
+            ubuntu2604|debian13|fedora43|fedora44|arch) selected_target="$BUILD_TARGET_INPUT" ;;
             *) echo "不支持的构建目标：$BUILD_TARGET_INPUT" >&2; exit 1 ;;
           esac
 
@@ -5278,7 +5276,7 @@ jobs:
                 exit 1
               fi
               case "$target:$package_name" in
-                ubuntu2604:*.deb|debian13:*.deb|fedora43:*.rpm|fedora44:*.rpm|fedora45:*.rpm|arch:*.pkg.tar.zst) ;;
+                ubuntu2604:*.deb|debian13:*.deb|fedora43:*.rpm|fedora44:*.rpm|arch:*.pkg.tar.zst) ;;
                 *) echo "$target 生成了不匹配的软件包：$package_name" >&2; exit 1 ;;
               esac
               asset="$(asset_prefix_for_target "$target")$package_name"

@@ -51,7 +51,7 @@ droidspaces-tui --json
 
 桌面入口读取 `/etc/droidspaces-desktop.conf`：KDE/KDE Mobile 对应 Anland KDE，GNOME 对应 Anland GNOME，Niri、Hyprland、Mango、Denial 和 Anland Next 对应各自组件。`none` 或未知桌面进入组件选择页。旧 RootFS 缺少配置时按已安装组件识别。
 
-七个 Anland 安装器支持 Debian 13、Ubuntu 26.04、Fedora 43/44/45 和 Arch Linux ARM。从组件 Release 或 TUI Release 下载 `Gold-bug-tui.tar.gz` 后运行：
+七个 Anland 安装器支持 Debian 13、Ubuntu 26.04、Fedora 43/44 和 Arch Linux ARM。Fedora 45 支持 KDE、GNOME、Niri、Hyprland、Mango 和 Denial。从组件 Release 或 TUI Release 下载 `Gold-bug-tui.tar.gz` 后运行：
 
 ```bash
 tar -xzf Gold-bug-tui.tar.gz
