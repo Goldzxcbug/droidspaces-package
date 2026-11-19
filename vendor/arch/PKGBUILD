@@ -167,6 +167,13 @@ build() {
     -Dshared-lib-tag="${_meson_version}"
     -Dmode=release
 
+    -Duserdb=false
+    -Doomd=false
+    -Dhomed=disabled
+    -Drepart=disabled
+    -Dsysupdate=disabled
+    -Dhibernate=false
+
     -Dapparmor=disabled
     -Dbootloader=enabled
     -Dxenctrl=disabled
