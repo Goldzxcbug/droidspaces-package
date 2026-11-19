@@ -90,7 +90,7 @@ case "$TARGET" in
     PACKAGE_MANAGER=apt
     XWAYLAND_PACKAGE=xwayland
     ;;
-  fedora43|fedora44)
+  fedora43|fedora44|fedora45)
     PACKAGE_FORMAT=rpm
     PACKAGE_MANAGER=dnf
     XWAYLAND_PACKAGE=xorg-x11-server-Xwayland
@@ -107,9 +107,9 @@ esac
 
 # Xwayland's build dependencies come from the distribution's own list (the
 # vendored tree is xserver's xwayland-24.1, so the -dev versions match the
-# libraries that end up linked). That needs the source index, which is off by
-# default; the deb-src/dnf-source entries are index metadata only — no
-# distribution source code is fetched and no system package is replaced.
+# libraries that end up linked). Build dependency resolution needs the source
+# index. APT needs deb-src configured explicitly, while DNF5 builddep enables
+# the source repos that correspond to the enabled binary repos automatically.
 enable_apt_source_packages() {
   if grep -rqsE '^Types:.*deb-src|^[[:space:]]*deb-src ' \
       /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
@@ -129,28 +129,6 @@ enable_apt_source_packages() {
   retry_apt_update
 }
 
-enable_dnf_source_packages() {
-  if dnf repolist --enabled 2>/dev/null | grep -q -- '-source'; then
-    return 0
-  fi
-  # Fedora splits its source repos (fedora-source, updates-source, …) and the
-  # Xwayland BuildRequires can live in any of them, so enable every one the
-  # image knows about rather than guessing a name.
-  local repo
-  local -a repos=()
-  mapfile -t repos < <(grep -rhoE '^\[[^]]*-source\]' /etc/yum.repos.d 2>/dev/null | \
-    tr -d '[]' | sort -u)
-  [ "${#repos[@]}" -gt 0 ] || die 'no *-source repositories are configured'
-  for repo in "${repos[@]}"; do
-    log "enabling $repo"
-    dnf config-manager --set-enabled "$repo" >/dev/null 2>&1 || \
-      dnf config-manager setopt "$repo.enabled=1" >/dev/null 2>&1 || \
-      die "could not enable $repo"
-  done
-  dnf repolist --enabled | grep -q -- '-source' || \
-    die 'no *-source repository ended up enabled'
-}
-
 install_build_dependencies() {
   case "$TARGET" in
     ubuntu2604|debian13)
@@ -166,18 +144,17 @@ install_build_dependencies() {
       log 'installing the Xwayland build dependencies'
       apt-get build-dep -y xwayland || die 'apt-get build-dep xwayland failed'
       ;;
-    fedora43|fedora44)
+    fedora43|fedora44|fedora45)
       dnf install -y --setopt=install_weak_deps=False \
         bash gcc binutils rpm-build rpmdevtools \
         dbus-x11 xorg-x11-server-Xwayland libX11 libXcomposite \
         libX11-devel libXcomposite-devel \
         meson ninja-build pkgconf-pkg-config patch ca-certificates \
-        libcap-devel dnf-plugins-core
-      enable_dnf_source_packages
+        libcap-devel dnf5-plugins
       log 'installing the Xwayland build dependencies'
-      dnf builddep -y --setopt=install_weak_deps=False \
+      dnf5 builddep -y --setopt=install_weak_deps=False \
         xorg-x11-server-Xwayland || \
-        die 'dnf builddep xorg-x11-server-Xwayland failed'
+        die 'dnf5 builddep xorg-x11-server-Xwayland failed'
       ;;
     arch)
       # Arch has no builddep equivalent, so the Xwayland list is spelled out:
@@ -635,7 +612,7 @@ install_and_validate() {
       dpkg-query -W -f='${Status}\n' "$XWAYLAND_PACKAGE" | \
         grep -Fqx 'install ok installed' || die 'apt did not install Xwayland'
       ;;
-    fedora43|fedora44)
+    fedora43|fedora44|fedora45)
       dnf install -y --setopt=install_weak_deps=False "$package_path"
       rpm -q anland-session "$XWAYLAND_PACKAGE" >/dev/null
       ;;

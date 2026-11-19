@@ -1212,7 +1212,7 @@ component_supported() {
             ;;
         anland-next)
             case "$SYSTEM_ID:$SYSTEM_VERSION" in
-                arch:*|archarm:*|archlinux:*|debian:13*|ubuntu:26.04*|fedora:43*|fedora:44*) return 0 ;;
+                arch:*|archarm:*|archlinux:*|debian:13*|ubuntu:26.04*|fedora:43*|fedora:44*|fedora:45*) return 0 ;;
                 *) return 1 ;;
             esac
             ;;
@@ -1631,6 +1631,10 @@ component_release_parts() {
                     ;;
                 fedora:44*)
                     prefix="anland-session-fedora44-anland-session-"
+                    suffix=".aarch64.rpm"
+                    ;;
+                fedora:45*)
+                    prefix="anland-session-fedora45-anland-session-"
                     suffix=".aarch64.rpm"
                     ;;
                 *) return 1 ;;
@@ -3232,8 +3236,8 @@ show_about() {
         '此工具统一调用仓库内的独立安装器；下载、校验、安装和软件包管理仍由各安装器负责。' \
         'This tool dispatches the standalone installers. Each installer owns download, verification, installation, and package management.')"
     printf '\n%s\n' "$(msg \
-        'ARM64 上的 Anland 安装器支持 Debian 13、Ubuntu 26.04、Fedora 43/44 和 Arch Linux ARM。Fedora 45 支持 KDE、GNOME、Niri、Hyprland、Mango 和 Denial。' \
-        'The ARM64 Anland installers support Debian 13, Ubuntu 26.04, Fedora 43/44, and Arch Linux ARM. Fedora 45 supports KDE, GNOME, Niri, Hyprland, Mango, and Denial.')"
+        'Anland KDE、GNOME、Niri、Hyprland、Mango、Denial 和 Next session 支持 Debian 13、Ubuntu 26.04、Fedora 43/44/45 与 Arch Linux ARM，均要求 ARM64 架构。' \
+        'Anland KDE, GNOME, Niri, Hyprland, Mango, Denial, and Next session support Debian 13, Ubuntu 26.04, Fedora 43/44/45, and Arch Linux ARM on ARM64.')"
     printf '\n%s\n' "$(msg \
         '桌面更新项根据 /etc/droidspaces-desktop.conf 中的 DESKTOP 字段选择。' \
         'The desktop update entry is selected by the DESKTOP field in /etc/droidspaces-desktop.conf.')"

@@ -10,7 +10,7 @@
 | Hyprland | ✓ | ✓ | ✓ | ✓ | `install-anland-hyprland.sh` |
 | Mango | ✓ | ✓ | ✓ | ✓ | `install-anland-mango.sh` |
 | Denial | ✓ | ✓ | ✓ | ✓ | `install-anland-denial.sh` |
-| Anland Next session | ✓ | ✓ | 43/44 | ✓ | `install-anland-next.sh` |
+| Anland Next session | ✓ | ✓ | ✓ | ✓ | `install-anland-next.sh` |
 
 构建使用 `ubuntu-24.04-arm` 原生 ARM64 runner，在目标发行版容器中编译。桌面包包含配套 patched Xwayland；依赖由目标系统的 apt、dnf 或 pacman 管理。
 
