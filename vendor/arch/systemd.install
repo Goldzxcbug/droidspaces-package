@@ -11,11 +11,19 @@ services_needing_restart() {
     | grep -Ev '^systemd-.*@.*\.service$'
 }
 
+remove_home_fallback_shell() {
+  if grep -qsFx '/usr/bin/systemd-home-fallback-shell' etc/shells; then
+    sed -i '\|^/usr/bin/systemd-home-fallback-shell$|d' etc/shells
+  fi
+}
+
 post_common() {
   systemd-sysusers
   journalctl --update-catalog
 
-  if ! grep -qe '^/usr/bin/systemd-home-fallback-shell$' etc/shells; then
+  if [[ ! -x usr/bin/systemd-home-fallback-shell ]]; then
+    remove_home_fallback_shell
+  elif ! grep -qsFx '/usr/bin/systemd-home-fallback-shell' etc/shells; then
     echo '/usr/bin/systemd-home-fallback-shell' >> etc/shells
   fi
 }
@@ -26,10 +34,10 @@ post_install() {
   post_common "$@"
 
   # enable some services by default, but don't track them
-  systemctl enable \
-    getty@tty1.service \
-    remote-fs.target \
-    systemd-userdbd.socket
+  systemctl enable getty@tty1.service remote-fs.target
+  if [[ -f usr/lib/systemd/system/systemd-userdbd.socket ]]; then
+    systemctl enable systemd-userdbd.socket
+  fi
 
   echo ":: Append 'init=/usr/lib/systemd/systemd' to your kernel command line in your"
   echo "   bootloader to replace sysvinit with systemd, or install systemd-sysvcompat"
@@ -41,6 +49,14 @@ post_install() {
 
 post_upgrade() {
   post_common "$@"
+
+  # Remove the enablement link created by older packages.
+  local userdbd_socket=usr/lib/systemd/system/systemd-userdbd.socket
+  local userdbd_link=etc/systemd/system/sockets.target.wants/systemd-userdbd.socket
+  if [[ ! -f "$userdbd_socket" && -L "$userdbd_link" &&
+        "$(readlink -- "$userdbd_link")" == "/$userdbd_socket" ]]; then
+    rm -f -- "$userdbd_link"
+  fi
 
   if sd_booted; then
     # reexec systemd system instance
@@ -75,7 +91,7 @@ post_upgrade() {
 }
 
 post_remove() {
-  sed -i -r '/^\/usr\/bin\/systemd-home-fallback-shell$/d' etc/shells
+  remove_home_fallback_shell
 }
 
 # vim:set ts=2 sw=2 et:
