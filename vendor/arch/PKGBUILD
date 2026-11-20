@@ -26,7 +26,7 @@ pkgname=('systemd'
 # way or another. We use proper version for pacman here (no dash for rc
 # release!), and change in source array below.
 pkgver=257.9
-pkgrel=2
+pkgrel=3
 arch=('aarch64')
 license=('LGPL-2.1-or-later')
 url='https://www.github.com/systemd/systemd'
@@ -252,13 +252,11 @@ package_systemd() {
               'libp11-kit: support PKCS#11'
               'tpm2-tss: unlocking LUKS2 volumes with TPM2')
   backup=(etc/systemd/coredump.conf
-          etc/systemd/homed.conf
           etc/systemd/journald.conf
           etc/systemd/journal-remote.conf
           etc/systemd/journal-upload.conf
           etc/systemd/logind.conf
           etc/systemd/networkd.conf
-          etc/systemd/oomd.conf
           etc/systemd/pstore.conf
           etc/systemd/resolved.conf
           etc/systemd/sleep.conf
@@ -270,6 +268,13 @@ package_systemd() {
   install=systemd.install
 
   meson install -C build --no-rebuild --destdir "$pkgdir" --quiet
+
+  if [[ -f "$pkgdir"/etc/systemd/homed.conf ]]; then
+    backup+=('etc/systemd/homed.conf')
+  fi
+  if [[ -f "$pkgdir"/etc/systemd/oomd.conf ]]; then
+    backup+=('etc/systemd/oomd.conf')
+  fi
 
   # we'll create this on installation
   rmdir "$pkgdir"/var/log/journal/remote
