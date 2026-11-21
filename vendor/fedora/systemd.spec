@@ -141,6 +141,7 @@ Patch:          0001-Revert-units-use-PrivateTmp-disconnected-instead-of-.patch
 #  https://fedoraproject.org/wiki/Changes/RPMSuportForSystemdSysusers.
 Patch:          0002-sysusers-emit-audit-events-for-user-and-group-creati.patch
 Patch:          0003-droidspaces-old-kernel-compat.patch
+Patch:          0004-systemd-257-openssl-4-compat.patch
 
 # https://bugzilla.redhat.com/show_bug.cgi?id=2251843
 Patch:          https://github.com/systemd/systemd/pull/30846.patch
@@ -192,7 +193,7 @@ BuildRequires:  libcurl-devel
 BuildRequires:  kmod-devel
 BuildRequires:  elfutils-devel
 BuildRequires:  openssl-devel
-%if 0%{?fedora} >= 41
+%if 0%{?fedora} >= 41 && 0%{?fedora} < 45
 BuildRequires:  openssl-devel-engine
 %endif
 %if %{with gnutls}

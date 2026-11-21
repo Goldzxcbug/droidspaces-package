@@ -22,6 +22,8 @@ test_root="$(mktemp -d -t systemd257-rpm-test.XXXXXXXX)"
 trap 'rm -rf "$packaging_dir" "$work_dir" "$test_root"' EXIT
 cp -a "$REPO_ROOT/vendor/fedora/." "$packaging_dir/"
 cp -a "$PATCH_FILE" "$packaging_dir/0003-droidspaces-old-kernel-compat.patch"
+cp -a "$REPO_ROOT/patches/0003-systemd-257-openssl-4-compat.patch" \
+  "$packaging_dir/0004-systemd-257-openssl-4-compat.patch"
 
 log "installing Fedora source package build dependencies"
 dnf builddep -y --setopt=install_weak_deps=False \
