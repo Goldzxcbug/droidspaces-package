@@ -597,7 +597,16 @@ detect_system() {
         # shellcheck disable=SC1091
         source /etc/os-release
         SYSTEM_ID="${ID,,}"
-        SYSTEM_VERSION="$VERSION_ID"
+        # ArmadaOS (ID=armada*, Fedora based) counts as Fedora. Its ID/VERSION_ID
+        # may carry a build suffix, so keep the leading digits only and fall back
+        # to 44 when the value is not a plain release number.
+        if [[ "$SYSTEM_ID" == armada* ]]; then
+            SYSTEM_ID="fedora"
+            SYSTEM_VERSION="${VERSION_ID%%[!0-9]*}"
+            [[ "$SYSTEM_VERSION" =~ ^[0-9]{2}$ ]] || SYSTEM_VERSION="44"
+        else
+            SYSTEM_VERSION="$VERSION_ID"
+        fi
         SYSTEM_LABEL="${PRETTY_NAME:-${ID:-Unknown Linux}${VERSION_ID:+ $VERSION_ID}}"
     fi
     ARCHITECTURE="$(uname -m 2>/dev/null || printf 'unknown')"

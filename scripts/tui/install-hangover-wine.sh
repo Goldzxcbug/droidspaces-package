@@ -559,6 +559,12 @@ detect_target() {
     local version_id="${VERSION_ID:-}"
     local system_name="${PRETTY_NAME:-${distro_id} ${version_id}}"
     distro_id="${distro_id,,}"
+    # ArmadaOS (ID=armada*, Fedora based) counts as Fedora; VERSION_ID may carry a build suffix.
+    if [[ "$distro_id" == armada* ]]; then
+        distro_id=fedora
+        version_id="${version_id%%[!0-9]*}"
+        [[ "$version_id" =~ ^[0-9]{2}$ ]] || version_id="44"
+    fi
 
     case "$distro_id" in
         arch|archarm|archlinux)
