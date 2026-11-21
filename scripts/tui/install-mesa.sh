@@ -817,6 +817,12 @@ detect_target() {
 
     local distro_id="${ID,,}"
     local version_id="${VERSION_ID:-}"
+    # ArmadaOS (ID=armada*, Fedora based) counts as Fedora; VERSION_ID may carry a build suffix.
+    if [[ "$distro_id" == armada* ]]; then
+        distro_id=fedora
+        version_id="${version_id%%[!0-9]*}"
+        [[ "$version_id" =~ ^[0-9]{2}$ ]] || version_id="44"
+    fi
     local system_name="${PRETTY_NAME:-$distro_id${version_id:+ $version_id}}"
 
     TARGET=""

@@ -1118,6 +1118,12 @@ detect_target() {
     source /etc/os-release
     [[ -n "${ID:-}" ]] || die '/etc/os-release 缺少 ID。' '/etc/os-release does not contain ID.'
     local distro_id="${ID,,}" version_id="${VERSION_ID:-}" platform archive_suffix
+    # ArmadaOS (ID=armada*, Fedora based) counts as Fedora; VERSION_ID may carry a build suffix.
+    if [[ "$distro_id" == armada* ]]; then
+        distro_id=fedora
+        version_id="${version_id%%[!0-9]*}"
+        [[ "$version_id" =~ ^[0-9]{2}$ ]] || version_id="44"
+    fi
     local system_name="${PRETTY_NAME:-$distro_id${version_id:+ $version_id}}"
     case "$distro_id" in
         arch|archarm|archlinux)
