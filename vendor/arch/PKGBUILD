@@ -51,6 +51,7 @@ source=("git+https://github.com/systemd/systemd#tag=v${pkgver/rc/-rc}?signed"
         '0002-droidspaces-old-kernel-compat.patch'
         '0003-systemd-257.9-linux-7.0-errno-aliases.patch'
         '0004-systemd-257-openssl-4-compat.patch'
+        '0005-systemd-257-lxml-6.1-resolve-entities.patch'
         # bootloader files
         'arch.conf'
         'loader.conf'
@@ -72,6 +73,7 @@ source=("git+https://github.com/systemd/systemd#tag=v${pkgver/rc/-rc}?signed"
         '30-systemd-update.hook')
 sha512sums=('27daa6035ef853ec802f8423c9d8d90810c2b0f71af2ec7d21d468905eacc109497e2186d15834856c006fea71cf9b96278d26a20e48bb212b7c049eac9fdd08'
             '78065bde708118b7d6e4ed492e096c763e4679a1c54bd98750d5d609d8cc2f1373023f308880f14fc923ae7f9fea34824917ef884c0f996b1f43d08ef022c0fb'
+            'SKIP'
             'SKIP'
             'SKIP'
             'SKIP'
@@ -128,6 +130,9 @@ prepare() {
 
   # Backport systemd/systemd@5fb14a1b for OpenSSL 4 opaque ASN1_STRING types.
   patch -Np1 -i ../0004-systemd-257-openssl-4-compat.patch
+
+  # Backport systemd/systemd@a019396d for lxml 6.1.3+ external entity resolution.
+  patch -Np1 -i ../0005-systemd-257-lxml-6.1-resolve-entities.patch
 
   # return if not a git repository
   if ! git status >/dev/null 2>&1; then

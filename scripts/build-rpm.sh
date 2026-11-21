@@ -24,6 +24,8 @@ cp -a "$REPO_ROOT/vendor/fedora/." "$packaging_dir/"
 cp -a "$PATCH_FILE" "$packaging_dir/0003-droidspaces-old-kernel-compat.patch"
 cp -a "$REPO_ROOT/patches/0003-systemd-257-openssl-4-compat.patch" \
   "$packaging_dir/0004-systemd-257-openssl-4-compat.patch"
+cp -a "$REPO_ROOT/patches/0004-systemd-257-lxml-6.1-resolve-entities.patch" \
+  "$packaging_dir/0005-systemd-257-lxml-6.1-resolve-entities.patch"
 
 log "installing Fedora source package build dependencies"
 dnf builddep -y --setopt=install_weak_deps=False \

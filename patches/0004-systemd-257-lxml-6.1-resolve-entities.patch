@@ -1,0 +1,24 @@
+From: systemd upstream <systemd-devel@lists.freedesktop.org>
+Subject: [PATCH] tools: fix building manpages with lxml 6.1.3
+
+Backport upstream commit a019396d2c5bc1adb6b044e7784a30b7187f6fbd.
+lxml 6.1.3 changed XMLParser() defaults so external parameter entities
+such as custom-entities.ent are no longer resolved unless requested
+explicitly via resolve_entities=True.
+
+---
+ tools/xml_helper.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tools/xml_helper.py b/tools/xml_helper.py
+--- a/tools/xml_helper.py
++++ b/tools/xml_helper.py
+@@ -13,7 +13,7 @@ class CustomResolver(tree.Resolver):
+ 
+         return None
+ 
+-_parser = tree.XMLParser()
++_parser = tree.XMLParser(resolve_entities=True)
+ # pylint: disable=no-member
+ _parser.resolvers.add(CustomResolver())
+ 

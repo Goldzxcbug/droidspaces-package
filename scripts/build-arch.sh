@@ -22,6 +22,8 @@ cp -a "$REPO_ROOT/patches/0002-systemd-257.9-linux-7.0-errno-aliases.patch" \
   "$work_dir/0003-systemd-257.9-linux-7.0-errno-aliases.patch"
 cp -a "$REPO_ROOT/patches/0003-systemd-257-openssl-4-compat.patch" \
   "$work_dir/0004-systemd-257-openssl-4-compat.patch"
+cp -a "$REPO_ROOT/patches/0004-systemd-257-lxml-6.1-resolve-entities.patch" \
+  "$work_dir/0005-systemd-257-lxml-6.1-resolve-entities.patch"
 
 if ! id build >/dev/null 2>&1; then
   useradd -m build

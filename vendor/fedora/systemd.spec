@@ -142,6 +142,7 @@ Patch:          0001-Revert-units-use-PrivateTmp-disconnected-instead-of-.patch
 Patch:          0002-sysusers-emit-audit-events-for-user-and-group-creati.patch
 Patch:          0003-droidspaces-old-kernel-compat.patch
 Patch:          0004-systemd-257-openssl-4-compat.patch
+Patch:          0005-systemd-257-lxml-6.1-resolve-entities.patch
 
 # https://bugzilla.redhat.com/show_bug.cgi?id=2251843
 Patch:          https://github.com/systemd/systemd/pull/30846.patch
