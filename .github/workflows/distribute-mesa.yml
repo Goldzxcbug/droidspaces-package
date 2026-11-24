@@ -1,7 +1,7 @@
 # Mesa 源仓库：https://github.com/lfdevs/mesa-for-android-container
 # 上游 Releases：https://github.com/lfdevs/mesa-for-android-container/releases
 # 媒体解码源仓库：https://github.com/Yizhou147/droidspaces-media-decode
-# 本工作流不修改上游 Mesa 资产内容。
+# 本工作流不修改上游 Mesa 资产内容，仅补充构建上游未提供的 Debian 12 (bookworm) arm64 资产。
 
 name: 分发 Mesa for Android Container
 run-name: 分发 Mesa ${{ inputs.upstream_tag || '最新正式 Release' }}
@@ -37,10 +37,16 @@ env:
   MANIFEST_NAME: mesa-distribution-manifest
 
 jobs:
-  distribute:
-    name: 更新 Mesa 滚动发布
+  resolve:
+    name: 解析上游 Release
     runs-on: ubuntu-26.04
-    timeout-minutes: 90
+    timeout-minutes: 15
+    outputs:
+      mesa_tag: ${{ steps.upstream.outputs.mesa_tag }}
+      bookworm_asset: ${{ steps.upstream.outputs.bookworm_asset }}
+      media_tag: ${{ steps.upstream.outputs.media_tag }}
+      media_driver_asset: ${{ steps.upstream.outputs.media_driver_asset }}
+      media_checksums_asset: ${{ steps.upstream.outputs.media_checksums_asset }}
     steps:
       - name: 检出分发脚本
         uses: actions/checkout@v6
@@ -69,8 +75,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          mesa_metadata="$RUNNER_TEMP/mesa-upstream-release.json"
-          media_metadata="$RUNNER_TEMP/media-upstream-release.json"
+          meta_dir="$RUNNER_TEMP/mesa-resolve-metadata"
+          mkdir -p "$meta_dir"
+          mesa_metadata="$meta_dir/mesa-upstream-release.json"
+          media_metadata="$meta_dir/media-upstream-release.json"
           [[ -z "$REQUESTED_TAG" || "$REQUESTED_TAG" =~ ^mesa-[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || {
             echo "上游标签必须使用 mesa-* 格式：$REQUESTED_TAG" >&2
             exit 1
@@ -105,12 +113,19 @@ jobs:
             | (map(version_number) | index($anchor_version)) as $index
             | .[$index:($index + 3)]
             | if length > 0 then . else error("没有找到可分发的 mesa-* Release") end
-          ' > "$RUNNER_TEMP/mesa-upstream-releases.json"
-          jq -c '.[0]' "$RUNNER_TEMP/mesa-upstream-releases.json" > "$mesa_metadata"
+          ' > "$meta_dir/mesa-upstream-releases.json"
+          jq -c '.[0]' "$meta_dir/mesa-upstream-releases.json" > "$mesa_metadata"
           mesa_tag="$(jq -er '.tag_name' "$mesa_metadata")"
-          jq -r '.[].tag_name' "$RUNNER_TEMP/mesa-upstream-releases.json" > "$RUNNER_TEMP/mesa-tags.txt"
+          jq -r '.[].tag_name' "$meta_dir/mesa-upstream-releases.json" > "$meta_dir/mesa-tags.txt"
           echo "可选的上游正式 Release："
-          cat "$RUNNER_TEMP/mesa-tags.txt"
+          cat "$meta_dir/mesa-tags.txt"
+
+          trixie_asset="$(jq -er '
+            [.assets[]?.name | select(startswith("mesa-for-android-container_") and endswith("_debian_trixie_arm64.tar.gz"))]
+            | if length == 1 then .[0]
+              else error("上游 Release 缺少唯一的 debian_trixie_arm64.tar.gz 资产") end
+          ' "$mesa_metadata")"
+          bookworm_asset="${trixie_asset%_debian_trixie_arm64.tar.gz}_debian_bookworm_arm64.tar.gz"
 
           gh api "repos/$MEDIA_REPOSITORY/releases/latest" > "$media_metadata"
           jq -e '
@@ -133,30 +148,189 @@ jobs:
           media_tag="$(jq -er '.tag_name' "$media_metadata")"
 
           echo "mesa_tag=$mesa_tag" >> "$GITHUB_OUTPUT"
+          echo "bookworm_asset=$bookworm_asset" >> "$GITHUB_OUTPUT"
           echo "media_tag=$media_tag" >> "$GITHUB_OUTPUT"
           echo "media_driver_asset=$media_driver_asset" >> "$GITHUB_OUTPUT"
           echo "media_checksums_asset=$media_checksums_asset" >> "$GITHUB_OUTPUT"
           echo "选择 Mesa 上游 Release：$UPSTREAM_RELEASES_URL/tag/$mesa_tag"
+          echo "计划构建 Debian 12 资产：$bookworm_asset"
           echo "选择媒体驱动 Release：$MEDIA_URL/releases/tag/$media_tag"
           echo "选择媒体驱动资产：$media_driver_asset"
           echo "选择媒体校验资产：$media_checksums_asset"
+
+      - name: 上传解析元数据
+        uses: actions/upload-artifact@v4
+        with:
+          name: mesa-resolve-metadata
+          path: ${{ runner.temp }}/mesa-resolve-metadata
+          retention-days: 1
+
+  build-debian-bookworm:
+    name: 构建 Debian 12 (bookworm) arm64 Mesa
+    needs: resolve
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    container:
+      image: debian:bookworm-slim
+      options: --privileged --user root
+    steps:
+      - name: 安装 Debian 12 编译依赖
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources
+          apt-get update
+          apt-get build-dep -y mesa
+          apt-get install -y --no-install-recommends \
+            ca-certificates git ccache ninja-build pkg-config flex bison \
+            python3-pip python3-mako python3-yaml \
+            libxfixes-dev libarchive-dev libva-dev libdrm-dev libglvnd-dev \
+            libwayland-dev libwayland-egl-backend-dev \
+            llvm-15-dev libclang-15-dev libclc-15-dev spirv-tools glslang-tools
+          # Debian 12 自带 meson 1.0.1，而新版 Mesa 要求 meson >= 1.4.0
+          pip3 install --break-system-packages --no-cache-dir 'meson>=1.4.0'
+          hash -r
+          meson --version
+
+      - name: 缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: /root/.ccache
+          key: mesa-bookworm-ccache-${{ runner.os }}-${{ runner.arch }}-${{ needs.resolve.outputs.mesa_tag }}-${{ github.run_id }}
+          restore-keys: |
+            mesa-bookworm-ccache-${{ runner.os }}-${{ runner.arch }}-${{ needs.resolve.outputs.mesa_tag }}-
+            mesa-bookworm-ccache-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: 配置 ccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CCACHE_DIR=/root/.ccache
+          ccache --max-size=2G
+          ccache --zero-stats
+          ccache --show-stats
+
+      - name: 检出上游 Mesa 源码
+        uses: actions/checkout@v6
+        with:
+          repository: lfdevs/mesa-for-android-container
+          ref: ${{ needs.resolve.outputs.mesa_tag }}
+          fetch-depth: 1
+
+      - name: 编译 Mesa (Debian 12 bookworm arm64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CCACHE_DIR=/root/.ccache
+          export PATH="/usr/lib/ccache:/usr/local/bin:$PATH"
+          cd "$GITHUB_WORKSPACE"
+
+          meson_opts=(
+            --prefix=/usr
+            --wrap-mode=default
+            -Dplatforms=x11,wayland
+            -Dgallium-drivers=freedreno,zink,virgl,llvmpipe
+            -Dgallium-va=enabled
+            -Dvideo-codecs=all
+            -Dvulkan-drivers=freedreno
+            -Dvulkan-layers=
+            -Degl=enabled
+            -Dgles2=enabled
+            -Dglvnd=enabled
+            -Dglx=dri
+            -Dlibunwind=disabled
+            -Dintel-rt=disabled
+            -Dmicrosoft-clc=disabled
+            -Dvalgrind=disabled
+            -Dgles1=disabled
+            -Dfreedreno-kmds=kgsl
+            -Dbuildtype=release
+          )
+
+          # 兼容不同上游版本的额外 meson 选项
+          if grep -q "'termux-va-bridge'" meson.options 2>/dev/null; then
+            meson_opts+=(-Dtermux-va-bridge=enabled)
+          fi
+          if grep -q "'termux-va-wayland-shim'" meson.options 2>/dev/null; then
+            meson_opts+=(-Dtermux-va-wayland-shim=enabled)
+          fi
+          if grep -q "'gallium-mediafoundation'" meson.options 2>/dev/null; then
+            meson_opts+=(-Dgallium-mediafoundation=disabled)
+          fi
+
+          meson setup build/ "${meson_opts[@]}"
+          ninja -C build/
+          ccache --show-stats
+
+      - name: 打包 Debian 12 Mesa 资产
+        env:
+          BOOKWORM_ASSET: ${{ needs.resolve.outputs.bookworm_asset }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rm -rf /tmp/mesa-install-tmp "$RUNNER_TEMP/mesa-bookworm-out"
+          mkdir -p /tmp/mesa-install-tmp "$RUNNER_TEMP/mesa-bookworm-out"
+          DESTDIR=/tmp/mesa-install-tmp meson install -C build/
+          tar -zcf "$RUNNER_TEMP/mesa-bookworm-out/$BOOKWORM_ASSET" -C /tmp/mesa-install-tmp .
+          rm -rf /tmp/mesa-install-tmp
+          sha256sum "$RUNNER_TEMP/mesa-bookworm-out/$BOOKWORM_ASSET"
+          ls -lh "$RUNNER_TEMP/mesa-bookworm-out/$BOOKWORM_ASSET"
+
+      - name: 上传 Debian 12 构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: mesa-debian-bookworm
+          path: ${{ runner.temp }}/mesa-bookworm-out/${{ needs.resolve.outputs.bookworm_asset }}
+          retention-days: 1
+
+  distribute:
+    name: 更新 Mesa 滚动发布
+    needs:
+      - resolve
+      - build-debian-bookworm
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    steps:
+      - name: 检出分发脚本
+        uses: actions/checkout@v6
+
+      - name: 下载解析元数据
+        uses: actions/download-artifact@v4
+        with:
+          name: mesa-resolve-metadata
+          path: ${{ runner.temp }}/mesa-resolve-metadata
+
+      - name: 下载 Debian 12 构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: mesa-debian-bookworm
+          path: ${{ runner.temp }}/mesa-bookworm-out
 
       - name: 下载并校验分发资产
         id: assets
         env:
           GH_TOKEN: ${{ github.token }}
-          MESA_TAG: ${{ steps.upstream.outputs.mesa_tag }}
+          MESA_TAG: ${{ needs.resolve.outputs.mesa_tag }}
+          BOOKWORM_ASSET: ${{ needs.resolve.outputs.bookworm_asset }}
           REQUESTED_TAG: ${{ inputs.upstream_tag }}
-          MEDIA_TAG: ${{ steps.upstream.outputs.media_tag }}
-          MEDIA_DRIVER_ASSET: ${{ steps.upstream.outputs.media_driver_asset }}
-          MEDIA_CHECKSUMS_ASSET: ${{ steps.upstream.outputs.media_checksums_asset }}
+          MEDIA_TAG: ${{ needs.resolve.outputs.media_tag }}
+          MEDIA_DRIVER_ASSET: ${{ needs.resolve.outputs.media_driver_asset }}
+          MEDIA_CHECKSUMS_ASSET: ${{ needs.resolve.outputs.media_checksums_asset }}
         shell: bash
         run: |
           set -euo pipefail
 
+          meta_dir="$RUNNER_TEMP/mesa-resolve-metadata"
           asset_dir="$RUNNER_TEMP/mesa-distribution-assets"
-          mesa_metadata="$RUNNER_TEMP/mesa-upstream-release.json"
-          media_metadata="$RUNNER_TEMP/media-upstream-release.json"
+          mesa_metadata="$meta_dir/mesa-upstream-release.json"
+          media_metadata="$meta_dir/media-upstream-release.json"
+          bookworm_file="$RUNNER_TEMP/mesa-bookworm-out/$BOOKWORM_ASSET"
+          [[ -f "$bookworm_file" ]] || {
+            echo "缺少 Debian 12 构建产物：$bookworm_file" >&2
+            exit 1
+          }
           rm -rf "$asset_dir"
           mkdir -p "$asset_dir"
 
@@ -178,13 +352,13 @@ jobs:
           while IFS= read -r version_tag; do
             version_dir="$RUNNER_TEMP/mesa-version-$version_index"
             mkdir -p "$version_dir"
-            jq -c ".[${version_index}]" "$RUNNER_TEMP/mesa-upstream-releases.json" > "$RUNNER_TEMP/mesa-version-$version_index.json"
+            jq -c ".[${version_index}]" "$meta_dir/mesa-upstream-releases.json" > "$RUNNER_TEMP/mesa-version-$version_index.json"
             gh release download "$version_tag" \
               --repo "$UPSTREAM_REPOSITORY" \
               --dir "$version_dir" \
               "${download_arguments[@]}"
             version_index=$((version_index + 1))
-          done < "$RUNNER_TEMP/mesa-tags.txt"
+          done < "$meta_dir/mesa-tags.txt"
           gh release download "$MEDIA_TAG" \
             --repo "$MEDIA_REPOSITORY" \
             --dir "$asset_dir" \
@@ -247,8 +421,29 @@ jobs:
               [[ ! -e "$asset_dir/${asset##*/}" ]] || { echo "Mesa 附件名称重复：${asset##*/}" >&2; exit 1; }
               cp -- "$asset" "$asset_dir/${asset##*/}"
             done
+
+            # 注入 Debian 12 (bookworm) 资产：当前版本使用本次构建产物，历史版本尽量从现有滚动发布复用
+            if (( version_index == 0 )); then
+              cp -- "$bookworm_file" "$version_dir/$BOOKWORM_ASSET"
+              cp -- "$bookworm_file" "$asset_dir/$BOOKWORM_ASSET"
+            else
+              hist_trixie="$(jq -r '
+                [.assets[]?.name | select(startswith("mesa-for-android-container_") and endswith("_debian_trixie_arm64.tar.gz"))][0] // ""
+              ' "$RUNNER_TEMP/mesa-version-$version_index.json")"
+              if [[ -n "$hist_trixie" ]]; then
+                hist_bookworm="${hist_trixie%_debian_trixie_arm64.tar.gz}_debian_bookworm_arm64.tar.gz"
+                if gh release download "$DISTRIBUTION_TAG" \
+                    --repo "$GITHUB_REPOSITORY" \
+                    --dir "$version_dir" \
+                    --pattern "$hist_bookworm" 2>/dev/null && [[ -f "$version_dir/$hist_bookworm" ]]; then
+                  cp -- "$version_dir/$hist_bookworm" "$asset_dir/$hist_bookworm"
+                  echo "已从现有滚动发布复用历史 Debian 12 资产：$hist_bookworm"
+                fi
+              fi
+            fi
+
             version_index=$((version_index + 1))
-          done < "$RUNNER_TEMP/mesa-tags.txt"
+          done < "$meta_dir/mesa-tags.txt"
           verify_upstream_asset "$media_metadata" "$media_driver_asset_file"
           verify_upstream_asset "$media_metadata" "$media_checksums_asset_file"
 
@@ -291,7 +486,7 @@ jobs:
                   "$(stat -c '%s' "$asset")" "${asset##*/}"
               done < <(find "$version_dir" -maxdepth 1 -type f -name 'mesa-for-android-container_*' -print0 | sort -z)
               version_index=$((version_index + 1))
-            done < "$RUNNER_TEMP/mesa-tags.txt"
+            done < "$meta_dir/mesa-tags.txt"
           } > "$versions_manifest"
 
           manifest="$asset_dir/$MANIFEST_NAME"
@@ -308,6 +503,7 @@ jobs:
             while IFS= read -r -d '' asset; do
               name="${asset##*/}"
               if [[ "$name" == mesa-for-android-container_* ]] && \
+                 [[ "$name" != "$BOOKWORM_ASSET" ]] && \
                  ! jq -e --arg name "$name" 'any(.assets[]?; .name == $name)' "$mesa_metadata" >/dev/null; then
                 continue
               fi
@@ -340,8 +536,8 @@ jobs:
       - name: 更新 GitHub 滚动发布
         env:
           GH_TOKEN: ${{ github.token }}
-          MESA_TAG: ${{ steps.upstream.outputs.mesa_tag }}
-          MEDIA_TAG: ${{ steps.upstream.outputs.media_tag }}
+          MESA_TAG: ${{ needs.resolve.outputs.mesa_tag }}
+          MEDIA_TAG: ${{ needs.resolve.outputs.media_tag }}
           ASSET_DIR: ${{ steps.assets.outputs.asset_dir }}
         shell: bash
         run: |
@@ -355,7 +551,7 @@ jobs:
 
           对应上游 Release：[$MESA_TAG]($UPSTREAM_RELEASES_URL/tag/$MESA_TAG)
 
-          本 Release 对上游正式 Release 按版本号去重，每个版本号只保留最新一次构建，并保留所选版本及其之前最多两个不同版本号的 Mesa 资产。媒体解码驱动独立保留最新版本 $MEDIA_TAG，并可单独安装；许可证随附件提供。
+          本 Release 对上游正式 Release 按版本号去重，每个版本号只保留最新一次构建，并保留所选版本及其之前最多两个不同版本号的 Mesa 资产，同时补充构建 Debian 12 (bookworm) arm64 资产。媒体解码驱动独立保留最新版本 $MEDIA_TAG，并可单独安装；许可证随附件提供。
 
           安装脚本：
 
