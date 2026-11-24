@@ -183,13 +183,21 @@ jobs:
           apt-get update
           apt-get build-dep -y mesa
           apt-get install -y --no-install-recommends \
-            ca-certificates git ccache cmake ninja-build pkg-config flex bison \
+            ca-certificates curl xz-utils git ccache cmake ninja-build pkg-config flex bison \
             python3-pip python3-mako python3-yaml python3-packaging \
             libxfixes-dev libarchive-dev libva-dev libdrm-dev libglvnd-dev \
             libwayland-dev libwayland-bin libwayland-egl-backend-dev \
             llvm-15-dev libclang-15-dev libclc-15-dev spirv-tools
           # Debian 12 自带 meson 1.0.1，而新版 Mesa 要求 meson >= 1.4.0
           pip3 install --break-system-packages --no-cache-dir 'meson>=1.4.0'
+          # Debian 12 自带 wayland-protocols 1.31；Meson unstable-wayland 模块直接查 pkg-config，
+          # 安装 wayland-protocols 1.44 到 /usr/local 以提供 fifo-v1 / color-management-v1 等协议
+          curl -fsSL https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/1.44/downloads/wayland-protocols-1.44.tar.xz \
+            | tar -xJ -C /tmp
+          /usr/local/bin/meson setup /tmp/wayland-protocols-1.44/build /tmp/wayland-protocols-1.44 \
+            --prefix=/usr/local -Dtests=false
+          ninja -C /tmp/wayland-protocols-1.44/build install
+          rm -rf /tmp/wayland-protocols-1.44
           # Debian 12 自带 glslang 12.0.0（要求 >= 12.2）且自带 cmake 3.25.1，
           # 使用 glslang 14.3.0（仅需 cmake >= 3.17.2）编出 glslangValidator
           git clone --depth 1 --branch 14.3.0 https://github.com/KhronosGroup/glslang.git /tmp/glslang
@@ -207,6 +215,7 @@ jobs:
           hash -r
           meson --version
           glslangValidator --version
+          PKG_CONFIG_PATH="/usr/local/share/pkgconfig:/usr/local/lib/pkgconfig" pkg-config --modversion wayland-protocols
 
       - name: 缓存 ccache
         uses: actions/cache@v4
@@ -239,6 +248,7 @@ jobs:
           set -euo pipefail
           export CCACHE_DIR=/root/.ccache
           export PATH="/usr/lib/ccache:/usr/local/bin:$PATH"
+          export PKG_CONFIG_PATH="/usr/local/share/pkgconfig:/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           cd "$GITHUB_WORKSPACE"
 
           meson_opts=(
