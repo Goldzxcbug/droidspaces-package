@@ -186,16 +186,18 @@ jobs:
             ca-certificates git ccache cmake ninja-build pkg-config flex bison \
             python3-pip python3-mako python3-yaml python3-packaging \
             libxfixes-dev libarchive-dev libva-dev libdrm-dev libglvnd-dev \
-            libwayland-dev libwayland-egl-backend-dev \
+            libwayland-dev libwayland-bin libwayland-egl-backend-dev \
             llvm-15-dev libclang-15-dev libclc-15-dev spirv-tools
           # Debian 12 自带 meson 1.0.1，而新版 Mesa 要求 meson >= 1.4.0
           pip3 install --break-system-packages --no-cache-dir 'meson>=1.4.0'
-          # Debian 12 自带 glslang 12.0.0，而新版 Mesa 要求 glslang >= 12.2
-          git clone --depth 1 --branch 15.1.0 https://github.com/KhronosGroup/glslang.git /tmp/glslang
+          # Debian 12 自带 glslang 12.0.0（要求 >= 12.2）且自带 cmake 3.25.1，
+          # 使用 glslang 14.3.0（仅需 cmake >= 3.17.2）编出 glslangValidator
+          git clone --depth 1 --branch 14.3.0 https://github.com/KhronosGroup/glslang.git /tmp/glslang
           cmake -S /tmp/glslang -B /tmp/glslang/build -GNinja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr/local \
             -DENABLE_OPT=OFF \
+            -DGLSLANG_TESTS=OFF \
             -DBUILD_TESTING=OFF \
             -DENABLE_GLSLANG_BINARIES=ON
           cmake --build /tmp/glslang/build --target glslang-standalone -j"$(nproc)"
