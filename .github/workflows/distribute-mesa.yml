@@ -271,6 +271,7 @@ jobs:
             -Dgles1=disabled
             -Dfreedreno-kmds=kgsl
             -Dbuildtype=release
+            -Dc_args=-Wno-error=missing-prototypes
           )
 
           # 兼容不同上游版本的额外 meson 选项
