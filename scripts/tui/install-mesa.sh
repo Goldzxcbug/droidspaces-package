@@ -522,6 +522,7 @@ mesa_archive_version() {
     local version="${ARCHIVE_NAME#mesa-for-android-container_}"
     case "$version" in
         *_archlinux_arm64.tar) version="${version%_archlinux_arm64.tar}" ;;
+        *_debian_bookworm_arm64.tar.gz) version="${version%_debian_bookworm_arm64.tar.gz}" ;;
         *_debian_trixie_arm64.tar.gz) version="${version%_debian_trixie_arm64.tar.gz}" ;;
         *_ubuntu_noble_arm64.tar.gz) version="${version%_ubuntu_noble_arm64.tar.gz}" ;;
         *_ubuntu_questing_arm64.tar.gz) version="${version%_ubuntu_questing_arm64.tar.gz}" ;;
@@ -839,6 +840,12 @@ detect_target() {
             ;;
         debian)
             case "$version_id" in
+                12*)
+                    TARGET="Debian 12"
+                    PACKAGE_MANAGER="apt"
+                    ARCHIVE_KIND="tar.gz"
+                    ASSET_PATTERN='^mesa-for-android-container_[^/]+_debian_bookworm_arm64\.tar\.gz$'
+                    ;;
                 13*)
                     TARGET="Debian 13"
                     PACKAGE_MANAGER="apt"
@@ -846,8 +853,8 @@ detect_target() {
                     ASSET_PATTERN='^mesa-for-android-container_[^/]+_debian_trixie_arm64\.tar\.gz$'
                     ;;
                 *)
-                    die "不支持当前系统 ${system_name}。仅支持 Debian 13。" \
-                        "Unsupported system: ${system_name}. Only Debian 13 is supported."
+                    die "不支持当前系统 ${system_name}。仅支持 Debian 12、13。" \
+                        "Unsupported system: ${system_name}. Only Debian 12 and 13 are supported."
                     ;;
             esac
             ;;

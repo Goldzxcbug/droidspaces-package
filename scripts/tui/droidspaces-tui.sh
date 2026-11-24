@@ -1184,7 +1184,7 @@ is_arm64() {
 
 supports_common_packages() {
     case "$SYSTEM_ID:$SYSTEM_VERSION" in
-        arch:*|archarm:*|archlinux:*|debian:13*|ubuntu:24.04*|ubuntu:25.10*|ubuntu:26.04*|fedora:43*|fedora:44*|fedora:45*)
+        arch:*|archarm:*|archlinux:*|debian:12*|debian:13*|ubuntu:24.04*|ubuntu:25.10*|ubuntu:26.04*|fedora:43*|fedora:44*|fedora:45*)
             return 0
             ;;
         *) return 1 ;;
@@ -1553,6 +1553,7 @@ component_release_parts() {
             prefix="mesa-for-android-container_"
             case "$SYSTEM_ID:$SYSTEM_VERSION" in
                 arch:*|archarm:*|archlinux:*) suffix="_archlinux_arm64.tar" ;;
+                debian:12*) suffix="_debian_bookworm_arm64.tar.gz" ;;
                 debian:13*) suffix="_debian_trixie_arm64.tar.gz" ;;
                 ubuntu:24.04*) suffix="_ubuntu_noble_arm64.tar.gz" ;;
                 ubuntu:25.10*) suffix="_ubuntu_questing_arm64.tar.gz" ;;
