@@ -2960,7 +2960,7 @@ tui_cnb_bootstrap_row() {
         NR == 1 && $0 == "format=1" { format = 1; next }
         $0 == "release_tag=" expected_tag { tag = 1; next }
         $0 == "sha256\tsize\trole\ttarget\tasset" { header = 1; next }
-        header && NF == 5 && $1 ~ /^[0-9a-f]{64}$/ && $2 ~ /^[0-9]+$/ &&
+        header && NF == 5 && length($1) == 64 && $1 ~ /^[0-9a-f]+$/ && $2 ~ /^[0-9]+$/ &&
             $3 == "bootstrap" && $4 == "-" && $5 == expected_name {
             digest = $1
             size = $2

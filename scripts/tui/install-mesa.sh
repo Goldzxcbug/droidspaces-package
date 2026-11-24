@@ -1475,7 +1475,7 @@ download_media_decode_driver() {
         "Downloaded ${MEDIA_CHECKSUMS_NAME} failed Release SHA-256 verification."
 
     manifest_driver_digest="$(awk -v name="$MEDIA_DRIVER_NAME" '
-        $1 ~ /^[0-9A-Fa-f]{64}$/ && $2 == name { print tolower($1) }
+        length($1) == 64 && $1 ~ /^[0-9A-Fa-f]+$/ && $2 == name { print tolower($1) }
     ' "$MEDIA_CHECKSUMS_FILE")"
     [[ "$manifest_driver_digest" =~ ^[0-9a-f]{64}$ ]] || die \
         "${MEDIA_CHECKSUMS_NAME} 中缺少唯一有效的 ${MEDIA_DRIVER_NAME} 摘要。" \
