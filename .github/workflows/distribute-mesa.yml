@@ -14,6 +14,11 @@ on:
         required: false
         type: string
         default: ''
+      skip_debian12_build:
+        description: 跳过 Debian 12 ARM64 构建，复用上一次滚动发布的 Debian 12 包
+        required: true
+        type: boolean
+        default: true
       publish_cnb:
         description: 同步发布到 CNB 国内镜像
         required: true
@@ -153,7 +158,7 @@ jobs:
           echo "media_driver_asset=$media_driver_asset" >> "$GITHUB_OUTPUT"
           echo "media_checksums_asset=$media_checksums_asset" >> "$GITHUB_OUTPUT"
           echo "选择 Mesa 上游 Release：$UPSTREAM_RELEASES_URL/tag/$mesa_tag"
-          echo "计划构建 Debian 12 资产：$bookworm_asset"
+          echo "所选 Mesa 版本对应的 Debian 12 资产：$bookworm_asset"
           echo "选择媒体驱动 Release：$MEDIA_URL/releases/tag/$media_tag"
           echo "选择媒体驱动资产：$media_driver_asset"
           echo "选择媒体校验资产：$media_checksums_asset"
@@ -168,6 +173,7 @@ jobs:
   build-debian-bookworm:
     name: 构建 Debian 12 (bookworm) arm64 Mesa
     needs: resolve
+    if: ${{ !inputs.skip_debian12_build }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     container:
@@ -316,6 +322,10 @@ jobs:
     needs:
       - resolve
       - build-debian-bookworm
+    if: >-
+      ${{ !cancelled() && needs.resolve.result == 'success' &&
+          (needs.build-debian-bookworm.result == 'success' ||
+           (inputs.skip_debian12_build && needs.build-debian-bookworm.result == 'skipped')) }}
     runs-on: ubuntu-26.04
     timeout-minutes: 90
     steps:
@@ -329,6 +339,7 @@ jobs:
           path: ${{ runner.temp }}/mesa-resolve-metadata
 
       - name: 下载 Debian 12 构建产物
+        if: ${{ needs.build-debian-bookworm.result == 'success' }}
         uses: actions/download-artifact@v4
         with:
           name: mesa-debian-bookworm
@@ -340,6 +351,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           MESA_TAG: ${{ needs.resolve.outputs.mesa_tag }}
           BOOKWORM_ASSET: ${{ needs.resolve.outputs.bookworm_asset }}
+          SKIP_DEBIAN12_BUILD: ${{ inputs.skip_debian12_build }}
           REQUESTED_TAG: ${{ inputs.upstream_tag }}
           MEDIA_TAG: ${{ needs.resolve.outputs.media_tag }}
           MEDIA_DRIVER_ASSET: ${{ needs.resolve.outputs.media_driver_asset }}
@@ -352,7 +364,41 @@ jobs:
           asset_dir="$RUNNER_TEMP/mesa-distribution-assets"
           mesa_metadata="$meta_dir/mesa-upstream-release.json"
           media_metadata="$meta_dir/media-upstream-release.json"
-          bookworm_file="$RUNNER_TEMP/mesa-bookworm-out/$BOOKWORM_ASSET"
+          bookworm_dir="$RUNNER_TEMP/mesa-bookworm-out"
+          if [[ "$SKIP_DEBIAN12_BUILD" == true ]]; then
+            mkdir -p "$bookworm_dir"
+            if ! gh release download "$DISTRIBUTION_TAG" --repo "$GITHUB_REPOSITORY" \
+                --dir "$bookworm_dir" --pattern "$MANIFEST_NAME"; then
+              echo "无法获取上一版分发清单。首次发布时请取消勾选‘跳过 Debian 12 ARM64 构建’。" >&2
+              exit 1
+            fi
+            # 主清单只记录上次默认安装的包。保留资产原名，以便安装器识别实际版本。
+            if ! previous_bookworm="$(awk -F '\t' '
+              $0 == "sha256\tsize\tasset" { assets = 1; next }
+              assets && NF == 3 && $3 ~ /^mesa-for-android-container_[[:alnum:]_.+~-]+_debian_bookworm_arm64\.tar\.gz$/ {
+                print
+                count++
+              }
+              END { exit count == 1 ? 0 : 1 }
+            ' "$bookworm_dir/$MANIFEST_NAME")"; then
+              echo "上一版分发清单缺少唯一的 Debian 12 包。请取消勾选‘跳过 Debian 12 ARM64 构建’。" >&2
+              exit 1
+            fi
+            IFS=$'\t' read -r previous_sha previous_size BOOKWORM_ASSET <<< "$previous_bookworm"
+            [[ "$previous_sha" =~ ^[0-9a-f]{64}$ && "$previous_size" =~ ^[1-9][0-9]*$ ]] || {
+              echo "上一版 Debian 12 包的 SHA-256 或大小无效。" >&2
+              exit 1
+            }
+            gh release download "$DISTRIBUTION_TAG" --repo "$GITHUB_REPOSITORY" \
+              --dir "$bookworm_dir" --pattern "$BOOKWORM_ASSET"
+            if [[ "$(stat -c '%s' "$bookworm_dir/$BOOKWORM_ASSET")" != "$previous_size" ]] ||
+                ! (cd "$bookworm_dir" && printf '%s  %s\n' "$previous_sha" "$BOOKWORM_ASSET" | sha256sum -c --status); then
+              echo "复用的 Debian 12 包校验失败：$BOOKWORM_ASSET" >&2
+              exit 1
+            fi
+            echo "已从上一版滚动发布复用 Debian 12 包：$BOOKWORM_ASSET"
+          fi
+          bookworm_file="$bookworm_dir/$BOOKWORM_ASSET"
           [[ -f "$bookworm_file" ]] || {
             echo "缺少 Debian 12 构建产物：$bookworm_file" >&2
             exit 1
@@ -448,7 +494,7 @@ jobs:
               cp -- "$asset" "$asset_dir/${asset##*/}"
             done
 
-            # 注入 Debian 12 (bookworm) 资产：当前版本使用本次构建产物，历史版本尽量从现有滚动发布复用
+            # 默认 Debian 12 包已就绪，历史版本继续从现有滚动发布补齐。
             if (( version_index == 0 )); then
               cp -- "$bookworm_file" "$version_dir/$BOOKWORM_ASSET"
               cp -- "$bookworm_file" "$asset_dir/$BOOKWORM_ASSET"
@@ -458,7 +504,7 @@ jobs:
               ' "$RUNNER_TEMP/mesa-version-$version_index.json")"
               if [[ -n "$hist_trixie" ]]; then
                 hist_bookworm="${hist_trixie%_debian_trixie_arm64.tar.gz}_debian_bookworm_arm64.tar.gz"
-                if gh release download "$DISTRIBUTION_TAG" \
+                if [[ "$hist_bookworm" != "$BOOKWORM_ASSET" ]] && gh release download "$DISTRIBUTION_TAG" \
                     --repo "$GITHUB_REPOSITORY" \
                     --dir "$version_dir" \
                     --pattern "$hist_bookworm" 2>/dev/null && [[ -f "$version_dir/$hist_bookworm" ]]; then
@@ -540,6 +586,7 @@ jobs:
           } > "$manifest"
 
           echo "asset_dir=$asset_dir" >> "$GITHUB_OUTPUT"
+          echo "bookworm_asset=$BOOKWORM_ASSET" >> "$GITHUB_OUTPUT"
           echo "已准备 $(find "$asset_dir" -maxdepth 1 -type f | wc -l) 个分发附件。"
 
       - name: 确保滚动标签存在
@@ -564,6 +611,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           MESA_TAG: ${{ needs.resolve.outputs.mesa_tag }}
           MEDIA_TAG: ${{ needs.resolve.outputs.media_tag }}
+          BOOKWORM_ASSET: ${{ steps.assets.outputs.bookworm_asset }}
           ASSET_DIR: ${{ steps.assets.outputs.asset_dir }}
         shell: bash
         run: |
@@ -577,7 +625,9 @@ jobs:
 
           对应上游 Release：[$MESA_TAG]($UPSTREAM_RELEASES_URL/tag/$MESA_TAG)
 
-          本 Release 对上游正式 Release 按版本号去重，每个版本号只保留最新一次构建，并保留所选版本及其之前最多两个不同版本号的 Mesa 资产，同时补充构建 Debian 12 (bookworm) arm64 资产。媒体解码驱动独立保留最新版本 $MEDIA_TAG，并可单独安装；许可证随附件提供。
+          本 Release 对上游正式 Release 按版本号去重，每个版本号只保留最新一次构建，并保留所选版本及其之前最多两个不同版本号的 Mesa 资产。媒体解码驱动独立保留最新版本 $MEDIA_TAG，并可单独安装；许可证随附件提供。
+
+          Debian 12 (bookworm) ARM64 默认安装包为 \`$BOOKWORM_ASSET\`。
 
           安装脚本：
 
