@@ -1,6 +1,6 @@
 # Mesa 源仓库：https://github.com/lfdevs/mesa-for-android-container
 # 上游 Releases：https://github.com/lfdevs/mesa-for-android-container/releases
-# 媒体解码源仓库：https://github.com/Yizhou147/droidspaces-media-decode
+# 媒体解码源仓库：https://github.com/Goldzxcbug/droidspaces-media-decode
 # 本工作流不修改上游 Mesa 资产内容，仅补充构建上游未提供的 Debian 12 (bookworm) arm64 资产。
 
 name: 分发 Mesa for Android Container
@@ -31,8 +31,8 @@ env:
   UPSTREAM_REPOSITORY: lfdevs/mesa-for-android-container
   UPSTREAM_URL: https://github.com/lfdevs/mesa-for-android-container
   UPSTREAM_RELEASES_URL: https://github.com/lfdevs/mesa-for-android-container/releases
-  MEDIA_REPOSITORY: Yizhou147/droidspaces-media-decode
-  MEDIA_URL: https://github.com/Yizhou147/droidspaces-media-decode
+  MEDIA_REPOSITORY: Goldzxcbug/droidspaces-media-decode
+  MEDIA_URL: https://github.com/Goldzxcbug/droidspaces-media-decode
   DISTRIBUTION_TAG: mesa-for-android-container
   MANIFEST_NAME: mesa-distribution-manifest
 
