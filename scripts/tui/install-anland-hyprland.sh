@@ -89,17 +89,35 @@ trap cleanup EXIT
 # Native package transactions preserve profile-specific remove/restore policy.
 install_deb_packages() {
     ds_operation_phase packages
-    local -a files packages
-    local file package
+    local -a files packages apt_options=()
+    local file package apt_releases
+    local backports_source=/etc/apt/sources.list.d/droidspaces-hyprland-backports.sources
 
     command -v apt-get >/dev/null 2>&1 || die "未找到 apt-get。" "apt-get was not found."
     command -v dpkg-deb >/dev/null 2>&1 || die "未找到 dpkg-deb。" "dpkg-deb was not found."
     mapfile -t files < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name '*.deb' -print | sort)
     ((${#files[@]} > 0)) || die "没有可安装的 deb 包。" "No installable deb packages were found."
 
+    if [[ "$ARCHIVE_TARGET" == debian13 ]]; then
+        # The Debian 13 bundle is built against the backports runtime libraries.
+        apt_releases="$(apt-get indextargets --no-release-info --format '$(RELEASE)' 'Identifier: Packages')"
+        if ! grep -Fxq trixie-backports <<< "$apt_releases"; then
+            ds_operation_backup "$backports_source"
+            cat > "$backports_source" <<'EOF'
+Types: deb
+URIs: https://deb.debian.org/debian
+Suites: trixie-backports
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+EOF
+        fi
+        apt-get update
+        apt_options+=(-t trixie-backports)
+    fi
+
     log "正在安装 ${#files[@]} 个 deb 包并自动处理依赖..." \
         "Installing ${#files[@]} deb packages and resolving dependencies..."
-    apt-get install -y --reinstall --allow-downgrades --allow-change-held-packages "${files[@]}"
+    apt-get "${apt_options[@]}" install -y --reinstall --allow-downgrades --allow-change-held-packages "${files[@]}"
 
     for file in "${files[@]}"; do
         package="$(dpkg-deb -f "$file" Package)"
