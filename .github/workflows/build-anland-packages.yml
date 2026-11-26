@@ -398,13 +398,15 @@ jobs:
             -e RECIPE -e JOBS="${JOBS:-4}" \
             -e DEBIAN_FRONTEND=noninteractive \
             -v "$output_dir:/build" \
+            -v "$PWD/scripts/retry-apt-update.sh:/run/retry-apt-update.sh:ro" \
             "$DISTRO_IMAGE" bash -s <<'ANLAND_BUILD'
           # Called as root in a disposable native ARM64 distribution container.
           set -euo pipefail
           [[ $(uname -m) == aarch64 ]] || { echo 'Native aarch64 container required' >&2; exit 1; }
           case "$BUILD_TARGET" in
               ubuntu2604|debian13)
-                  apt-get update
+                  source /run/retry-apt-update.sh
+                  retry_apt_update
                   apt-get install -y --no-install-recommends git ca-certificates sudo python3 \
                       build-essential devscripts dpkg-dev debhelper fakeroot quilt patch \
                       cmake meson ninja-build pkgconf ccache curl xz-utils unzip zip file binutils
@@ -423,7 +425,7 @@ jobs:
           Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
           SOURCES
                   fi
-                  apt-get update
+                  retry_apt_update
                   ;;
               fedora43|fedora44|fedora45)
                   dnf install -y --setopt=install_weak_deps=False \
@@ -1087,13 +1089,15 @@ jobs:
             -e RECIPE -e JOBS="${JOBS:-4}" \
             -e DEBIAN_FRONTEND=noninteractive \
             -v "$output_dir:/build" \
+            -v "$PWD/scripts/retry-apt-update.sh:/run/retry-apt-update.sh:ro" \
             "$DISTRO_IMAGE" bash -s <<'ANLAND_BUILD'
           # Called as root in a disposable native ARM64 distribution container.
           set -euo pipefail
           [[ $(uname -m) == aarch64 ]] || { echo 'Native aarch64 container required' >&2; exit 1; }
           case "$BUILD_TARGET" in
               ubuntu2604|debian13)
-                  apt-get update
+                  source /run/retry-apt-update.sh
+                  retry_apt_update
                   apt-get install -y --no-install-recommends git ca-certificates sudo python3 \
                       build-essential devscripts dpkg-dev debhelper fakeroot quilt patch \
                       cmake meson ninja-build pkgconf ccache curl xz-utils unzip zip file binutils
@@ -1112,7 +1116,7 @@ jobs:
           Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
           SOURCES
                   fi
-                  apt-get update
+                  retry_apt_update
                   ;;
               fedora43|fedora44|fedora45)
                   dnf install -y --setopt=install_weak_deps=False \
@@ -1766,13 +1770,15 @@ jobs:
             -e RECIPE -e JOBS="${JOBS:-4}" \
             -e DEBIAN_FRONTEND=noninteractive \
             -v "$output_dir:/build" \
+            -v "$PWD/scripts/retry-apt-update.sh:/run/retry-apt-update.sh:ro" \
             "$DISTRO_IMAGE" bash -s <<'ANLAND_BUILD'
           # Called as root in a disposable native ARM64 distribution container.
           set -euo pipefail
           [[ $(uname -m) == aarch64 ]] || { echo 'Native aarch64 container required' >&2; exit 1; }
           case "$BUILD_TARGET" in
               ubuntu2604|debian13)
-                  apt-get update
+                  source /run/retry-apt-update.sh
+                  retry_apt_update
                   apt-get install -y --no-install-recommends git ca-certificates sudo python3 \
                       build-essential devscripts dpkg-dev debhelper fakeroot quilt patch \
                       cmake meson ninja-build pkgconf ccache curl xz-utils unzip zip file binutils
@@ -1791,7 +1797,7 @@ jobs:
           Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
           SOURCES
                   fi
-                  apt-get update
+                  retry_apt_update
                   ;;
               fedora43|fedora44|fedora45)
                   dnf install -y --setopt=install_weak_deps=False \
@@ -2445,13 +2451,15 @@ jobs:
             -e RECIPE -e JOBS="${JOBS:-4}" \
             -e DEBIAN_FRONTEND=noninteractive \
             -v "$output_dir:/build" \
+            -v "$PWD/scripts/retry-apt-update.sh:/run/retry-apt-update.sh:ro" \
             "$DISTRO_IMAGE" bash -s <<'ANLAND_BUILD'
           # Called as root in a disposable native ARM64 distribution container.
           set -euo pipefail
           [[ $(uname -m) == aarch64 ]] || { echo 'Native aarch64 container required' >&2; exit 1; }
           case "$BUILD_TARGET" in
               ubuntu2604|debian13)
-                  apt-get update
+                  source /run/retry-apt-update.sh
+                  retry_apt_update
                   apt-get install -y --no-install-recommends git ca-certificates sudo python3 \
                       build-essential devscripts dpkg-dev debhelper fakeroot quilt patch \
                       cmake meson ninja-build pkgconf ccache curl xz-utils unzip zip file binutils
@@ -2470,7 +2478,7 @@ jobs:
           Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
           SOURCES
                   fi
-                  apt-get update
+                  retry_apt_update
                   ;;
               fedora43|fedora44|fedora45)
                   dnf install -y --setopt=install_weak_deps=False \
@@ -3174,13 +3182,15 @@ jobs:
             -e PKG_PATTERN \
             -v "$PWD/$OUTPUT_DIR:/root/kde-packages" \
             -v "$PWD/$OUTPUT_DIR:/tmp/kde-packages" \
+            -v "$PWD/scripts/retry-apt-update.sh:/run/retry-apt-update.sh:ro" \
             "$DISTRO_IMAGE" \
             bash -s <<'ANLAND_BUILD'
               set -euo pipefail
 
               case "$BUILD_TARGET" in
                 Debian13|ubuntu2604)
-                  apt-get update
+                  source /run/retry-apt-update.sh
+                  retry_apt_update
                   apt-get install -y --no-install-recommends \
                     git ca-certificates sudo \
                     build-essential devscripts dpkg-dev fakeroot patch
@@ -3270,7 +3280,7 @@ jobs:
               # Debian 13 使用 DEB822 源；上游构建脚本要求 deb-src。
               if [ "$BUILD_TARGET" = Debian13 ] && [ -f /etc/apt/sources.list.d/debian.sources ]; then
                 sed -i "s/^Types: deb$/Types: deb deb-src/" /etc/apt/sources.list.d/debian.sources
-                apt-get update
+                retry_apt_update
               fi
 
               test -f "/tmp/anland/$BUILD_SCRIPT"
@@ -4148,6 +4158,7 @@ jobs:
             -e XWAYLAND_PATCH \
             -e PKG_PATTERN \
             -v "$PWD/$OUTPUT_DIR:/packages" \
+            -v "$PWD/scripts/retry-apt-update.sh:/run/retry-apt-update.sh:ro" \
             "$DISTRO_IMAGE" \
             bash -s <<'ANLAND_BUILD'
               set -euo pipefail
@@ -4174,7 +4185,8 @@ jobs:
                   chown -R anland:anland /packages
                   ;;
                 ubuntu2604|Debian13)
-                  apt-get update
+                  source /run/retry-apt-update.sh
+                  retry_apt_update
                   apt-get install -y --no-install-recommends \
                     git ca-certificates curl sudo \
                     build-essential devscripts dpkg-dev fakeroot patch
@@ -4235,7 +4247,7 @@ jobs:
                   # Debian 13 使用 DEB822 源；上游构建脚本要求 deb-src。
                   if [ "$BUILD_TARGET" = Debian13 ] && [ -f /etc/apt/sources.list.d/debian.sources ]; then
                     sed -i "s/^Types: deb$/Types: deb deb-src/" /etc/apt/sources.list.d/debian.sources
-                    apt-get update
+                    retry_apt_update
                   fi
                   cd "/tmp/anland/$(dirname "$BUILD_SCRIPT")"
                   XWAYLAND_PATCH="/tmp/anland/$XWAYLAND_PATCH" \
